@@ -1,0 +1,67 @@
+[workspace]
+resolver = "3"
+members = [
+    "common",
+    "ipc",
+    "ftp",
+    "sftp",
+    "fftpd",
+    "ftp-gui",
+]
+
+[workspace.lints.clippy]
+# 手写代码统一启用 clippy::pedantic；各成员经 [lints] workspace = true 继承。
+pedantic = { level = "warn", priority = -1 }
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+authors = ["fftps developers"]
+license = "GPL-3.0"
+
+[workspace.dependencies]
+# 内部 crate
+fftp-common = { path = "common" }
+fftp-ipc = { path = "ipc" }
+fftp-ftp = { path = "ftp" }
+fftp-sftp = { path = "sftp" }
+
+# 序列化
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "1.1"
+
+# 异步运行时
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "sync", "time", "io-util", "fs", "signal"] }
+async-trait = "0.1"
+
+# 错误处理
+anyhow = "1"
+thiserror = "2"
+
+# 日志
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json", "local-time", "chrono"] }
+tracing-appender = "0.2"
+
+# 时间
+chrono = { version = "0.4", features = ["serde"] }
+
+# 网络
+ipnet = "2"
+
+# 加密
+argon2 = "0.6"
+
+# 平台
+nix = { version = "0.31", features = ["user", "fs", "socket"] }
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+strip = true
+panic = "abort"
+
+[profile.release.package."*"]
+opt-level = 3

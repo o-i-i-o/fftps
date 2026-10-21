@@ -1,0 +1,42 @@
+[package]
+name = "fftp-ftp"
+description = "fftps FTP(FTPS) 服务端"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[dependencies]
+# 内部共享层（配置/用户/配额/限速/防护/指标/审计日志）
+fftp-common = { workspace = true }
+
+# 异步运行时
+tokio = { workspace = true }
+async-trait = { workspace = true }
+
+# 错误处理
+anyhow = { workspace = true }
+
+# 日志
+tracing = { workspace = true }
+
+# 认证链（未知用户恒定时间 dummy 校验）与审计时间戳
+argon2 = { workspace = true }
+chrono = { workspace = true }
+
+# FTP/FTPS 服务端（版本对齐 wftpd-windows/wftpd/Cargo.toml）
+libunftp = { version = "0.23.1", default-features = false, features = ["aws_lc_rs"] }
+unftp-core = "0.1.0"
+unftp-sbe-fs = "0.4.0"
+unftp-sbe-rooter = "0.3.0"
+unftp-sbe-restrict = "0.1.5"
+
+# FTPS 自签证书生成（rcgen 证书时间字段为 time 类型）
+rcgen = "0.14"
+time = { version = "0.3", features = ["formatting"] }
+
+[dev-dependencies]
+tempfile = "3"
+
+[lints]
+workspace = true

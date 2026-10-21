@@ -1,0 +1,40 @@
+[package]
+name = "fftp-sftp"
+description = "fftps SFTP 服务端"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[dependencies]
+# 内部共享层：用户库/配置/配额/限速/防护/指标/审计日志
+fftp-common = { workspace = true }
+
+# 异步运行时
+tokio = { workspace = true }
+anyhow = { workspace = true }
+tracing = { workspace = true }
+chrono = { workspace = true }
+
+# SSH/SFTP 协议层（自研 SFTP 报文处理基于 russh 传输）
+russh = "0.64"
+
+# 扩展哈希（md5sum/sha256sum）
+md-5 = "0.11"
+sha2 = "0.11"
+hex = "0.4"
+
+# statvfs@openssh.com 磁盘空间查询
+fs2 = "0.4"
+
+# 监听 socket（SO_REUSEADDR / IPv6 双栈）
+socket2 = "0.6"
+
+# 连接清理守卫
+scopeguard = "1.2"
+
+[dev-dependencies]
+tempfile = "3"
+
+[lints]
+workspace = true

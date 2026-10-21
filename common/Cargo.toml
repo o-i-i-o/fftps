@@ -1,0 +1,30 @@
+[package]
+name = "fftp-common"
+description = "fftps 共享层：路径/配置/用户/日志等前后端共用类型与逻辑"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+toml = { workspace = true }
+anyhow = { workspace = true }
+chrono = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+tracing-appender = { workspace = true }
+tokio = { workspace = true }
+argon2 = { workspace = true }
+ipnet = { workspace = true }
+prometheus = "0.14"
+
+[target.'cfg(unix)'.dependencies]
+nix = { workspace = true }
+
+[dev-dependencies]
+tempfile = "3"
+
+[lints]
+workspace = true
