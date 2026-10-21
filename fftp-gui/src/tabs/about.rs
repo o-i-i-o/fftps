@@ -3,7 +3,7 @@
 //! 服务端信息以 `GetStatus` 响应为准；未连接时回退到本地可推导的信息
 //! （IPC 端点、本机配置/用户库路径）。
 
-use iced::widget::{column, container, text};
+use iced::widget::{column, container, text, Widget};
 use iced::{Element, Length};
 
 use crate::app::Message;
@@ -70,5 +70,5 @@ pub fn view<'a>(status: Option<&ServerStatus>) -> Element<'a, Message> {
     )
     .width(Length::Fill)
     .height(Length::Fill)
-    .into()
+    .boxed()
 }

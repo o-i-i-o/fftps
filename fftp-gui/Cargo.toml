@@ -11,7 +11,8 @@ fftp-common = { workspace = true }
 fftp-ipc = { workspace = true }
 # 必须启用 tokio 执行器：fftp-ipc 内部使用 tokio::spawn，
 # 且日志订阅要桥接 tokio broadcast 通道、重连退避用 tokio 定时器
-iced = { version = "0.14.0", features = ["tokio"] }
+# 使用 iced 开发版源码（github master 分支），代码已按 master API 编写
+iced = { git = "https://github.com/iced-rs/iced", branch = "master", features = ["tokio"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
 tokio = { workspace = true }

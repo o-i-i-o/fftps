@@ -12,7 +12,7 @@ pub mod server;
 pub mod service;
 pub mod users;
 
-use iced::widget::{row, text};
+use iced::widget::{row, text, Widget};
 use iced::{Color, Element, Length, Task};
 
 use crate::app::Message;
@@ -98,18 +98,23 @@ pub fn relay_error(err: &IpcError) -> Task<Message> {
 
 /// 错误提示行
 pub fn error_line<'a>(msg: &str) -> Element<'a, Message> {
-    text(msg.to_owned()).size(13).color(ERROR_COLOR).into()
+    text(msg.to_owned()).size(13).color(ERROR_COLOR).boxed()
 }
 
 /// 成功提示行
 pub fn info_line<'a>(msg: &str) -> Element<'a, Message> {
-    text(msg.to_owned()).size(13).color(INFO_COLOR).into()
+    text(msg.to_owned()).size(13).color(INFO_COLOR).boxed()
 }
 
 /// “标签：控件”表单行
+///
+/// 0.15 起 `From<W> for Element` 被移除：控件入参改用 [`Widget`] 约束，
+/// 返回值由 `Row<'a, Message>` 改为装好的 [`Element`]。
 pub fn form_row<'a>(
     label: &'a str,
-    control: impl Into<Element<'a, Message>>,
-) -> iced::widget::Row<'a, Message> {
-    row![text(label).size(13).width(Length::Fixed(150.0)), control.into()].spacing(8)
+    control: impl Widget<Message> + 'a,
+) -> Element<'a, Message> {
+    row![text(label).size(13).width(Length::Fixed(150.0)), control]
+        .spacing(8)
+        .boxed()
 }

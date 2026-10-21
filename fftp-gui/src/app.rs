@@ -6,8 +6,8 @@
 //!   `tokio::sync::broadcast::Receiver`，把服务端推送转成界面消息。
 
 use fftp_ipc::protocol::{Command, Event};
-use iced::futures::SinkExt;
-use iced::widget::{button, column, container, row, text};
+use iced::futures::{SinkExt, StreamExt};
+use iced::widget::{button, column, container, row, text, Widget};
 use iced::{Color, Element, Length, Subscription, Task};
 use tokio::sync::broadcast::error::RecvError;
 
@@ -269,6 +269,11 @@ impl App {
     }
 
     /// 日志订阅桥：进入日志页且已连接时启动
+    ///
+    /// `iced` 0.14 的 [`Subscription::run_with`] 要求 `fn(&D) -> S`（不可捕获
+    /// 外部状态），连接经身份结构 [`LogStream`] 带入；其 `Hash` 仅取代数，
+    /// 因此订阅身份 =（"log-stream", 连接代数）：重连后代数变化自动换新流，
+    /// 离开日志页或断线后不再返回该订阅，`iced` 会回收旧流。
     fn log_stream_subscription(&self) -> Subscription<Message> {
         if self.tab != Tab::Logs {
             return Subscription::none();
@@ -277,57 +282,20 @@ impl App {
             return Subscription::none();
         };
         let generation = self.ipc.generation();
-        Subscription::run_with_id(
-            ("log-stream", generation),
-            iced::stream::channel(256, move |mut output| async move {
-                let client = &conn.0;
-                // 先订阅事件再请求订阅，保证服务端补推的历史日志不丢失
-                let mut rx = client.subscribe_events();
-                if let Err(e) = client
-                    .request(Command::SubscribeLogs { tail_count: 200 })
-                    .await
-                {
-                    let err = ipc_service::map_error(e);
-                    if err.is_disconnected() {
-                        let _ = output.send(Message::LogStreamEnded(generation)).await;
-                        return;
-                    }
-                    let _ = output
-                        .send(Message::Logs(logs::Msg::SubscribeFailed(err)))
-                        .await;
-                }
-                loop {
-                    match rx.recv().await {
-                        Ok(Event::Log { entry }) => {
-                            if output.send(Message::Logs(logs::Msg::Entry(entry))).await.is_err() {
-                                return;
-                            }
-                        }
-                        Err(RecvError::Lagged(count)) => {
-                            if output.send(Message::Logs(logs::Msg::Lagged(count))).await.is_err() {
-                                return;
-                            }
-                        }
-                        Err(RecvError::Closed) => break,
-                    }
-                }
-                let _ = output.send(Message::LogStreamEnded(generation)).await;
-            }),
-        )
+        Subscription::run_with(LogStream { conn, generation }, log_stream)
     }
 
     fn view(&self) -> Element<'_, Message> {
         let nav = row(Tab::ALL.iter().map(|tab| {
             let active = *tab == self.tab;
-            Element::from(
-                button(text(tab.title()))
-                    .on_press_maybe((!active).then_some(Message::SelectTab(*tab)))
-                    .style(if active {
-                        button::primary
-                    } else {
-                        button::secondary
-                    }),
-            )
+            button(text(tab.title()))
+                .on_press_maybe((!active).then_some(Message::SelectTab(*tab)))
+                .style(if active {
+                    button::primary
+                } else {
+                    button::secondary
+                })
+                .boxed()
         }))
         .spacing(8)
         .padding(12);
@@ -350,7 +318,7 @@ impl App {
                 .padding(12),
             self.status_bar(),
         ]
-        .into()
+        .boxed()
     }
 
     /// 底部状态栏：连接状态 / IPC 端点 / 提示
@@ -376,8 +344,72 @@ impl App {
             .padding(12),
         )
         .style(container::rounded_box)
-        .into()
+        .boxed()
     }
+}
+
+/// 日志订阅身份：连接 + 连接代数
+///
+/// `Hash` 仅取代数（连接不参与哈希）：代数一致即同一订阅，与
+/// 旧版 `run_with_id(("log-stream", 代数))` 的身份语义一致。
+struct LogStream {
+    conn: IpcConn,
+    generation: u64,
+}
+
+impl std::hash::Hash for LogStream {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.generation.hash(state);
+    }
+}
+
+/// `run_with` 的流构造器（`fn` 指针，不可捕获）：把连接克隆进
+/// [`iced::stream::channel`]，先订阅事件再请求订阅，保证服务端补推的
+/// 历史日志不丢失；断线/回收时以 `LogStreamEnded` 收尾。
+///
+/// 返回 [`BoxStream`] 具体类型：`run_with` 的 `fn(&D) -> S` 形参要求
+/// 固定返回类型，fn item 的 RPIT 无法与之协变。
+fn log_stream(data: &LogStream) -> iced::futures::stream::BoxStream<'static, Message> {
+    let conn = data.conn.clone();
+    let generation = data.generation;
+    // 0.14 的 channel 形参为 AsyncFnOnce，闭包参数需显式标注以推导条目类型
+    iced::stream::channel(
+        256,
+        move |mut output: iced::futures::channel::mpsc::Sender<Message>| async move {
+        let client = &conn.0;
+        let mut rx = client.subscribe_events();
+        if let Err(e) = client
+            .request(Command::SubscribeLogs { tail_count: 200 })
+            .await
+        {
+            let err = ipc_service::map_error(e);
+            if err.is_disconnected() {
+                let _ = output.send(Message::LogStreamEnded(generation)).await;
+                return;
+            }
+            let _ = output
+                .send(Message::Logs(logs::Msg::SubscribeFailed(err)))
+                .await;
+        }
+        loop {
+            match rx.recv().await {
+                Ok(Event::Log { entry }) => {
+                    if output.send(Message::Logs(logs::Msg::Entry(entry))).await.is_err() {
+                        return;
+                    }
+                }
+                Err(RecvError::Lagged(count)) => {
+                    if output.send(Message::Logs(logs::Msg::Lagged(count))).await.is_err() {
+                        return;
+                    }
+                }
+                Err(RecvError::Closed) => break,
+            }
+        }
+        let _ = output.send(Message::LogStreamEnded(generation)).await;
+        },
+    )
+    .boxed()
 }
 
 /// `iced` update 入口

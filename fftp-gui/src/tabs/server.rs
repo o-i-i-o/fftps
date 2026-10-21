@@ -9,7 +9,7 @@
 use fftp_common::config::{Config, ConnectionMode, FtpConfig, SftpConfig};
 use fftp_ipc::protocol::Command;
 use iced::widget::{
-    button, checkbox, column, container, pick_list, row, text, text_editor, text_input,
+    button, checkbox, column, container, pick_list, row, text, text_editor, text_input, Widget,
 };
 use iced::{Element, Font, Length, Task};
 
@@ -510,11 +510,11 @@ impl ServerTab {
                 .on_action(|action| Message::Server(Msg::Edit(action)))
                 .font(Font::MONOSPACE)
                 .height(Length::Fill)
-                .into()
+                .boxed()
         } else {
             self.form_body()
         });
-        page.into()
+        page.boxed()
     }
 
     /// 表单主体：FTP + SFTP 两个分组
@@ -526,7 +526,7 @@ impl ServerTab {
         .spacing(12)
         .width(Length::Fill)
         .height(Length::Fill)
-        .into()
+        .boxed()
     }
 
     fn ftp_rows(&self) -> Element<'_, Message> {
@@ -541,14 +541,17 @@ impl ServerTab {
         ]
         .spacing(6);
         let ftps = row![
-            checkbox("启用 FTPS（显式 TLS）", self.ftp.ftps.enabled)
+            checkbox(self.ftp.ftps.enabled)
+                .label("启用 FTPS（显式 TLS）")
                 .on_toggle(|v| Message::Server(Msg::Ftp(FtpMsg::FtpsEnabled(v)))),
-            checkbox("强制 SSL（require_ssl）", self.ftp.ftps.require_ssl)
+            checkbox(self.ftp.ftps.require_ssl)
+                .label("强制 SSL（require_ssl）")
                 .on_toggle(|v| Message::Server(Msg::Ftp(FtpMsg::FtpsRequireSsl(v)))),
         ]
         .spacing(16);
         column![
-            checkbox("启用 FTP 服务", self.ftp.enabled)
+            checkbox(self.ftp.enabled)
+                .label("启用 FTP 服务")
                 .on_toggle(|v| Message::Server(Msg::Ftp(FtpMsg::Enabled(v)))),
             form_row(
                 "监听地址 bind_ip",
@@ -571,14 +574,16 @@ impl ServerTab {
             form_row(
                 "连接模式",
                 pick_list(
-                    ModeOption::ALL,
                     Some(self.ftp.connection_mode),
-                    |m| Message::Server(Msg::Ftp(FtpMsg::ConnectionMode(m))),
+                    ModeOption::ALL,
+                    ToString::to_string,
                 )
+                .on_select(|m| Message::Server(Msg::Ftp(FtpMsg::ConnectionMode(m))))
                 .width(Length::Fixed(260.0)),
             ),
             form_row("被动端口区间", passive),
-            checkbox("允许匿名登录", self.ftp.allow_anonymous)
+            checkbox(self.ftp.allow_anonymous)
+                .label("允许匿名登录")
                 .on_toggle(|v| Message::Server(Msg::Ftp(FtpMsg::AllowAnonymous(v)))),
             form_row(
                 "匿名主目录",
@@ -601,12 +606,13 @@ impl ServerTab {
             ),
         ]
         .spacing(8)
-        .into()
+        .boxed()
     }
 
     fn sftp_rows(&self) -> Element<'_, Message> {
         column![
-            checkbox("启用 SFTP 服务", self.sftp.enabled)
+            checkbox(self.sftp.enabled)
+                .label("启用 SFTP 服务")
                 .on_toggle(|v| Message::Server(Msg::Sftp(SftpMsg::Enabled(v)))),
             form_row(
                 "监听地址 bind_ip",
@@ -640,12 +646,12 @@ impl ServerTab {
             ),
         ]
         .spacing(8)
-        .into()
+        .boxed()
     }
 
     fn status_rows(&self) -> Element<'_, Message> {
         let Some(status) = &self.status else {
-            return text("尚未获取到状态（未连接 fftpd）").size(13).into();
+            return text("尚未获取到状态（未连接 fftpd）").size(13).boxed();
         };
         column![
             kv("FTP 服务：", running(status.ftp_running)),
@@ -656,7 +662,7 @@ impl ServerTab {
             kv("IPC 端点：", text(status.endpoint.clone()).size(13)),
         ]
         .spacing(6)
-        .into()
+        .boxed()
     }
 }
 
@@ -666,19 +672,18 @@ fn section<'a>(title: &'a str, rows: Element<'a, Message>) -> Element<'a, Messag
         .padding(16)
         .width(Length::Fill)
         .style(container::rounded_box)
-        .into()
+        .boxed()
 }
 
 /// 状态卡片的“标签：值”行
-fn kv<'a>(
-    label: &'a str,
-    value: impl Into<Element<'a, Message>>,
-) -> iced::widget::Row<'a, Message> {
-    row![text(label).size(13), value.into()].spacing(8)
+///
+/// 0.15 起 `From<W> for Element` 被移除：控件入参改用 [`Widget`] 约束。
+fn kv<'a>(label: &'a str, value: impl Widget<Message> + 'a) -> Element<'a, Message> {
+    row![text(label).size(13), value].spacing(8).boxed()
 }
 
 /// 服务运行状态着色文本
-fn running<'a>(running: bool) -> Element<'a, Message> {
+fn running(running: bool) -> Element<'static, Message> {
     text(if running { "运行中" } else { "未运行" })
         .size(13)
         .color(if running {
@@ -686,7 +691,7 @@ fn running<'a>(running: bool) -> Element<'a, Message> {
         } else {
             crate::tabs::ERROR_COLOR
         })
-        .into()
+        .boxed()
 }
 
 /// 解析无符号数值字段

@@ -8,7 +8,9 @@
 use std::collections::VecDeque;
 
 use fftp_ipc::protocol::{Command, LogEntry};
-use iced::widget::{button, checkbox, column, pick_list, row, scrollable, text, text_input};
+use iced::widget::{
+    button, checkbox, column, pick_list, row, scrollable, text, text_input, Widget,
+};
 use iced::{Color, Element, Length, Task};
 
 use crate::app::Message;
@@ -222,7 +224,8 @@ impl LogsTab {
         }
         let count = self.displayed().len();
         self.info = Some(format!("已复制 {count} 条日志到剪贴板"));
-        iced::clipboard::write(content)
+        // 0.15 起 `clipboard::write` 返回具体错误类型，映射为无副作用消息
+        iced::clipboard::write(content).map(|_| Message::Ignored)
     }
 
     /// 导出当前显示内容到文件
@@ -288,11 +291,16 @@ impl LogsTab {
     }
 
     /// 自动滚动到底部（仅实时视图且开启时）
+    ///
+    /// 0.14 起滚动操作迁移至 [`iced::widget::operation`]，滚动区标识为
+    /// [`iced::widget::Id`]；0.15 起归入 `operation::scrollable` 子模块并
+    /// 显式指定动画（新日志逐条追加，取 `Instant` 直达底部）。
     fn auto_scroll_task(&self) -> Task<Message> {
         if self.auto_scroll && self.viewing == Viewing::Live {
-            scrollable::snap_to(
-                scrollable::Id::new(LOG_SCROLL_ID),
+            iced::widget::operation::scrollable::snap_to(
+                iced::widget::Id::new(LOG_SCROLL_ID),
                 scrollable::RelativeOffset { x: 0.0, y: 1.0 },
+                iced::widget::operation::Animation::Instant,
             )
         } else {
             Task::none()
@@ -394,14 +402,18 @@ impl LogsTab {
     pub fn view(&self) -> Element<'_, Message> {
         let toolbar = row![
             text("级别：").size(14),
-            pick_list(LevelFilter::ALL, Some(self.filter), |filter| {
-                Message::Logs(Msg::Filter(filter))
-            })
+            pick_list(
+                Some(self.filter),
+                LevelFilter::ALL,
+                ToString::to_string,
+            )
+            .on_select(|filter| Message::Logs(Msg::Filter(filter)))
             .placeholder("全部"),
             text_input("搜索消息/来源/用户/IP", &self.search)
                 .on_input(|v| Message::Logs(Msg::Search(v)))
                 .width(Length::Fixed(240.0)),
-            checkbox("自动滚动", self.auto_scroll)
+            checkbox(self.auto_scroll)
+                .label("自动滚动")
                 .on_toggle(|v| Message::Logs(Msg::ToggleAutoScroll(v))),
             button(text("清空")).on_press(Message::Logs(Msg::Clear)),
             button(text("复制")).on_press(Message::Logs(Msg::Copy)),
@@ -413,10 +425,11 @@ impl LogsTab {
         let file_bar = row![
             text("文件历史：").size(14),
             pick_list(
-                self.files.as_slice(),
                 self.selected.clone(),
-                |option| Message::Logs(Msg::SelectFile(option)),
+                self.files.as_slice(),
+                ToString::to_string,
             )
+            .on_select(|option| Message::Logs(Msg::SelectFile(option)))
             .placeholder("（无日志文件）"),
             button(text("加载")).on_press(Message::Logs(Msg::LoadFile)),
             button(text("返回实时")).on_press_maybe(
@@ -446,10 +459,11 @@ impl LogsTab {
         let rows = column(self.displayed().into_iter().map(entry_row)).spacing(2);
         page = page.push(
             scrollable(rows)
-                .id(scrollable::Id::new(LOG_SCROLL_ID))
-                .height(Length::Fill),
+                .id(iced::widget::Id::new(LOG_SCROLL_ID))
+                .height(Length::Fill)
+                .boxed(),
         );
-        page.into()
+        page.boxed()
     }
 }
 
@@ -475,11 +489,12 @@ fn entry_row(entry: &LogEntry) -> Element<'_, Message> {
             text(format!("{}@{}", entry.username, entry.client_ip))
                 .size(12)
                 .color(WARN_COLOR)
-                .width(Length::Fixed(160.0)),
+                .width(Length::Fixed(160.0))
+                .boxed(),
         );
     }
-    line = line.push(text(entry.message.clone()).size(12));
-    line.into()
+    line = line.push(text(entry.message.clone()).size(12).boxed());
+    line.boxed()
 }
 
 /// 级别着色

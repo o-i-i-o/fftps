@@ -4,7 +4,9 @@
 //! 表格展示 时间/用户/IP/操作/文件/大小/协议/结果，支持按用户与操作过滤。
 
 use fftp_ipc::protocol::{Command, FileOpLogEntry};
-use iced::widget::{button, column, container, pick_list, row, scrollable, text, text_input};
+use iced::widget::{
+    button, column, container, pick_list, row, scrollable, text, text_input, Widget,
+};
 use iced::{Element, Length, Task};
 
 use crate::app::Message;
@@ -178,10 +180,11 @@ impl FileLogsTab {
         let toolbar = row![
             text("文件日志").size(22),
             pick_list(
-                self.files.as_slice(),
                 self.selected.clone(),
-                |option| Message::FileLogs(Msg::SelectFile(option)),
+                self.files.as_slice(),
+                ToString::to_string,
             )
+            .on_select(|option| Message::FileLogs(Msg::SelectFile(option)))
             .placeholder("（无审计日志文件）")
             .width(Length::Fixed(220.0)),
             button(text("刷新")).on_press_maybe(
@@ -205,7 +208,7 @@ impl FileLogsTab {
             page = page.push(error_line(error));
         }
         page = page.push(self.table());
-        page.into()
+        page.boxed()
     }
 
     /// 表格（表头 + 行）
@@ -234,7 +237,7 @@ impl FileLogsTab {
         .width(Length::Fill)
         .height(Length::Fill)
         .style(container::rounded_box)
-        .into()
+        .boxed()
     }
 }
 
@@ -263,7 +266,7 @@ fn entry_row(entry: &FileOpLogEntry) -> Element<'_, Message> {
             .width(Length::Fixed(60.0)),
     ]
     .spacing(10)
-    .into()
+    .boxed()
 }
 
 /// 字节数的可读展示（整数运算，避免浮点精度告警）

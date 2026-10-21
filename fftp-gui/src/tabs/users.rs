@@ -12,7 +12,9 @@ use argon2::{Algorithm, Argon2, Version};
 use chrono::Utc;
 use fftp_common::users::{is_safe_username, Permissions, User, UserManager};
 use fftp_ipc::protocol::Command;
-use iced::widget::{button, checkbox, column, container, row, scrollable, text, text_input};
+use iced::widget::{
+    button, checkbox, column, container, row, scrollable, text, text_input, Widget,
+};
 use iced::{Element, Length, Task};
 
 use crate::app::Message;
@@ -533,13 +535,13 @@ impl UsersTab {
             Dialog::None => text("口令以 Argon2id 哈希存储；变更经“保存”整体提交到 users.json。")
                 .size(12)
                 .color(MUTED_COLOR)
-                .into(),
+                .boxed(),
             Dialog::User(form) => self.user_dialog(form, connected),
             Dialog::Password(form) => password_dialog(form, connected, self.busy),
             Dialog::Delete(username) => delete_dialog(username, connected, self.busy),
         });
         page = page.push(self.user_list());
-        page.into()
+        page.boxed()
     }
 
     /// 用户列表
@@ -567,11 +569,14 @@ impl UsersTab {
         .width(Length::Fill)
         .height(Length::Fill)
         .style(container::rounded_box)
-        .into()
+        .boxed()
     }
 
     /// 新增/编辑对话框
-    fn user_dialog(&self, form: &UserForm, connected: bool) -> Element<'_, Message> {
+    ///
+    /// 文本输入借用 `form` 的字段，返回值生命周期显式绑定到 `form`
+    ///（调用处 `form` 借自 `&self`，与视图借用同域）。
+    fn user_dialog<'a>(&self, form: &'a UserForm, connected: bool) -> Element<'a, Message> {
         let title = if form.editing.is_some() {
             "编辑用户"
         } else {
@@ -620,38 +625,7 @@ impl UsersTab {
             ));
         }
 
-        let perms = column(Perm::ALL.map(|perm| {
-            Element::from(checkbox(perm.label(), perm.get(&form.permissions)).on_toggle(
-                move |on| Message::Users(Msg::Form(FormMsg::Perm(perm, on))),
-            ))
-        }))
-        .spacing(4);
-
-        fields = fields.push(row![
-            column![
-                checkbox("启用", form.enabled)
-                    .on_toggle(|v| Message::Users(Msg::Form(FormMsg::Enabled(v)))),
-                checkbox("管理员", form.is_admin)
-                    .on_toggle(|v| Message::Users(Msg::Form(FormMsg::Admin(v)))),
-            ]
-            .spacing(6),
-            column![
-                form_row(
-                    "配额（MB）",
-                    text_input("不限", &form.quota_mb)
-                        .on_input(|v| Message::Users(Msg::Form(FormMsg::Quota(v))))
-                        .width(Length::Fixed(120.0)),
-                ),
-                form_row(
-                    "限速（KB/s）",
-                    text_input("不限", &form.speed_limit_kbps)
-                        .on_input(|v| Message::Users(Msg::Form(FormMsg::SpeedLimit(v))))
-                        .width(Length::Fixed(120.0)),
-                ),
-            ]
-            .spacing(6),
-            column![text("权限").size(13), perms].spacing(6),
-        ].spacing(24).align_y(iced::Alignment::Start));
+        fields = fields.push(account_row(form));
 
         if let Some(error) = &form.error {
             fields = fields.push(error_line(error));
@@ -663,14 +637,15 @@ impl UsersTab {
                 ),
                 button(text("取消")).on_press_maybe((!self.busy).then_some(Message::Users(Msg::Close))),
             ]
-            .spacing(8),
+            .spacing(8)
+            .boxed(),
         );
 
         container(fields.spacing(8))
             .padding(16)
             .width(Length::Fill)
             .style(container::rounded_box)
-            .into()
+            .boxed()
     }
 }
 
@@ -721,7 +696,49 @@ fn user_row(user: &User, busy: bool) -> Element<'_, Message> {
         .width(Length::Fixed(210.0)),
     ]
     .spacing(10)
-    .into()
+    .boxed()
+}
+
+/// 对话框中的账号属性行：启用/管理员开关 + 配额/限速表单 + 权限位
+fn account_row(form: &UserForm) -> Element<'_, Message> {
+    let perms = column(Perm::ALL.map(|perm| {
+        checkbox(perm.get(&form.permissions))
+            .label(perm.label())
+            .on_toggle(move |on| Message::Users(Msg::Form(FormMsg::Perm(perm, on))))
+            .boxed()
+    }))
+    .spacing(4);
+
+    row![
+        column![
+            checkbox(form.enabled)
+                .label("启用")
+                .on_toggle(|v| Message::Users(Msg::Form(FormMsg::Enabled(v)))),
+            checkbox(form.is_admin)
+                .label("管理员")
+                .on_toggle(|v| Message::Users(Msg::Form(FormMsg::Admin(v)))),
+        ]
+        .spacing(6),
+        column![
+            form_row(
+                "配额（MB）",
+                text_input("不限", &form.quota_mb)
+                    .on_input(|v| Message::Users(Msg::Form(FormMsg::Quota(v))))
+                    .width(Length::Fixed(120.0)),
+            ),
+            form_row(
+                "限速（KB/s）",
+                text_input("不限", &form.speed_limit_kbps)
+                    .on_input(|v| Message::Users(Msg::Form(FormMsg::SpeedLimit(v))))
+                    .width(Length::Fixed(120.0)),
+            ),
+        ]
+        .spacing(6),
+        column![text("权限").size(13), perms].spacing(6),
+    ]
+    .spacing(24)
+    .align_y(iced::Alignment::Start)
+    .boxed()
 }
 
 /// 改密对话框
@@ -752,13 +769,14 @@ fn password_dialog(form: &PasswordForm, connected: bool, busy: bool) -> Element<
             button(text("保存")).on_press_maybe((connected && !busy).then_some(Message::Users(Msg::Submit))),
             button(text("取消")).on_press_maybe((!busy).then_some(Message::Users(Msg::Close))),
         ]
-        .spacing(8),
+        .spacing(8)
+        .boxed(),
     );
     container(fields)
         .padding(16)
         .width(Length::Fill)
         .style(container::rounded_box)
-        .into()
+        .boxed()
 }
 
 /// 删除确认对话框
@@ -780,22 +798,22 @@ fn delete_dialog(username: &str, connected: bool, busy: bool) -> Element<'_, Mes
     .padding(16)
     .width(Length::Fill)
     .style(container::rounded_box)
-    .into()
+    .boxed()
 }
 
 /// 建议主目录行（点击填入表单）
 fn suggested_row(username: &str) -> Element<'static, Message> {
     let buttons = suggested_dirs(username).into_iter().map(|dir| {
-        Element::from(button(text(shorten(&dir, 24))).on_press(Message::Users(Msg::Form(
-            FormMsg::HomeDir(dir),
-        ))))
+        button(text(shorten(&dir, 24)))
+            .on_press(Message::Users(Msg::Form(FormMsg::HomeDir(dir))))
+            .boxed()
     });
     row![
         text("建议目录").size(13).width(Length::Fixed(150.0)),
         row(buttons).spacing(6),
     ]
     .spacing(8)
-    .into()
+    .boxed()
 }
 
 /// 建议的主目录候选（本地计算，参考旧版 Linux GUI 的 `suggested_dirs`）

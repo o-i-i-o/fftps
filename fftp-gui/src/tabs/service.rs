@@ -9,7 +9,7 @@
 
 use fftp_common::config::{Config, LoggingConfig};
 use fftp_ipc::protocol::{Command, ServiceTarget};
-use iced::widget::{button, checkbox, column, container, pick_list, row, text, text_input};
+use iced::widget::{button, checkbox, column, container, pick_list, row, text, text_input, Widget};
 use iced::{Element, Length, Task};
 
 use crate::app::Message;
@@ -445,7 +445,7 @@ impl ServiceTab {
         if let Some(error) = &self.error {
             page = page.push(error_line(error));
         }
-        page.into()
+        page.boxed()
     }
 
     /// 启停控制卡片
@@ -456,16 +456,19 @@ impl ServiceTab {
             (ServiceTarget::Sftp, "SFTP 服务"),
         ];
         let rows = column(targets.map(|(which, label)| {
-            Element::from(row![
+            row![
                 text(label).size(14).width(Length::Fixed(120.0)),
                 row(Action::ALL.map(|action| {
-                    Element::from(button(text(action.label())).on_press_maybe(
-                        (connected && !self.busy)
-                            .then_some(Message::Service(Msg::Op(action, which))),
-                    ))
+                    button(text(action.label()))
+                        .on_press_maybe(
+                            (connected && !self.busy)
+                                .then_some(Message::Service(Msg::Op(action, which))),
+                        )
+                        .boxed()
                 }))
                 .spacing(8),
-            ])
+            ]
+            .boxed()
         }))
         .spacing(10);
 
@@ -473,7 +476,7 @@ impl ServiceTab {
             .padding(16)
             .width(Length::Fill)
             .style(container::rounded_box)
-            .into()
+            .boxed()
     }
 
     /// 系统服务卡片：安装/卸载服务 + 开机自启开关（平台分支，不依赖 IPC 连接）
@@ -484,9 +487,11 @@ impl ServiceTab {
             "Linux：systemctl --user 管理 fftpd 用户服务（安装 = enable --now，自启 = enable/disable）"
         };
         let rows = row(SysAction::ALL.map(|action| {
-            Element::from(button(text(action.label())).on_press_maybe(
-                (!self.sys_busy).then_some(Message::Service(Msg::SysOp(action))),
-            ))
+            button(text(action.label()))
+                .on_press_maybe(
+                    (!self.sys_busy).then_some(Message::Service(Msg::SysOp(action))),
+                )
+                .boxed()
         }))
         .spacing(8);
 
@@ -501,7 +506,7 @@ impl ServiceTab {
         .padding(16)
         .width(Length::Fill)
         .style(container::rounded_box)
-        .into()
+        .boxed()
     }
 
     /// 日志设置卡片
@@ -516,10 +521,11 @@ impl ServiceTab {
             form_row(
                 "日志级别",
                 pick_list(
-                    LogLevel::ALL,
                     Some(self.log.log_level),
-                    |level| Message::Service(Msg::LogField(LogField::Level(level))),
+                    LogLevel::ALL,
+                    ToString::to_string,
                 )
+                .on_select(|level| Message::Service(Msg::LogField(LogField::Level(level))))
                 .width(Length::Fixed(160.0)),
             ),
             form_row(
@@ -534,7 +540,8 @@ impl ServiceTab {
                     .on_input(|v| Message::Service(Msg::LogField(LogField::MaxFiles(v))))
                     .width(Length::Fixed(160.0)),
             ),
-            checkbox("允许日志实时推送给前端（enable_gui_logging）", self.log.enable_gui_logging)
+            checkbox(self.log.enable_gui_logging)
+                .label("允许日志实时推送给前端（enable_gui_logging）")
                 .on_toggle(|v| Message::Service(Msg::LogField(LogField::GuiLogging(v)))),
             row![
                 button(text(if self.log_saving { "保存中…" } else { "保存日志设置" }))
@@ -553,24 +560,22 @@ impl ServiceTab {
 
         // 空表单时提示默认值来源
         if self.log.max_log_size.is_empty() {
-            fields = fields.push(
-                text("尚未载入日志设置（默认：10 MiB / 保留 10 个文件）。")
-                    .size(12),
-            );
+            fields = fields
+                .push(text("尚未载入日志设置（默认：10 MiB / 保留 10 个文件）。").size(12).boxed());
         }
 
         container(column![text("日志设置").size(16), fields].spacing(10))
             .padding(16)
             .width(Length::Fill)
             .style(container::rounded_box)
-            .into()
+            .boxed()
     }
 }
 
 /// 运行状态行
 fn status_rows(status: Option<&ServerStatus>) -> Element<'_, Message> {
     let Some(status) = status else {
-        return text("尚未获取到状态（未连接 fftpd）").size(13).into();
+        return text("尚未获取到状态（未连接 fftpd）").size(13).boxed();
     };
     column![
         kv("FTP 服务：", running(status.ftp_running)),
@@ -578,23 +583,22 @@ fn status_rows(status: Option<&ServerStatus>) -> Element<'_, Message> {
         kv("fftpd 版本：", text(status.version.clone()).size(13)),
     ]
     .spacing(6)
-    .into()
+    .boxed()
 }
 
 /// “标签：值”行
-fn kv<'a>(
-    label: &'a str,
-    value: impl Into<Element<'a, Message>>,
-) -> iced::widget::Row<'a, Message> {
-    row![text(label).size(13), value.into()].spacing(8)
+///
+/// 0.15 起 `From<W> for Element` 被移除：控件入参改用 [`Widget`] 约束。
+fn kv<'a>(label: &'a str, value: impl Widget<Message> + 'a) -> Element<'a, Message> {
+    row![text(label).size(13), value].spacing(8).boxed()
 }
 
 /// 服务运行状态着色文本
-fn running<'a>(running: bool) -> Element<'a, Message> {
+fn running(running: bool) -> Element<'static, Message> {
     text(if running { "运行中" } else { "未运行" })
         .size(13)
         .color(if running { INFO_COLOR } else { ERROR_COLOR })
-        .into()
+        .boxed()
 }
 
 /// 刷新运行状态（`GetStatus` → 服务器页状态）

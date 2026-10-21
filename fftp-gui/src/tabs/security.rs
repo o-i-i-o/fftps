@@ -8,7 +8,7 @@
 
 use fftp_common::config::{Config, SecurityConfig};
 use fftp_ipc::protocol::Command;
-use iced::widget::{button, checkbox, column, container, row, text, text_input};
+use iced::widget::{button, checkbox, column, container, row, text, text_input, Widget};
 use iced::{Element, Length, Task};
 
 use crate::app::Message;
@@ -309,22 +309,25 @@ impl SecurityTab {
         if let Some(error) = &self.error {
             page = page.push(error_line(error));
         }
-        page = page.push(row![
-            column![
-                section("IP 名单（CIDR）", self.ip_list_rows()),
-                section("连接数", self.conn_rows()),
+        page = page.push(
+            row![
+                column![
+                    section("IP 名单（CIDR）", self.ip_list_rows()),
+                    section("连接数", self.conn_rows()),
+                ]
+                .spacing(12)
+                .width(Length::Fill),
+                column![
+                    section("登录防护 / fail2ban", self.guard_rows()),
+                    section("其他", self.misc_rows()),
+                ]
+                .spacing(12)
+                .width(Length::Fill),
             ]
             .spacing(12)
-            .width(Length::Fill),
-            column![
-                section("登录防护 / fail2ban", self.guard_rows()),
-                section("其他", self.misc_rows()),
-            ]
-            .spacing(12)
-            .width(Length::Fill),
-        ]
-        .spacing(12));
-        page.into()
+            .boxed(),
+        );
+        page.boxed()
     }
 
     /// IP 名单编辑区
@@ -355,7 +358,7 @@ impl SecurityTab {
             ip_list(&self.cfg.denied_ips, Msg::RemoveDenied),
         ]
         .spacing(6);
-        column![allowed, denied].spacing(12).into()
+        column![allowed, denied].spacing(12).boxed()
     }
 
     /// 连接数设置
@@ -375,13 +378,14 @@ impl SecurityTab {
             ),
         ]
         .spacing(8)
-        .into()
+        .boxed()
     }
 
     /// 登录防护与 fail2ban
     fn guard_rows(&self) -> Element<'_, Message> {
         column![
-            checkbox("启用 fail2ban", self.cfg.fail2ban_enabled)
+            checkbox(self.cfg.fail2ban_enabled)
+                .label("启用 fail2ban")
                 .on_toggle(|v| Message::Security(Msg::Field(Field::Fail2banEnabled(v)))),
             form_row(
                 "触发封禁的失败次数",
@@ -403,26 +407,27 @@ impl SecurityTab {
             ),
         ]
         .spacing(8)
-        .into()
+        .boxed()
     }
 
     /// 其他开关
     fn misc_rows(&self) -> Element<'_, Message> {
         column![
-            checkbox("允许跟随符号链接（allow_symlinks）", self.cfg.allow_symlinks)
+            checkbox(self.cfg.allow_symlinks)
+                .label("允许跟随符号链接（allow_symlinks）")
                 .on_toggle(|v| Message::Security(Msg::Field(Field::AllowSymlinks(v)))),
             text("说明：名单为空表示全部放行；拒绝名单优先于允许名单。")
                 .size(12),
         ]
         .spacing(8)
-        .into()
+        .boxed()
     }
 }
 
 /// 名单编辑列表
 fn ip_list(entries: &[String], on_remove: fn(usize) -> Msg) -> Element<'_, Message> {
     if entries.is_empty() {
-        return text("（空）").size(12).into();
+        return text("（空）").size(12).boxed();
     }
     column(entries.iter().enumerate().map(|(index, entry)| {
         row![
@@ -432,10 +437,10 @@ fn ip_list(entries: &[String], on_remove: fn(usize) -> Msg) -> Element<'_, Messa
                 .style(iced::widget::button::danger),
         ]
         .spacing(8)
-        .into()
+        .boxed()
     }))
     .spacing(4)
-    .into()
+    .boxed()
 }
 
 /// 分组卡片
@@ -444,7 +449,7 @@ fn section<'a>(title: &'a str, rows: Element<'a, Message>) -> Element<'a, Messag
         .padding(16)
         .width(Length::Fill)
         .style(container::rounded_box)
-        .into()
+        .boxed()
 }
 
 /// 解析无符号数值
