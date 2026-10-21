@@ -16,8 +16,13 @@ anyhow = { workspace = true }
 tracing = { workspace = true }
 chrono = { workspace = true }
 
-# SSH/SFTP 协议层（自研 SFTP 报文处理基于 russh 传输）
+# SSH/SFTP 协议层（russh 传输 + 并入的 russh-sftp 协议实现）
 russh = "0.64"
+bytes = { workspace = true }
+serde = { workspace = true }
+serde_bytes = { workspace = true }
+bitflags = { workspace = true }
+thiserror = { workspace = true }
 
 # 扩展哈希（md5sum/sha256sum）
 md-5 = "0.11"

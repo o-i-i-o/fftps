@@ -16,11 +16,26 @@ use fftp_common::rate_limit::RateLimiter;
 use fftp_common::users::{Permissions, UserManager};
 
 use crate::path_resolve::{self, PathResolveError};
-use crate::protocol;
+use crate::protocol::{Status, StatusReply, StatusCode};
 use crate::types::{HANDLE_TIMEOUT_SECS, SftpFileHandle};
 
 /// 权限缓存有效期
 const PERMISSION_CACHE_TTL: Duration = Duration::from_secs(30);
+
+/// 构造带自定义消息的错误应答
+pub(crate) fn status_err(status_code: StatusCode, message: &str) -> StatusReply {
+    StatusReply::new(status_code).with_message(message)
+}
+
+/// 构造 `SSH_FXP_STATUS` 成功应答
+pub(crate) fn status_ok(id: u32) -> Status {
+    Status {
+        id,
+        status_code: StatusCode::Ok,
+        error_message: "OK".to_string(),
+        language_tag: "en-US".to_string(),
+    }
+}
 
 /// SFTP 会话状态
 pub struct SftpState {
@@ -36,10 +51,6 @@ pub struct SftpState {
     /// 打开的文件/目录句柄
     pub handles: HashMap<String, SftpFileHandle>,
     pub next_handle_id: u32,
-    /// 协商后的 SFTP 版本
-    pub sftp_version: u32,
-    /// 粘包缓冲
-    pub buffer: Vec<u8>,
     /// 持有 LOCK 的文件集合
     pub locked_files: HashSet<PathBuf>,
     pub client_ip: String,
@@ -47,7 +58,6 @@ pub struct SftpState {
     /// 用户级传输限速器（`speed_limit_kbps` 为 0/未设置时为 None）
     pub rate_limiter: Option<RateLimiter>,
     pub cache_expiry: Option<Instant>,
-    pub last_handle_cleanup: Instant,
     /// 是否允许跟随符号链接（`security.allow_symlinks`）
     pub allow_symlinks: bool,
 }
@@ -73,14 +83,11 @@ impl SftpState {
             logging,
             handles: HashMap::new(),
             next_handle_id: 0,
-            sftp_version: 3,
-            buffer: Vec::new(),
             locked_files: HashSet::new(),
             client_ip,
             cached_permissions: None,
             rate_limiter: None,
             cache_expiry: None,
-            last_handle_cleanup: Instant::now(),
             allow_symlinks,
         };
         state.cache_permissions();
@@ -151,13 +158,13 @@ impl SftpState {
         }
     }
 
-    /// 路径解析失败时转成 `SSH_FXP_STATUS` 应答
+    /// 路径解析失败时转成 `SSH_FX_NO_SUCH_FILE` 错误应答
     ///
     /// # Errors
-    /// 返回可直接回给客户端的 `SSH_FXP_STATUS` 报文（长度前缀完整）
-    pub fn resolve_path_checked(&self, id: u32, path: &str) -> Result<PathBuf, Vec<u8>> {
+    /// 越狱/非法路径时返回可直接回给客户端的 [`StatusReply`]
+    pub fn resolve_path_or_err(&self, path: &str) -> Result<PathBuf, StatusReply> {
         self.resolve_path(path)
-            .map_err(|e| Self::resolve_error_packet(id, path, e))
+            .map_err(|e| Self::resolve_error_reply(path, e))
     }
 
     /// 不跟随符号链接的路径解析（LSTAT / READLINK）：
@@ -180,31 +187,26 @@ impl SftpState {
         self.resolve_path(path)
     }
 
-    /// [`Self::resolve_path_no_follow`] 的报文化包装
+    /// [`Self::resolve_path_no_follow`] 的错误应答化包装
     ///
     /// # Errors
-    /// 返回可直接回给客户端的 `SSH_FXP_STATUS` 报文（长度前缀完整）
-    pub fn resolve_path_no_follow_checked(&self, id: u32, path: &str) -> Result<PathBuf, Vec<u8>> {
+    /// 返回可直接回给客户端的 [`StatusReply`]
+    pub fn resolve_path_no_follow_or_err(&self, path: &str) -> Result<PathBuf, StatusReply> {
         self.resolve_path_no_follow(path)
-            .map_err(|e| Self::resolve_error_packet(id, path, e))
+            .map_err(|e| Self::resolve_error_reply(path, e))
     }
 
-    /// 路径解析错误 → `SSH_FXP_STATUS` 应答
-    fn resolve_error_packet(id: u32, path: &str, e: PathResolveError) -> Vec<u8> {
+    /// 路径解析错误 → 错误应答
+    fn resolve_error_reply(path: &str, e: PathResolveError) -> StatusReply {
         tracing::warn!("Path resolve failed for '{path}': {e}");
-        protocol::build_status_packet(
-            id,
-            crate::types::SSH_FX_NO_SUCH_FILE,
-            &e.to_string(),
-            "",
-        )
+        status_err(StatusCode::NoSuchFile, &e.to_string())
     }
 
     /// 符号链接必须指向 home 之内（rename/symlink 场景的二次校验）
     ///
     /// # Errors
-    /// 返回可直接回给客户端的 `SSH_FXP_STATUS` 报文
-    pub async fn check_symlink_in_home(&self, id: u32, path: &Path) -> Result<(), Vec<u8>> {
+    /// 链接越出 home 或无法解析时返回错误应答
+    pub async fn check_symlink_in_home(&self, path: &Path) -> Result<(), StatusReply> {
         if !path.is_symlink() {
             return Ok(());
         }
@@ -223,11 +225,9 @@ impl SftpState {
                         let home = PathBuf::from(&self.home_dir);
                         if !crate::path_resolve::path_starts_with_ignore_case(&canon, &home) {
                             tracing::warn!("Symlink points outside home: {path:?} -> {canon:?}");
-                            return Err(protocol::build_status_packet(
-                                id,
-                                crate::types::SSH_FX_PERMISSION_DENIED,
+                            return Err(status_err(
+                                StatusCode::PermissionDenied,
                                 "Permission denied: symlink target outside home",
-                                "",
                             ));
                         }
                         Ok(())
@@ -237,23 +237,16 @@ impl SftpState {
                             "Symlink target cannot be resolved (rejecting for security): \
                              {path:?} -> {resolved:?}, error: {e}"
                         );
-                        Err(protocol::build_status_packet(
-                            id,
-                            crate::types::SSH_FX_PERMISSION_DENIED,
+                        Err(status_err(
+                            StatusCode::PermissionDenied,
                             "Permission denied: symlink target cannot be resolved",
-                            "",
                         ))
                     }
                 }
             }
             Err(e) => {
                 tracing::warn!("Cannot read symlink {path:?}: {e}");
-                Err(protocol::build_status_packet(
-                    id,
-                    crate::types::SSH_FX_FAILURE,
-                    "Failed to read symlink",
-                    "",
-                ))
+                Err(status_err(StatusCode::Failure, "Failed to read symlink"))
             }
         }
     }
@@ -412,8 +405,6 @@ mod tests {
         assert_eq!(state.username, Some("testuser".to_string()));
         assert!(state.handles.is_empty());
         assert_eq!(state.next_handle_id, 0);
-        assert_eq!(state.sftp_version, 3);
-        assert_eq!(state.buffer, Vec::<u8>::new());
         assert!(state.locked_files.is_empty());
         assert_eq!(state.client_ip, "127.0.0.1");
     }
@@ -467,15 +458,11 @@ mod tests {
     }
 
     #[test]
-    fn test_resolve_path_checked_error_packet() {
+    fn test_resolve_path_or_err_rejects_escape() {
         let dir = tempfile::tempdir().unwrap();
         let state = create_test_sftp_state(dir.path());
-        let err = state.resolve_path_checked(7, "/../escape").unwrap_err();
-        // 应答带 4 字节长度前缀：SSH_FXP_STATUS + id + 状态码
-        let payload = &err[4..];
-        assert_eq!(payload[0], crate::types::SSH_FXP_STATUS);
-        let id = u32::from_be_bytes([payload[1], payload[2], payload[3], payload[4]]);
-        assert_eq!(id, 7);
+        let err = state.resolve_path_or_err("/../escape").unwrap_err();
+        assert_eq!(err.status_code, StatusCode::NoSuchFile);
     }
 
     #[test]
@@ -512,7 +499,6 @@ mod tests {
 
     #[test]
     fn test_cleanup_releases_locks() {
-        use crate::types::SftpFileHandle;
         let dir = tempfile::tempdir().unwrap();
         let mut state = create_test_sftp_state(dir.path());
         let path = dir.path().join("locked.txt");

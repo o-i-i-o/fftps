@@ -1,8 +1,9 @@
 //! SFTP SSH 会话处理器（`russh::server::Handler`）
 //!
-//! 负责认证（口令 / 公钥）、会话通道管理与 SFTP 数据泵。
+//! 负责认证（口令 / 公钥）与 SFTP 子系统通道接入。
 //! 认证对接 `fftp-common` 的 [`UserManager`]（口令校验 + 用户名安全检查），
 //! 公钥认证读取 `keys_dir()/<user>/authorized_keys`；失败计数接 Fail2Ban，指标接 prometheus。
+//! SFTP 报文循环由 [`run_with_config`] 移交给 [`Session`]。
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -12,16 +13,15 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use russh::keys::PublicKey;
 use russh::server::Msg;
 use russh::{Channel, ChannelId, server};
-use tokio::sync::Mutex as TokioMutex;
 
 use fftp_common::fail2ban::Fail2BanManager;
 use fftp_common::logging::Logging;
 use fftp_common::quota::QuotaManager;
 use fftp_common::users::{UserManager, is_safe_username};
 
+use crate::protocol::{self, run_with_config};
+use crate::session::Session;
 use crate::state::SftpState;
-use crate::types::{MAX_BUFFER_SIZE, MAX_PACKET_SIZE};
-use crate::{cmd_dispatch, protocol};
 
 /// 每用户并发会话计数（`max_sessions_per_user` 上限治理）
 #[derive(Default)]
@@ -106,8 +106,8 @@ pub struct SftpHandler {
     /// 文件操作审计（`fftp-common` 日志设施，可选）
     pub logging: Option<Arc<Logging>>,
     pub auth: AuthContext,
-    pub sftp_channel: Option<ChannelId>,
-    pub sftp_state: Option<Arc<TokioMutex<SftpState>>>,
+    /// 已打开、等待 subsystem 请求的会话通道
+    pub pending_channels: HashMap<ChannelId, Channel<Msg>>,
     pub client_ip: String,
     pub max_sessions_per_user: u32,
     /// 是否允许跟随符号链接（`security.allow_symlinks`）
@@ -146,8 +146,7 @@ impl SftpHandler {
                 auth_start_time: Some(std::time::Instant::now()),
                 auth_timeout_secs,
             },
-            sftp_channel: None,
-            sftp_state: None,
+            pending_channels: HashMap::new(),
             client_ip,
             max_sessions_per_user,
             allow_symlinks,
@@ -286,69 +285,6 @@ impl SftpHandler {
             }
         }
         false
-    }
-
-    /// SFTP 数据泵：粘包缓冲 → 逐包分发 → 拼接应答
-    async fn process_sftp_data(
-        state: Arc<TokioMutex<SftpState>>,
-        data: Vec<u8>,
-    ) -> Result<Vec<u8>, anyhow::Error> {
-        let mut state = state.lock().await;
-
-        if state.buffer.len() + data.len() > MAX_BUFFER_SIZE {
-            tracing::warn!(
-                "SFTP buffer overflow attempt: buffer={}, incoming={}, max={MAX_BUFFER_SIZE}",
-                state.buffer.len(),
-                data.len()
-            );
-            state.buffer.clear();
-            return Ok(protocol::build_status_packet(
-                0,
-                crate::types::SSH_FX_FAILURE,
-                "Buffer overflow",
-                "",
-            ));
-        }
-
-        state.buffer.extend_from_slice(&data);
-
-        let mut responses: Vec<u8> = Vec::new();
-
-        while state.buffer.len() >= 4 {
-            let packet_len = usize::try_from(u32::from_be_bytes([
-                state.buffer[0],
-                state.buffer[1],
-                state.buffer[2],
-                state.buffer[3],
-            ]))?;
-
-            if packet_len > MAX_PACKET_SIZE {
-                tracing::warn!(
-                    "SFTP packet too large: {packet_len} bytes (max {MAX_PACKET_SIZE})"
-                );
-                state.buffer.clear();
-                return Ok(protocol::build_status_packet(
-                    0,
-                    crate::types::SSH_FX_FAILURE,
-                    "Packet too large",
-                    "",
-                ));
-            }
-
-            if state.buffer.len() < 4 + packet_len {
-                break;
-            }
-
-            let packet: Vec<u8> = state.buffer[4..4 + packet_len].to_vec();
-            state.buffer.drain(0..4 + packet_len);
-
-            if !packet.is_empty() {
-                let response = state.dispatch_packet(&packet).await?;
-                responses.extend_from_slice(&response);
-            }
-        }
-
-        Ok(responses)
     }
 }
 
@@ -491,6 +427,8 @@ impl russh::server::Handler for SftpHandler {
         );
 
         reply.accept().await;
+        // russh 的 accept 不回传 channel，暂存等待 subsystem 请求取出
+        self.pending_channels.insert(channel.id(), channel);
         Ok(())
     }
 
@@ -576,105 +514,77 @@ impl russh::server::Handler for SftpHandler {
         name: &str,
         session: &mut server::Session,
     ) -> Result<(), Self::Error> {
-        if name == "sftp" && self.auth.authenticated {
-            if let Some(ref home_dir) = self.auth.home_dir {
-                if let Err(e) = session.channel_success(channel) {
-                    tracing::warn!("Failed to send channel_success for sftp subsystem: {e}");
-                }
-
-                self.sftp_channel = Some(channel);
-
-                let state = SftpState::new(
-                    home_dir.clone(),
-                    self.auth.username.clone(),
-                    Arc::clone(&self.user_manager),
-                    Arc::clone(&self.quota_manager),
-                    self.logging.clone(),
-                    self.client_ip.clone(),
-                    self.allow_symlinks,
-                );
-
-                self.sftp_state = Some(Arc::new(TokioMutex::new(state)));
-            } else {
-                tracing::error!("SFTP subsystem request failed: home directory not set");
-                if let Err(e) = session.channel_failure(channel) {
-                    tracing::debug!("Failed to send channel_failure (no home dir): {e}");
-                }
-            }
-        } else if let Err(e) = session.channel_failure(channel) {
-            tracing::debug!("Failed to send channel_failure (not sftp/not auth): {e}");
-        }
-        Ok(())
-    }
-
-    async fn data(
-        &mut self,
-        channel: ChannelId,
-        data: &[u8],
-        session: &mut server::Session,
-    ) -> Result<(), Self::Error> {
-        if self.sftp_channel != Some(channel) {
-            tracing::warn!(
+        if name != "sftp" {
+            tracing::debug!(
                 client_ip = %self.client_ip,
-                action = "DATA_ON_INVALID_CHANNEL",
-                channel_id = ?channel,
-                expected_channel = ?self.sftp_channel,
-                reason = "channel_mismatch_or_not_initialized",
-                "Received data on non-SFTP channel or SFTP not initialized"
+                subsystem = %name,
+                "Rejecting non-sftp subsystem request"
             );
             if let Err(e) = session.channel_failure(channel) {
-                tracing::debug!("Failed to send channel_failure (data on invalid channel): {e}");
+                tracing::debug!("Failed to send channel_failure (not sftp): {e}");
             }
             return Ok(());
         }
 
-        if self.sftp_state.is_none() {
+        if !self.auth.authenticated {
             tracing::warn!(
                 client_ip = %self.client_ip,
-                action = "DATA_BEFORE_SFTP_INIT",
-                channel_id = ?channel,
-                reason = "sftp_state_not_initialized",
-                "SFTP state not initialized, subsystem request may have failed"
+                action = "SUBSYSTEM_DENIED",
+                reason = "not_authenticated",
+                "Reject sftp subsystem request from unauthenticated session"
             );
             if let Err(e) = session.channel_failure(channel) {
-                tracing::debug!("Failed to send channel_failure: {e:?}");
+                tracing::debug!("Failed to send channel_failure (not auth): {e}");
             }
             return Ok(());
         }
 
-        if let Some(state) = &self.sftp_state {
-            match Self::process_sftp_data(Arc::clone(state), data.to_vec()).await {
-                Ok(resp) => {
-                    let handle = session.handle();
-                    if let Err(e) = handle.data(channel, resp).await {
-                        tracing::warn!("Failed to send SFTP response: {e:?}");
-                    }
-                }
-                Err(e) => {
-                    tracing::error!(
-                        client_ip = %self.client_ip,
-                        action = "SFTP_DATA_PROCESS_ERROR",
-                        error = %e,
-                        "Error processing SFTP data"
-                    );
-                }
+        let Some(home_dir) = self.auth.home_dir.clone() else {
+            tracing::error!("SFTP subsystem request failed: home directory not set");
+            if let Err(e) = session.channel_failure(channel) {
+                tracing::debug!("Failed to send channel_failure (no home dir): {e}");
             }
+            return Ok(());
+        };
+
+        if let Err(e) = session.channel_success(channel) {
+            tracing::warn!("Failed to send channel_success for sftp subsystem: {e}");
         }
 
-        Ok(())
-    }
+        // 会话通道在 channel_open_session 暂存，此处取出并整体移交给协议层
+        let Some(channel_obj) = self.pending_channels.remove(&channel) else {
+            tracing::warn!(
+                client_ip = %self.client_ip,
+                channel_id = ?channel,
+                "SFTP subsystem request on unknown channel"
+            );
+            return Ok(());
+        };
 
-    async fn channel_eof(
-        &mut self,
-        channel: ChannelId,
-        _session: &mut server::Session,
-    ) -> Result<(), Self::Error> {
-        if self.sftp_channel == Some(channel)
-            && let Some(state) = &self.sftp_state
-        {
-            let mut state = state.lock().await;
-            state.cleanup();
-        }
+        let state = SftpState::new(
+            home_dir,
+            self.auth.username.clone(),
+            Arc::clone(&self.user_manager),
+            Arc::clone(&self.quota_manager),
+            self.logging.clone(),
+            self.client_ip.clone(),
+            self.allow_symlinks,
+        );
+
+        tracing::debug!(
+            client_ip = %self.client_ip,
+            username = ?self.auth.username,
+            channel_id = ?channel,
+            "Starting SFTP subsystem protocol loop"
+        );
+
+        // 报文循环移交后自持会话状态；流关闭时 Session::drop 负责清理句柄与锁
+        run_with_config(
+            channel_obj.into_stream(),
+            Session::new(state),
+            protocol::Config::default(),
+        )
+        .await;
         Ok(())
     }
 }
@@ -690,9 +600,6 @@ impl Drop for SftpHandler {
         }
     }
 }
-
-/// 便捷再导出：INIT 版本协商上限
-pub use cmd_dispatch::MAX_SFTP_VERSION;
 
 #[cfg(test)]
 mod tests {

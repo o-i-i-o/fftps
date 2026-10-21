@@ -1,32 +1,23 @@
-//! SFTP 目录操作命令：OPENDIR / READDIR / REMOVE / MKDIR / RMDIR / RENAME / REALPATH
+//! SFTP 目录操作：OPENDIR / READDIR / REMOVE / MKDIR / RMDIR / RENAME / REALPATH
+//!
+//! 参数均为协议层解析后的强类型字段，返回协议应答类型；
+//! 报文编解码由 [`crate::protocol`] 的报文循环完成。
 
 use std::path::{Path, PathBuf};
 
-use anyhow::Result;
-
 use crate::path_resolve::{path_starts_with_ignore_case, to_ftp_path};
-use crate::protocol::{build_attrs, build_packet, build_status_packet, parse_string, parse_string_with_len, parse_u32};
-use crate::state::SftpState;
-// types 是本 crate 的协议常量/句柄类型聚合模块（等价内部预导入），逐项列举反而降低可读性
-#[allow(clippy::wildcard_imports)]
-use crate::types::*;
+use crate::protocol::{File, FileAttributes, Handle, Name, Status, StatusReply, StatusCode};
+use crate::state::{SftpState, status_err, status_ok};
+use crate::types::{SftpFileHandle, MAX_HANDLES, MAX_READDIR_ENTRIES};
 
 impl SftpState {
     /// `SSH_FXP_OPENDIR`：打开目录句柄
     ///
     /// # Errors
-    /// 报文解析失败时返回错误
-    pub fn handle_opendir(&mut self, data: &[u8]) -> Result<Vec<u8>> {
-        let id = parse_u32(data, 1)?;
-        let path = parse_string(data, 5)?;
-
+    /// 权限不足、句柄超限、路径越狱或目标不是目录时返回错误应答
+    pub fn opendir(&mut self, id: u32, path: String) -> Result<Handle, StatusReply> {
         if !self.check_permission(|p| p.can_list) {
-            return Ok(build_status_packet(
-                id,
-                SSH_FX_PERMISSION_DENIED,
-                "Permission denied",
-                "",
-            ));
+            return Err(status_err(StatusCode::PermissionDenied, "Permission denied"));
         }
 
         if self.handles.len() >= MAX_HANDLES {
@@ -34,25 +25,17 @@ impl SftpState {
                 "SFTP OPENDIR denied: too many open handles ({})",
                 self.handles.len()
             );
-            return Ok(build_status_packet(
-                id,
-                SSH_FX_FAILURE,
-                "Too many open handles",
-                "",
-            ));
+            return Err(status_err(StatusCode::Failure, "Too many open handles"));
         }
 
-        let full_path = match self.resolve_path_checked(id, &path) {
-            Ok(p) => p,
-            Err(resp) => return Ok(resp),
-        };
+        let full_path = self.resolve_path_or_err(&path)?;
 
         if !full_path.exists() {
-            return Ok(build_status_packet(id, SSH_FX_NO_SUCH_FILE, "No such directory", ""));
+            return Err(status_err(StatusCode::NoSuchFile, "No such directory"));
         }
 
         if !full_path.is_dir() {
-            return Ok(build_status_packet(id, SSH_FX_FAILURE, "Not a directory", ""));
+            return Err(status_err(StatusCode::Failure, "Not a directory"));
         }
 
         let handle = self.generate_handle();
@@ -65,153 +48,93 @@ impl SftpState {
                 last_access: std::time::Instant::now(),
             },
         );
-
-        Ok(crate::protocol::build_handle_packet(id, &handle))
+        Ok(Handle { id, handle })
     }
 
     /// `SSH_FXP_READDIR`：分批枚举目录（每批 [`MAX_READDIR_ENTRIES`] 条）
     ///
     /// # Errors
-    /// 报文解析失败时返回错误
-    // 命令主流程（权限 → 路径解析 → fs 操作 → 审计）保持单函数内联，拆分会割裂协议语义
-    #[allow(clippy::too_many_lines)]
-    pub async fn handle_readdir(&mut self, data: &[u8]) -> Result<Vec<u8>> {
-        let id = parse_u32(data, 1)?;
-        let handle_str = parse_string(data, 5)?;
+    /// 句柄无效或目录读取失败时返回错误应答；枚举结束按协议返回 `EOF`
+    pub async fn readdir(&mut self, id: u32, handle: String) -> Result<Name, StatusReply> {
+        // 首次调用读取整个目录并缓存条目，后续调用按批返回
+        let batch = {
+            let Some(dir_handle) = self
+                .handles
+                .get_mut(&handle)
+                .filter(|h| matches!(h, SftpFileHandle::Dir { .. }))
+            else {
+                tracing::debug!(
+                    client_ip = %self.client_ip,
+                    username = ?self.username,
+                    action = "READDIR_INVALID_HANDLE",
+                    handle = %handle,
+                    "SFTP READDIR: handle not found or invalid type"
+                );
+                return Err(status_err(StatusCode::Failure, "Invalid handle"));
+            };
 
-        let entries_result = {
-            let handle = self.handles.get_mut(&handle_str);
-            match handle {
-                Some(SftpFileHandle::Dir {
-                    path,
-                    entries,
-                    index,
-                    last_access,
-                }) => {
-                    if entries.is_empty() && *index == 0 {
-                        let mut read_entries = Vec::new();
-                        match tokio::fs::read_dir(path).await {
-                            Ok(mut dir) => {
-                                while let Ok(Some(entry)) = dir.next_entry().await {
-                                    let name = entry.file_name().to_string_lossy().to_string();
-                                    let is_dir = entry
-                                        .file_type()
-                                        .await
-                                        .is_ok_and(|t| t.is_dir());
-                                    let (size, mtime) = entry.metadata().await.map_or((0, 0), |m| {
-                                        let mt = m
-                                            .modified()
-                                            .ok()
-                                            .and_then(|t| {
-                                                t.duration_since(std::time::UNIX_EPOCH).ok()
-                                            })
-                                            .and_then(|d| u32::try_from(d.as_secs()).ok())
-                                            .unwrap_or(0);
-                                        (m.len(), mt)
-                                    });
-                                    read_entries.push(DirEntry {
-                                        name,
-                                        is_dir,
-                                        size,
-                                        mtime,
-                                    });
-                                }
-                            }
-                            Err(e) => {
-                                return Ok(build_status_packet(
-                                    id,
-                                    SSH_FX_FAILURE,
-                                    &format!("Failed to read directory: {e}"),
-                                    "",
-                                ));
-                            }
+            let SftpFileHandle::Dir {
+                path,
+                entries,
+                index,
+                last_access,
+            } = dir_handle
+            else {
+                unreachable!("上一行 filter 已保证为目录句柄");
+            };
+
+            if entries.is_empty() && *index == 0 {
+                let mut read_entries = Vec::new();
+                match tokio::fs::read_dir(path).await {
+                    Ok(mut dir) => {
+                        while let Ok(Some(entry)) = dir.next_entry().await {
+                            let name = entry.file_name().to_string_lossy().to_string();
+                            let attrs = match entry.metadata().await {
+                                // DirEntry::metadata 不跟随符号链接，链接自身可被列出
+                                Ok(m) => FileAttributes::from(&m),
+                                Err(_) => FileAttributes::empty(),
+                            };
+                            read_entries.push(crate::types::DirEntry { name, attrs });
                         }
-                        *entries = read_entries;
                     }
-
-                    if *index >= entries.len() {
-                        return Ok(build_status_packet(id, SSH_FX_EOF, "End of directory", ""));
+                    Err(e) => {
+                        return Err(status_err(
+                            StatusCode::Failure,
+                            &format!("Failed to read directory: {e}"),
+                        ));
                     }
-
-                    let count = (entries.len() - *index).min(MAX_READDIR_ENTRIES);
-                    let result_entries: Vec<DirEntry> = entries[*index..*index + count].to_vec();
-                    *index += count;
-                    *last_access = std::time::Instant::now();
-                    Some(result_entries)
                 }
-                _ => None,
+                *entries = read_entries;
             }
+
+            if *index >= entries.len() {
+                return Err(status_err(StatusCode::Eof, "End of directory"));
+            }
+
+            let count = (entries.len() - *index).min(MAX_READDIR_ENTRIES);
+            let batch: Vec<crate::types::DirEntry> = entries[*index..*index + count].to_vec();
+            *index += count;
+            *last_access = std::time::Instant::now();
+            batch
         };
 
-        if let Some(dir_entries) = entries_result {
-            let mut payload = vec![SSH_FXP_NAME];
-            payload.extend_from_slice(&id.to_be_bytes());
-            payload.extend_from_slice(&(dir_entries.len() as u32).to_be_bytes());
-
-            for entry in &dir_entries {
-                payload.extend_from_slice(&(entry.name.len() as u32).to_be_bytes());
-                payload.extend_from_slice(entry.name.as_bytes());
-
-                let mtime_str = chrono::DateTime::from_timestamp(
-                    i64::from(entry.mtime),
-                    0,
-                )
-                .map_or_else(
-                    || "Jan 01 00:00".to_string(),
-                    |dt| dt.format("%b %d %H:%M").to_string(),
-                );
-
-                let long_name = format!(
-                    "{} 1 user user {:>10} {} {}",
-                    if entry.is_dir {
-                        "drwxr-xr-x"
-                    } else {
-                        "-rw-r--r--"
-                    },
-                    entry.size,
-                    mtime_str,
-                    entry.name
-                );
-                payload.extend_from_slice(&(long_name.len() as u32).to_be_bytes());
-                payload.extend_from_slice(long_name.as_bytes());
-
-                payload.extend_from_slice(&build_attrs(entry.is_dir, entry.size));
-            }
-
-            Ok(build_packet(&payload))
-        } else {
-            tracing::debug!(
-                client_ip = %self.client_ip,
-                username = ?self.username,
-                action = "READDIR_INVALID_HANDLE",
-                handle = %handle_str,
-                "SFTP READDIR: handle not found or invalid type"
-            );
-            Ok(build_status_packet(id, SSH_FX_FAILURE, "Invalid handle", ""))
-        }
+        let files = batch
+            .into_iter()
+            .map(|entry| File::new(entry.name, entry.attrs))
+            .collect();
+        Ok(Name { id, files })
     }
 
     /// `SSH_FXP_REMOVE`：删除文件（结算配额 + 审计）
     ///
     /// # Errors
-    /// 报文解析失败时返回错误
-    pub async fn handle_remove(&mut self, data: &[u8]) -> Result<Vec<u8>> {
-        let id = parse_u32(data, 1)?;
-        let path = parse_string(data, 5)?;
-
+    /// 权限不足、路径越狱或删除失败时返回错误应答
+    pub async fn remove(&mut self, id: u32, filename: String) -> Result<Status, StatusReply> {
         if !self.check_permission(|p| p.can_delete) {
-            return Ok(build_status_packet(
-                id,
-                SSH_FX_PERMISSION_DENIED,
-                "Permission denied",
-                "",
-            ));
+            return Err(status_err(StatusCode::PermissionDenied, "Permission denied"));
         }
 
-        let full_path = match self.resolve_path_checked(id, &path) {
-            Ok(p) => p,
-            Err(resp) => return Ok(resp),
-        };
+        let full_path = self.resolve_path_or_err(&filename)?;
 
         let file_size = tokio::fs::metadata(&full_path)
             .await
@@ -224,61 +147,44 @@ impl SftpState {
                 self.quota_manager.subtract_usage(username, file_size);
             }
             self.audit_file_op("DELETE", &full_path.to_string_lossy(), 0);
-            Ok(build_status_packet(id, SSH_FX_OK, "OK", ""))
+            Ok(status_ok(id))
         } else {
-            Ok(build_status_packet(
-                id,
-                SSH_FX_FAILURE,
-                "Failed to remove file",
-                "",
-            ))
+            Err(status_err(StatusCode::Failure, "Failed to remove file"))
         }
     }
 
     /// `SSH_FXP_MKDIR`：创建目录
     ///
     /// # Errors
-    /// 报文解析失败时返回错误
-    pub async fn handle_mkdir(&mut self, data: &[u8]) -> Result<Vec<u8>> {
-        let id = parse_u32(data, 1)?;
-        let path = parse_string(data, 5)?;
-
+    /// 权限不足、路径越狱、目录已存在或创建失败时返回错误应答
+    pub async fn mkdir(
+        &mut self,
+        id: u32,
+        path: String,
+        _attrs: FileAttributes,
+    ) -> Result<Status, StatusReply> {
         if !self.check_permission(|p| p.can_mkdir) {
-            return Ok(build_status_packet(
-                id,
-                SSH_FX_PERMISSION_DENIED,
-                "Permission denied",
-                "",
-            ));
+            return Err(status_err(StatusCode::PermissionDenied, "Permission denied"));
         }
 
-        let full_path = match self.resolve_path_checked(id, &path) {
-            Ok(p) => p,
-            Err(resp) => return Ok(resp),
-        };
+        let full_path = self.resolve_path_or_err(&path)?;
 
         if full_path.exists() {
-            return Ok(build_status_packet(
-                id,
-                SSH_FX_FAILURE,
-                "Directory already exists",
-                "",
-            ));
+            return Err(status_err(StatusCode::Failure, "Directory already exists"));
         }
 
         match tokio::fs::create_dir(&full_path).await {
             Ok(()) => {
                 self.audit_file_op("MKDIR", &full_path.to_string_lossy(), 0);
-                Ok(build_status_packet(id, SSH_FX_OK, "OK", ""))
+                Ok(status_ok(id))
             }
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                Ok(build_status_packet(id, SSH_FX_NO_SUCH_FILE, "Parent directory not found", ""))
-            }
-            Err(_) => Ok(build_status_packet(
-                id,
-                SSH_FX_FAILURE,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Err(status_err(
+                StatusCode::NoSuchFile,
+                "Parent directory not found",
+            )),
+            Err(_) => Err(status_err(
+                StatusCode::Failure,
                 "Failed to create directory",
-                "",
             )),
         }
     }
@@ -286,24 +192,13 @@ impl SftpState {
     /// `SSH_FXP_RMDIR`：删除空目录（回收目录占用配额 + 审计）
     ///
     /// # Errors
-    /// 报文解析失败时返回错误
-    pub async fn handle_rmdir(&mut self, data: &[u8]) -> Result<Vec<u8>> {
-        let id = parse_u32(data, 1)?;
-        let path = parse_string(data, 5)?;
-
+    /// 权限不足、路径越狱、目录非空或删除失败时返回错误应答
+    pub async fn rmdir(&mut self, id: u32, path: String) -> Result<Status, StatusReply> {
         if !self.check_permission(|p| p.can_rmdir) {
-            return Ok(build_status_packet(
-                id,
-                SSH_FX_PERMISSION_DENIED,
-                "Permission denied",
-                "",
-            ));
+            return Err(status_err(StatusCode::PermissionDenied, "Permission denied"));
         }
 
-        let full_path = match self.resolve_path_checked(id, &path) {
-            Ok(p) => p,
-            Err(resp) => return Ok(resp),
-        };
+        let full_path = self.resolve_path_or_err(&path)?;
 
         let dir_size = calculate_dir_size(&full_path).await;
 
@@ -315,19 +210,14 @@ impl SftpState {
                     self.quota_manager.subtract_usage(username, dir_size);
                 }
                 self.audit_file_op("RMDIR", &full_path.to_string_lossy(), 0);
-                Ok(build_status_packet(id, SSH_FX_OK, "OK", ""))
+                Ok(status_ok(id))
             }
-            Err(e) if e.kind() == std::io::ErrorKind::DirectoryNotEmpty => Ok(build_status_packet(
-                id,
-                SSH_FX_FAILURE,
-                "Directory not empty",
-                "",
-            )),
-            Err(_) => Ok(build_status_packet(
-                id,
-                SSH_FX_FAILURE,
+            Err(e) if e.kind() == std::io::ErrorKind::DirectoryNotEmpty => {
+                Err(status_err(StatusCode::Failure, "Directory not empty"))
+            }
+            Err(_) => Err(status_err(
+                StatusCode::Failure,
                 "Failed to remove directory",
-                "",
             )),
         }
     }
@@ -335,41 +225,28 @@ impl SftpState {
     /// `SSH_FXP_RENAME`：重命名/移动（目标存在则拒绝，双路径审计）
     ///
     /// # Errors
-    /// 报文解析失败时返回错误
-    // 命令主流程（权限 → 路径解析 → fs 操作 → 审计）保持单函数内联，拆分会割裂协议语义
-    #[allow(clippy::too_many_lines)]
-    pub async fn handle_rename(&mut self, data: &[u8]) -> Result<Vec<u8>> {
-        let id = parse_u32(data, 1)?;
-        let (old_path, old_len) = parse_string_with_len(data, 5)?;
-        let new_path = parse_string(data, 5 + 4 + old_len)?;
-
+    /// 权限不足、路径越狱、源不存在或目标已存在时返回错误应答
+    pub async fn rename(
+        &mut self,
+        id: u32,
+        oldpath: String,
+        newpath: String,
+    ) -> Result<Status, StatusReply> {
         if !self.check_permission(|p| p.can_rename) {
             tracing::warn!(
                 "SFTP RENAME denied: no permission for user {:?}",
                 self.username
             );
-            return Ok(build_status_packet(
-                id,
-                SSH_FX_PERMISSION_DENIED,
-                "Permission denied",
-                "",
-            ));
+            return Err(status_err(StatusCode::PermissionDenied, "Permission denied"));
         }
 
-        let old_full = match self.resolve_path_checked(id, &old_path) {
-            Ok(p) => p,
-            Err(resp) => return Ok(resp),
-        };
-        let new_full = match self.resolve_path_checked(id, &new_path) {
-            Ok(p) => p,
-            Err(resp) => return Ok(resp),
-        };
+        let old_full = self.resolve_path_or_err(&oldpath)?;
+        let new_full = self.resolve_path_or_err(&newpath)?;
 
         tracing::debug!(
-            "SFTP RENAME: raw_old='{}', resolved_old='{}', raw_new='{}', resolved_new='{}'",
-            old_path,
+            "SFTP RENAME: raw_old='{oldpath}', resolved_old='{}', raw_new='{newpath}', \
+             resolved_new='{}'",
             old_full.display(),
-            new_path,
             new_full.display()
         );
 
@@ -378,11 +255,11 @@ impl SftpState {
                 "SFTP RENAME failed: source does not exist - {}",
                 old_full.display()
             );
-            return Ok(build_status_packet(id, SSH_FX_NO_SUCH_FILE, "No such file", ""));
+            return Err(status_err(StatusCode::NoSuchFile, "No such file"));
         }
 
         if old_full == new_full {
-            return Ok(build_status_packet(id, SSH_FX_OK, "OK", ""));
+            return Ok(status_ok(id));
         }
 
         let home = PathBuf::from(&self.home_dir);
@@ -394,26 +271,14 @@ impl SftpState {
                 old_full.display(),
                 new_full.display()
             );
-            return Ok(build_status_packet(
-                id,
-                SSH_FX_PERMISSION_DENIED,
-                "Permission denied",
-                "",
-            ));
+            return Err(status_err(StatusCode::PermissionDenied, "Permission denied"));
         }
 
-        if let Err(resp) = self.check_symlink_in_home(id, &old_full).await {
-            return Ok(resp);
-        }
-
-        if new_full.exists()
-            && let Err(resp) = self.check_symlink_in_home(id, &new_full).await
-        {
-            return Ok(resp);
-        }
+        self.check_symlink_in_home(&old_full).await?;
 
         if new_full.exists() {
-            return Ok(build_status_packet(id, SSH_FX_FAILURE, "File already exists", ""));
+            self.check_symlink_in_home(&new_full).await?;
+            return Err(status_err(StatusCode::Failure, "File already exists"));
         }
 
         match tokio::fs::rename(&old_full, &new_full).await {
@@ -438,7 +303,7 @@ impl SftpState {
                     0,
                     "",
                 );
-                Ok(build_status_packet(id, SSH_FX_OK, "OK", ""))
+                Ok(status_ok(id))
             }
             Err(e) => {
                 tracing::error!(
@@ -448,7 +313,7 @@ impl SftpState {
                     e,
                     e.raw_os_error()
                 );
-                Ok(build_status_packet(id, SSH_FX_FAILURE, "Failed to rename", ""))
+                Err(status_err(StatusCode::Failure, "Failed to rename"))
             }
         }
     }
@@ -456,91 +321,57 @@ impl SftpState {
     /// `SSH_FXP_REALPATH`：路径规范化（映射回 `/` 起的虚路径）
     ///
     /// # Errors
-    /// 报文解析失败时返回错误
-    pub fn handle_realpath(&mut self, data: &[u8]) -> Result<Vec<u8>> {
-        let id = parse_u32(data, 1)?;
-        let path = parse_string(data, 5)?;
-
+    /// 路径越狱或映射失败时返回错误应答
+    pub fn realpath(&mut self, id: u32, path: String) -> Result<Name, StatusReply> {
         let full_path = if path.is_empty() || path == "." {
-            Ok(PathBuf::from(&self.cwd))
+            PathBuf::from(&self.cwd)
         } else {
-            self.resolve_path(&path)
-        };
-
-        let full_path = match full_path {
-            Ok(p) => p,
-            Err(e) => {
+            self.resolve_path(&path).map_err(|e| {
                 tracing::warn!("REALPATH failed for '{path}': {e}");
-                return Ok(build_status_packet(id, SSH_FX_NO_SUCH_FILE, &e.to_string(), ""));
-            }
+                status_err(StatusCode::NoSuchFile, &e.to_string())
+            })?
         };
 
-        let (resolved, is_dir) = if full_path.exists() {
+        let resolved = if full_path.exists() {
             match full_path.canonicalize() {
                 Ok(canon) => {
                     if !path_starts_with_ignore_case(&canon, Path::new(&self.home_dir)) {
                         tracing::warn!(
-                            "REALPATH security: canonicalized path escapes home - input: {}, \
+                            "REALPATH security: canonicalized path escapes home - input: {path}, \
                              canonicalized: {}",
-                            path,
                             canon.display()
                         );
-                        return Ok(build_status_packet(
-                            id,
-                            SSH_FX_PERMISSION_DENIED,
+                        return Err(status_err(
+                            StatusCode::PermissionDenied,
                             "Permission denied",
-                            "",
                         ));
                     }
-                    let is_dir = canon.is_dir();
-                    (canon, is_dir)
+                    canon
                 }
-                Err(_) => (full_path.clone(), full_path.is_dir()),
+                Err(_) => full_path,
             }
         } else {
-            (full_path, false)
+            full_path
         };
 
-        let path_str = match to_ftp_path(&resolved, Path::new(&self.home_dir)) {
-            Ok(p) => p,
-            Err(e) => {
+        let path_str = to_ftp_path(&resolved, Path::new(&self.home_dir))
+            .map_err(|e| {
                 tracing::error!("REALPATH failed: {e}");
-                return Ok(build_status_packet(id, SSH_FX_NO_SUCH_FILE, &e.to_string(), ""));
-            }
-        };
-
-        let mut payload = vec![SSH_FXP_NAME];
-        payload.extend_from_slice(&id.to_be_bytes());
-        payload.extend_from_slice(&1u32.to_be_bytes());
-
-        payload.extend_from_slice(&(path_str.len() as u32).to_be_bytes());
-        payload.extend_from_slice(path_str.as_bytes());
-
-        let longname = format!(
-            "{}  1 user user  0 Jan 01 00:00 {}",
-            if is_dir {
-                "drwxr-xr-x"
-            } else {
-                "-rw-r--r--"
-            },
-            path_str
-        );
-        payload.extend_from_slice(&(longname.len() as u32).to_be_bytes());
-        payload.extend_from_slice(longname.as_bytes());
-
-        payload.extend_from_slice(&build_attrs(is_dir, 0));
+                status_err(StatusCode::NoSuchFile, &e.to_string())
+            })?;
 
         tracing::debug!(
             client_ip = %self.client_ip,
             username = ?self.username.as_deref(),
             action = "REALPATH",
             protocol = "SFTP",
-            "Resolved '{}' -> '{}'",
-            path,
-            path_str
+            "Resolved '{path}' -> '{path_str}'"
         );
 
-        Ok(build_packet(&payload))
+        Ok(Name {
+            id,
+            files: vec![File::dummy(path_str)],
+        })
     }
 }
 
@@ -568,168 +399,154 @@ fn calculate_dir_size(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_util::{self, setup, setup_with_perms};
+    use crate::test_util::setup_with_perms;
 
-    fn path_req(cmd: u8, id: u32, path: &str) -> Vec<u8> {
-        let mut v = vec![cmd];
-        v.extend_from_slice(&id.to_be_bytes());
-        v.extend_from_slice(&test_util::str_field(path));
-        v
-    }
-
-    fn name_contains(resp: &[u8], needle: &str) -> bool {
-        let payload = test_util::payload(resp);
-        payload[0] == SSH_FXP_NAME
-            && payload
-                .windows(needle.len())
-                .any(|w| w == needle.as_bytes())
-    }
-
+    /// MKDIR → OPENDIR → READDIR → REMOVE → RMDIR 全流程
     #[tokio::test]
-    async fn test_mkdir_opendir_readdir_rmdir() {
-        let mut env = setup();
+    async fn dir_lifecycle() {
+        let mut env = crate::test_util::setup();
 
-        let resp = env
-            .state
-            .dispatch_packet(&path_req(SSH_FXP_MKDIR, 1, "/docs"))
+        env.state
+            .mkdir(1, "/sub".to_string(), FileAttributes::default())
             .await
             .unwrap();
-        assert_eq!(test_util::status_of(&resp), SSH_FX_OK);
-        assert!(env.dir.path().join("docs").is_dir());
+        std::fs::write(env.dir.path().join("sub/f.txt"), b"data").unwrap();
 
-        // 空目录 READDIR 直接 EOF
-        let resp = env
+        // 重复创建拒绝
+        let err = env
             .state
-            .dispatch_packet(&path_req(SSH_FXP_OPENDIR, 2, "/docs"))
+            .mkdir(2, "/sub".to_string(), FileAttributes::default())
+            .await
+            .unwrap_err();
+        assert_eq!(err.status_code, StatusCode::Failure);
+
+        let handle = env.state.opendir(3, "/sub".to_string()).unwrap().handle;
+
+        // 非目录路径拒绝
+        let err = env
+            .state
+            .opendir(4, "/sub/f.txt".to_string())
+            .unwrap_err();
+        assert_eq!(err.status_code, StatusCode::Failure);
+
+        let name = env.state.readdir(5, handle.clone()).await.unwrap();
+        assert_eq!(name.files.len(), 1);
+        assert_eq!(name.files[0].filename, "f.txt");
+
+        // 缓存已耗尽 → EOF
+        let err = env.state.readdir(6, handle.clone()).await.unwrap_err();
+        assert_eq!(err.status_code, StatusCode::Eof);
+
+        env.state.close(7, handle).await.unwrap();
+
+        env.state.remove(8, "/sub/f.txt".to_string()).await.unwrap();
+        env.state.rmdir(9, "/sub".to_string()).await.unwrap();
+        assert!(!env.dir.path().join("sub").exists());
+
+        // 空目录首次 READDIR 即 EOF
+        env.state
+            .mkdir(10, "/empty".to_string(), FileAttributes::default())
             .await
             .unwrap();
-        assert_eq!(test_util::payload(&resp)[0], SSH_FXP_HANDLE);
-        let handle = parse_string(test_util::payload(&resp), 5).unwrap();
-
-        let mut req = vec![SSH_FXP_READDIR];
-        req.extend_from_slice(&3u32.to_be_bytes());
-        req.extend_from_slice(&test_util::str_field(&handle));
-        let resp = env.state.dispatch_packet(&req).await.unwrap();
-        assert_eq!(test_util::status_of(&resp), SSH_FX_EOF);
-
-        // 放入文件后 READDIR 能列出
-        std::fs::write(env.dir.path().join("docs").join("a.txt"), b"x").unwrap();
-        let resp = env
-            .state
-            .dispatch_packet(&path_req(SSH_FXP_OPENDIR, 4, "/docs"))
-            .await
-            .unwrap();
-        let handle = parse_string(test_util::payload(&resp), 5).unwrap();
-        let mut req = vec![SSH_FXP_READDIR];
-        req.extend_from_slice(&5u32.to_be_bytes());
-        req.extend_from_slice(&test_util::str_field(&handle));
-        let resp = env.state.dispatch_packet(&req).await.unwrap();
-        assert!(name_contains(&resp, "a.txt"));
-
-        let resp = env
-            .state
-            .dispatch_packet(&path_req(SSH_FXP_RMDIR, 6, "/docs"))
-            .await
-            .unwrap();
-        // 非空目录 rmdir 拒绝
-        assert_ne!(test_util::status_of(&resp), SSH_FX_OK);
-
-        std::fs::remove_file(env.dir.path().join("docs").join("a.txt")).unwrap();
-        let resp = env
-            .state
-            .dispatch_packet(&path_req(SSH_FXP_RMDIR, 7, "/docs"))
-            .await
-            .unwrap();
-        assert_eq!(test_util::status_of(&resp), SSH_FX_OK);
-        assert!(!env.dir.path().join("docs").exists());
+        let handle = env.state.opendir(11, "/empty".to_string()).unwrap().handle;
+        let err = env.state.readdir(12, handle).await.unwrap_err();
+        assert_eq!(err.status_code, StatusCode::Eof);
     }
 
+    /// 不存在的目录 OPENDIR 回 NO_SUCH_FILE
     #[tokio::test]
-    async fn test_remove_file() {
-        let mut env = setup();
-        std::fs::write(env.dir.path().join("d.txt"), b"bye").unwrap();
-        let resp = env
-            .state
-            .dispatch_packet(&path_req(SSH_FXP_REMOVE, 1, "/d.txt"))
-            .await
-            .unwrap();
-        assert_eq!(test_util::status_of(&resp), SSH_FX_OK);
-        assert!(!env.dir.path().join("d.txt").exists());
+    async fn opendir_missing_dir() {
+        let mut env = crate::test_util::setup();
+        let err = env.state.opendir(1, "/missing".to_string()).unwrap_err();
+        assert_eq!(err.status_code, StatusCode::NoSuchFile);
     }
 
+    /// REMOVE 无权限拒绝；删除不存在的文件回 FAILURE
     #[tokio::test]
-    async fn test_remove_denied_without_delete_permission() {
+    async fn remove_permission_and_missing() {
         let mut env = setup_with_perms(|p| p.can_delete = false);
-        std::fs::write(env.dir.path().join("d.txt"), b"x").unwrap();
-        let resp = env
-            .state
-            .dispatch_packet(&path_req(SSH_FXP_REMOVE, 1, "/d.txt"))
-            .await
-            .unwrap();
-        assert_eq!(test_util::status_of(&resp), SSH_FX_PERMISSION_DENIED);
-        assert!(env.dir.path().join("d.txt").exists());
+        std::fs::write(env.dir.path().join("f.txt"), b"x").unwrap();
+
+        let err = env.state.remove(1, "/f.txt".to_string()).await.unwrap_err();
+        assert_eq!(err.status_code, StatusCode::PermissionDenied);
+
+        let mut env = crate::test_util::setup();
+        let err = env.state.remove(2, "/missing.txt".to_string()).await.unwrap_err();
+        assert_eq!(err.status_code, StatusCode::Failure);
     }
 
+    /// RENAME：同目录改名与跨目录移动；目标已存在拒绝
     #[tokio::test]
-    async fn test_rename_moves_file() {
-        let mut env = setup();
-        std::fs::write(env.dir.path().join("old.txt"), b"data").unwrap();
-
-        let mut req = vec![SSH_FXP_RENAME];
-        req.extend_from_slice(&1u32.to_be_bytes());
-        req.extend_from_slice(&test_util::str_field("/old.txt"));
-        req.extend_from_slice(&test_util::str_field("/new.txt"));
-        let resp = env.state.dispatch_packet(&req).await.unwrap();
-        assert_eq!(test_util::status_of(&resp), SSH_FX_OK);
-        assert!(!env.dir.path().join("old.txt").exists());
-        assert_eq!(
-            std::fs::read(env.dir.path().join("new.txt")).unwrap(),
-            b"data"
-        );
-    }
-
-    #[tokio::test]
-    async fn test_rename_target_exists_rejected() {
-        let mut env = setup();
-        std::fs::write(env.dir.path().join("a.txt"), b"1").unwrap();
-        std::fs::write(env.dir.path().join("b.txt"), b"2").unwrap();
-
-        let mut req = vec![SSH_FXP_RENAME];
-        req.extend_from_slice(&1u32.to_be_bytes());
-        req.extend_from_slice(&test_util::str_field("/a.txt"));
-        req.extend_from_slice(&test_util::str_field("/b.txt"));
-        let resp = env.state.dispatch_packet(&req).await.unwrap();
-        assert_ne!(test_util::status_of(&resp), SSH_FX_OK);
-    }
-
-    #[tokio::test]
-    async fn test_realpath_maps_to_virtual_path() {
-        let mut env = setup();
-        std::fs::create_dir(env.dir.path().join("sub")).unwrap();
-
-        let resp = env
-            .state
-            .dispatch_packet(&path_req(SSH_FXP_REALPATH, 1, "/"))
+    async fn rename_move_and_conflict() {
+        let mut env = crate::test_util::setup();
+        std::fs::write(env.dir.path().join("a.txt"), b"aaa").unwrap();
+        env.state
+            .mkdir(1, "/sub".to_string(), FileAttributes::default())
             .await
             .unwrap();
-        assert!(name_contains(&resp, "/"));
 
-        let resp = env
-            .state
-            .dispatch_packet(&path_req(SSH_FXP_REALPATH, 2, "/sub"))
+        env.state
+            .rename(2, "/a.txt".to_string(), "/b.txt".to_string())
             .await
             .unwrap();
-        assert!(name_contains(&resp, "/sub"));
+        assert!(env.dir.path().join("b.txt").exists());
+
+        // 跨目录移动
+        env.state
+            .rename(3, "/b.txt".to_string(), "/sub/b.txt".to_string())
+            .await
+            .unwrap();
+        assert!(env.dir.path().join("sub/b.txt").exists());
+
+        // 目标已存在拒绝
+        std::fs::write(env.dir.path().join("sub/other.txt"), b"o").unwrap();
+        let err = env
+            .state
+            .rename(4, "/sub/b.txt".to_string(), "/sub/other.txt".to_string())
+            .await
+            .unwrap_err();
+        assert_eq!(err.status_code, StatusCode::Failure);
+
+        // 源不存在回 NO_SUCH_FILE
+        let err = env
+            .state
+            .rename(5, "/ghost.txt".to_string(), "/x.txt".to_string())
+            .await
+            .unwrap_err();
+        assert_eq!(err.status_code, StatusCode::NoSuchFile);
     }
 
+    /// RENAME 无权限拒绝
     #[tokio::test]
-    async fn test_realpath_rejects_escape() {
-        let mut env = setup();
-        let resp = env
+    async fn rename_denied_without_permission() {
+        let mut env = setup_with_perms(|p| p.can_rename = false);
+        std::fs::write(env.dir.path().join("a.txt"), b"a").unwrap();
+        let err = env
             .state
-            .dispatch_packet(&path_req(SSH_FXP_REALPATH, 1, "/../outside"))
+            .rename(1, "/a.txt".to_string(), "/b.txt".to_string())
             .await
-            .unwrap();
-        assert_eq!(test_util::payload(&resp)[0], SSH_FXP_STATUS);
+            .unwrap_err();
+        assert_eq!(err.status_code, StatusCode::PermissionDenied);
+    }
+
+    /// REALPATH：虚路径映射回 `/` 起始；越狱拒绝
+    #[tokio::test]
+    async fn realpath_maps_to_virtual_root() {
+        let mut env = crate::test_util::setup();
+
+        let name = env.state.realpath(1, ".".to_string()).unwrap();
+        assert_eq!(name.files[0].filename, "/");
+
+        let name = env.state.realpath(2, "/".to_string()).unwrap();
+        assert_eq!(name.files[0].filename, "/");
+
+        // 存在的文件映射为虚路径
+        std::fs::write(env.dir.path().join("f.txt"), b"x").unwrap();
+        let name = env.state.realpath(3, "/f.txt".to_string()).unwrap();
+        assert_eq!(name.files[0].filename, "/f.txt");
+
+        // 越狱拒绝
+        let err = env.state.realpath(4, "/../escape".to_string()).unwrap_err();
+        assert_eq!(err.status_code, StatusCode::NoSuchFile);
     }
 }

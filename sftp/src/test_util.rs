@@ -46,19 +46,42 @@ pub fn setup_with_perms(f: impl FnOnce(&mut Permissions)) -> TestEnv {
     TestEnv { dir, state }
 }
 
-/// 构造长度前缀字符串字段
+/// 构造长度前缀字符串字段（wire 格式，回环测试用）
 pub fn str_field(s: &str) -> Vec<u8> {
     let mut v = (s.len() as u32).to_be_bytes().to_vec();
     v.extend_from_slice(s.as_bytes());
     v
 }
 
-/// 去掉应答报文的长度前缀
-pub fn payload(resp: &[u8]) -> &[u8] {
-    &resp[4..]
+/// 组装完整 SFTP 报文：u32 长度前缀 + 类型 + 负载
+pub fn packet(r#type: u8, body: &[u8]) -> Vec<u8> {
+    let mut v = ((body.len() + 1) as u32).to_be_bytes().to_vec();
+    v.push(r#type);
+    v.extend_from_slice(body);
+    v
 }
 
-/// 从 `SSH_FXP_STATUS` 应答中提取状态码
-pub fn status_of(resp: &[u8]) -> u32 {
-    crate::protocol::parse_u32(payload(resp), 5).unwrap()
+/// u32 字段（wire 格式）
+pub fn u32_field(v: u32) -> Vec<u8> {
+    v.to_be_bytes().to_vec()
+}
+
+/// u64 字段（wire 格式）
+pub fn u64_field(v: u64) -> Vec<u8> {
+    v.to_be_bytes().to_vec()
+}
+
+/// 从应答流中读取一个完整报文（长度前缀 + 负载），返回去掉长度前缀的负载
+pub async fn read_packet<S>(stream: &mut S) -> std::io::Result<Vec<u8>>
+where
+    S: tokio::io::AsyncRead + Unpin,
+{
+    use tokio::io::AsyncReadExt;
+
+    let mut len_buf = [0u8; 4];
+    stream.read_exact(&mut len_buf).await?;
+    let len = u32::from_be_bytes(len_buf) as usize;
+    let mut body = vec![0u8; len];
+    stream.read_exact(&mut body).await?;
+    Ok(body)
 }
