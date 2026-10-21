@@ -1,0 +1,186 @@
+# fftps CI：静态检查、测试、交叉编译矩阵与 deb 打包
+# 推送 v* 标签时自动构建 deb / tarball / windows zip 并创建 GitHub Release
+# 注：cargo fmt 检查暂未纳入——common/ipc/ftp/sftp 在当前 stable rustfmt
+# 下存在全量格式漂移（迁移前遗留，另行列清理项）；clippy 同样不加 -D warnings，
+# pedantic 告警遗留约百处（集中于 common/ftp 旧迁移代码），
+# fftpd / ftp-gui 已全量零告警。
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+    tags: [ "v*" ]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    name: 格式与静态检查
+    runs-on: ubuntu-latest
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v5
+
+      - name: 安装 Rust 工具链（含 clippy）
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - name: 缓存 Cargo 构建产物
+        uses: Swatinem/rust-cache@v2
+
+      - name: cargo clippy 检查
+        run: cargo clippy --workspace --all-targets
+
+  test:
+    name: 测试（Linux）
+    runs-on: ubuntu-latest
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v5
+
+      - name: 安装 Rust 工具链
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: 缓存 Cargo 构建产物
+        uses: Swatinem/rust-cache@v2
+
+      - name: cargo test 测试
+        run: cargo test --workspace
+
+  build:
+    name: 交叉编译（${{ matrix.target }}）
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - x86_64-unknown-linux-gnu
+          - aarch64-unknown-linux-gnu
+          - x86_64-unknown-linux-musl
+          - x86_64-pc-windows-gnu
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v5
+
+      - name: 安装 Rust 工具链
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: 安装 Rust 目标
+        run: rustup target add ${{ matrix.target }}
+
+      - name: 安装 zig（cargo-zigbuild 依赖）
+        uses: mlugg/setup-zig@v2
+        with:
+          version: 0.13.0
+
+      - name: 安装 cargo-zigbuild
+        run: cargo install cargo-zigbuild --locked
+
+      - name: 缓存 Cargo 构建产物
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+
+      # 统一入口：linux 全目标与 windows-gnu 均走 cargo-zigbuild
+      - name: 构建（scripts/build.sh）
+        run: ./scripts/build.sh ${{ matrix.target }}
+
+      - name: 上传构建产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: dist-${{ matrix.target }}
+          path: dist/
+          if-no-files-found: error
+
+  deb:
+    name: deb 打包（ubuntu）
+    runs-on: ubuntu-latest
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v5
+
+      - name: 安装 Rust 工具链
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: 安装系统依赖（图标生成）
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y imagemagick
+
+      - name: 缓存 Cargo 构建产物
+        uses: Swatinem/rust-cache@v2
+
+      # 复用 debian/build-deb.sh：release 编译 + 打包 deb（脚本要求 root，CI 有免密 sudo）
+      - name: 构建 deb 包
+        run: sudo ./debian/build-deb.sh -a amd64 -o dist -n
+
+      - name: 上传 deb 产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: dist-deb
+          path: dist/*.deb
+          if-no-files-found: error
+
+  release:
+    name: 发布 Release
+    # 仅在推送 v* 标签时触发，且 CI 全部通过后才发布
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [lint, test, build, deb]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v5
+
+      - name: 校验标签与 Cargo.toml 版本一致
+        run: |
+          TAG_VERSION="${GITHUB_REF_NAME#v}"
+          CARGO_VERSION="$(grep -m1 '^version = ' Cargo.toml | sed 's/version = "\(.*\)"/\1/')"
+          if [ "$TAG_VERSION" != "$CARGO_VERSION" ] && [[ "$TAG_VERSION" != "$CARGO_VERSION"-* ]]; then
+            echo "标签 ${GITHUB_REF_NAME} 与 Cargo.toml 中的版本 ${CARGO_VERSION} 不一致，请先更新 [workspace.package].version"
+            exit 1
+          fi
+
+      - name: 下载全部构建产物
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          pattern: dist-*
+          merge-multiple: true
+
+      - name: 打包 tarball（Linux 各目标）与 Windows zip
+        run: |
+          TAG_VERSION="${GITHUB_REF_NAME#v}"
+          for t in x86_64-unknown-linux-gnu aarch64-unknown-linux-gnu x86_64-unknown-linux-musl; do
+            STAGE="fftps-${TAG_VERSION}-${t}"
+            mkdir -p "dist/${STAGE}"
+            cp "dist/${t}/fftpd" "dist/${t}/ftp-gui" "dist/${STAGE}/"
+            cp debian/config_example.toml "dist/${STAGE}/config.toml"
+            chmod 755 "dist/${STAGE}/fftpd" "dist/${STAGE}/ftp-gui"
+            tar -czf "dist/${STAGE}.tar.gz" -C dist "${STAGE}"
+            rm -rf "dist/${STAGE}"
+          done
+          STAGE="fftps-${TAG_VERSION}-x86_64-pc-windows-gnu"
+          mkdir -p "dist/${STAGE}"
+          cp dist/x86_64-pc-windows-gnu/fftpd.exe "dist/x86_64-pc-windows-gnu/ftp-gui.exe" "dist/${STAGE}/"
+          cp scripts/windows/install.cmd scripts/windows/uninstall.cmd "dist/${STAGE}/"
+          (cd dist && zip -qr "${STAGE}.zip" "${STAGE}")
+          rm -rf "dist/${STAGE}"
+          ls -lh dist/
+
+      - name: 创建 GitHub Release 并上传产物
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/*.tar.gz
+            dist/*.zip
+            dist/*.deb
+          generate_release_notes: true
+          fail_on_unmatched_files: true

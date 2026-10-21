@@ -1,0 +1,24 @@
+#!/bin/sh
+# fftps 卸载前脚本（用户态服务模型）
+#
+# remove/deconfigure：在各活跃用户会话中停止并禁用 fftpd 用户服务。
+# 卸载后 /usr/bin/fftpd 消失，若服务仍处于 enabled/running，
+# systemd 会显示 not-found 或 failed，看起来像"管理不正常"。
+# upgrade：不做处理，postinst 在配置完成后会重启服务。
+
+set -e
+
+case "$1" in
+    remove|deconfigure)
+        for runtime_dir in /run/user/[0-9]*; do
+            [ -d "$runtime_dir" ] || continue
+            uid="${runtime_dir##*/}"
+            user_name=$(getent passwd "$uid" | cut -d: -f1)
+            [ -n "$user_name" ] || continue
+            XDG_RUNTIME_DIR="$runtime_dir" su -s /bin/sh "$user_name" \
+                -c "systemctl --user disable --now fftpd" > /dev/null 2>&1 || true
+        done
+        ;;
+esac
+
+exit 0

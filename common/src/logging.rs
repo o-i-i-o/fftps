@@ -243,6 +243,9 @@ static RELOAD_HANDLE: OnceLock<Handle<Targets, Registry>> = OnceLock::new();
 /// 日志设施：内存环形缓冲 + 配置（文件管理按 [`LoggingConfig`] 生效）
 pub struct Logging {
     config: LoggingConfig,
+    /// 运行期可热更新的参数副本（IPC `SaveLogConfig` 后经 [`Logging::update_config`] 替换）；
+    /// 文件管理与审计写入按此副本生效，初始值与 [`Self::config`] 相同
+    live_config: StdMutex<LoggingConfig>,
     log_buffer: LogBuffer,
     file_op_buffer: FileOpBuffer,
 }
@@ -255,6 +258,7 @@ impl Logging {
     pub fn new(config: &LoggingConfig) -> Self {
         Self {
             config: config.clone(),
+            live_config: StdMutex::new(config.clone()),
             log_buffer: LogBuffer::new(2000),
             file_op_buffer: FileOpBuffer::new(2000),
         }
@@ -278,6 +282,21 @@ impl Logging {
         &self.config
     }
 
+    /// 当前生效的日志参数（初始化参数经 [`Self::update_config`] 热更新后的值）
+    #[must_use]
+    pub fn live_config(&self) -> LoggingConfig {
+        self.live_config.lock().unwrap().clone()
+    }
+
+    /// 热更新日志参数（新增钩子，供守护进程 `SaveLogConfig` 后调用）
+    ///
+    /// 只影响运行期可变的部分：文件管理/审计写入按新参数执行，
+    /// 日志级别另经 [`set_log_level`] 动态调整；
+    /// 文件 appender 的目录/格式在 `init` 时确定，变更需重启进程完整生效。
+    pub fn update_config(&self, config: LoggingConfig) {
+        *self.live_config.lock().unwrap() = config;
+    }
+
     /// 程序日志环形缓冲
     #[must_use]
     pub fn log_buffer(&self) -> &LogBuffer {
@@ -293,7 +312,7 @@ impl Logging {
     /// 写入一条文件操作审计记录：`enable_gui_logging` 开启时进内存缓冲，
     /// 同时经 tracing `file_ops` target 写入审计日志文件。
     pub fn write_file_op(&self, entry: &FileOpLogEntry) {
-        if self.config.enable_gui_logging {
+        if self.live_config().enable_gui_logging {
             self.file_op_buffer.push(entry.clone());
         }
 
@@ -332,20 +351,22 @@ impl Logging {
     /// 列出程序日志文件（新→旧），最多 [`LoggingConfig::max_log_files`] 份
     #[must_use]
     pub fn list_log_files(&self) -> Vec<LogFileInfo> {
+        let config = self.live_config();
         list_log_files_in(
-            &self.config.resolved_log_dir(),
+            &config.resolved_log_dir(),
             PROGRAM_LOG_PREFIX,
-            self.config.max_log_files,
+            config.max_log_files,
         )
     }
 
     /// 列出 file-ops 审计日志文件（新→旧），最多 [`LoggingConfig::max_log_files`] 份
     #[must_use]
     pub fn list_file_op_log_files(&self) -> Vec<LogFileInfo> {
+        let config = self.live_config();
         list_log_files_in(
-            &self.config.resolved_log_dir(),
+            &config.resolved_log_dir(),
             FILE_OP_LOG_PREFIX,
-            self.config.max_log_files,
+            config.max_log_files,
         )
     }
 
@@ -354,8 +375,9 @@ impl Logging {
     /// # Errors
     /// `path` 不在日志目录内（防越权读取）或无法读取时返回错误
     pub fn read_log_file(&self, path: &Path, count: usize) -> Result<Vec<LogEntry>> {
-        ensure_path_in_dir(path, &self.config.resolved_log_dir())?;
-        Ok(tail_lines(path, count, self.config.max_log_size)
+        let config = self.live_config();
+        ensure_path_in_dir(path, &config.resolved_log_dir())?;
+        Ok(tail_lines(path, count, config.max_log_size)
             .iter()
             .filter_map(|line| parse_program_line(line))
             .collect())
@@ -366,8 +388,9 @@ impl Logging {
     /// # Errors
     /// `path` 不在日志目录内（防越权读取）或无法读取时返回错误
     pub fn read_file_op_log(&self, path: &Path, count: usize) -> Result<Vec<FileOpLogEntry>> {
-        ensure_path_in_dir(path, &self.config.resolved_log_dir())?;
-        Ok(tail_lines(path, count, self.config.max_log_size)
+        let config = self.live_config();
+        ensure_path_in_dir(path, &config.resolved_log_dir())?;
+        Ok(tail_lines(path, count, config.max_log_size)
             .iter()
             .filter_map(|line| parse_file_op_line(line))
             .collect())

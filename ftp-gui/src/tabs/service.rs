@@ -1,7 +1,9 @@
-//! 服务页：FTP/SFTP 生命周期管理 + 日志设置
+//! 服务页：FTP/SFTP 生命周期管理 + 系统服务安装/自启 + 日志设置
 //!
 //! 启停/重启经 `StartService`/`StopService`/`RestartService`（目标：全部/FTP/SFTP），
 //! 状态显示复用 `GetStatus`（应用壳 5 秒轮询 + 操作后立即刷新）；
+//! 系统服务管理（安装/卸载/开机自启）走平台分支进程调用
+//! （Linux `systemctl --user`，Windows `sc.exe`），失败把 stderr 显示在页面；
 //! 日志设置经 `SaveLogConfig` 提交（`log_dir`/`log_level`/`max_log_size`/
 //! `max_log_files`/`enable_gui_logging`）。
 
@@ -47,6 +49,51 @@ impl Action {
             Action::Start => "服务已启动",
             Action::Stop => "服务已停止",
             Action::Restart => "服务已重启",
+        }
+    }
+}
+
+/// 系统服务管理动作（安装/卸载/开机自启，平台分支实现）
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SysAction {
+    /// 安装服务（注册 + 启动 + 开机自启）
+    Install,
+    /// 卸载服务（停止 + 删除/禁用）
+    Uninstall,
+    /// 开机自启：开
+    AutostartOn,
+    /// 开机自启：关
+    AutostartOff,
+}
+
+impl SysAction {
+    /// 全部动作
+    const ALL: [Self; 4] = [
+        SysAction::Install,
+        SysAction::Uninstall,
+        SysAction::AutostartOn,
+        SysAction::AutostartOff,
+    ];
+
+    /// 按钮文案
+    #[must_use]
+    pub fn label(self) -> &'static str {
+        match self {
+            SysAction::Install => "安装服务",
+            SysAction::Uninstall => "卸载服务",
+            SysAction::AutostartOn => "开机自启：开",
+            SysAction::AutostartOff => "开机自启：关",
+        }
+    }
+
+    /// 成功提示
+    #[must_use]
+    pub fn ok_text(self) -> &'static str {
+        match self {
+            SysAction::Install => "服务已安装并启动",
+            SysAction::Uninstall => "服务已卸载",
+            SysAction::AutostartOn => "已开启开机自启",
+            SysAction::AutostartOff => "已关闭开机自启",
         }
     }
 }
@@ -159,6 +206,10 @@ pub enum Msg {
     Op(Action, ServiceTarget),
     /// 操作完成（附成功提示）
     OpDone(Result<(), IpcError>, &'static str),
+    /// 系统服务管理（安装/卸载/开机自启）
+    SysOp(SysAction),
+    /// 系统服务管理命令完成（命令输出或 stderr 错误）
+    SysDone(Result<String, String>, &'static str),
     /// 刷新运行状态（`GetStatus`）
     RefreshStatus,
     /// 重新载入日志设置
@@ -180,6 +231,8 @@ pub struct ServiceTab {
     log: LogForm,
     /// 服务操作进行中
     busy: bool,
+    /// 系统服务管理命令进行中
+    sys_busy: bool,
     /// 日志设置保存进行中
     log_saving: bool,
     error: Option<String>,
@@ -222,6 +275,11 @@ impl ServiceTab {
                         relay_error(&e)
                     }
                 }
+            }
+            Msg::SysOp(action) => self.sys_op(action),
+            Msg::SysDone(result, ok_text) => {
+                self.sys_done(result, ok_text);
+                Task::none()
             }
             Msg::RefreshStatus => refresh_status(ipc),
             Msg::Reload => {
@@ -272,6 +330,36 @@ impl ServiceTab {
                     }
                 }
             }
+        }
+    }
+
+    /// 发起系统服务管理命令（平台分支，阻塞进程调用挪出 UI 线程）
+    fn sys_op(&mut self, action: SysAction) -> Task<Message> {
+        if self.sys_busy {
+            return Task::none();
+        }
+        self.sys_busy = true;
+        self.error = None;
+        self.info = None;
+        let ok_text = action.ok_text();
+        Task::perform(run_sys_action(action), move |r| {
+            Message::Service(Msg::SysDone(r, ok_text))
+        })
+    }
+
+    /// 系统服务管理命令完成：成功附带命令输出，失败把 stderr 显示在页面
+    fn sys_done(&mut self, result: Result<String, String>, ok_text: &'static str) {
+        self.sys_busy = false;
+        match result {
+            Ok(out) => {
+                self.error = None;
+                self.info = Some(if out.is_empty() {
+                    ok_text.to_owned()
+                } else {
+                    format!("{ok_text}：{out}")
+                });
+            }
+            Err(e) => self.error = Some(e),
         }
     }
 
@@ -348,6 +436,7 @@ impl ServiceTab {
             .width(Length::Fill)
             .style(container::rounded_box),
             self.control_card(connected),
+            self.sys_card(),
             self.log_card(connected),
         ]
         .spacing(12)
@@ -385,6 +474,34 @@ impl ServiceTab {
             .width(Length::Fill)
             .style(container::rounded_box)
             .into()
+    }
+
+    /// 系统服务卡片：安装/卸载服务 + 开机自启开关（平台分支，不依赖 IPC 连接）
+    fn sys_card(&self) -> Element<'_, Message> {
+        let hint = if cfg!(windows) {
+            "Windows：sc.exe 管理 fftpd 服务（安装 = 注册 + 启动 + 开机自启；需要管理员权限）"
+        } else {
+            "Linux：systemctl --user 管理 fftpd 用户服务（安装 = enable --now，自启 = enable/disable）"
+        };
+        let rows = row(SysAction::ALL.map(|action| {
+            Element::from(button(text(action.label())).on_press_maybe(
+                (!self.sys_busy).then_some(Message::Service(Msg::SysOp(action))),
+            ))
+        }))
+        .spacing(8);
+
+        container(
+            column![
+                text("系统服务（开机自启）").size(16),
+                text(hint).size(12),
+                rows,
+            ]
+            .spacing(10),
+        )
+        .padding(16)
+        .width(Length::Fill)
+        .style(container::rounded_box)
+        .into()
     }
 
     /// 日志设置卡片
@@ -497,6 +614,82 @@ async fn load_logging(conn: IpcConn) -> Result<LoggingConfig, IpcError> {
     toml::from_str::<Config>(&content.content)
         .map(|config| config.logging)
         .map_err(|e| IpcError::BadResponse(format!("配置解析失败：{e}")))
+}
+
+/// 执行系统服务管理命令（阻塞进程调用经 `spawn_blocking` 挪出 UI 线程）
+async fn run_sys_action(action: SysAction) -> Result<String, String> {
+    tokio::task::spawn_blocking(move || sys_command(action))
+        .await
+        .map_err(|e| format!("任务执行失败：{e}"))?
+}
+
+/// 平台分支：Linux 用 `systemctl --user` 管理 fftpd 用户服务
+#[cfg(not(windows))]
+fn sys_command(action: SysAction) -> Result<String, String> {
+    let args: &[&str] = match action {
+        SysAction::Install => &["--user", "enable", "--now", "fftpd"],
+        SysAction::Uninstall => &["--user", "disable", "--now", "fftpd"],
+        SysAction::AutostartOn => &["--user", "enable", "fftpd"],
+        SysAction::AutostartOff => &["--user", "disable", "fftpd"],
+    };
+    run_command("systemctl", args)
+}
+
+/// 平台分支：Windows 用 `sc.exe` 管理 fftpd 服务
+#[cfg(windows)]
+fn sys_command(action: SysAction) -> Result<String, String> {
+    let bin_path = format!("\"{}\" --service", fftpd_exe_path()?.display());
+    match action {
+        SysAction::Install => {
+            // 注册（start= auto 开机自启）后启动；失败信息（stderr）原样带回页面
+            run_command(
+                "sc.exe",
+                &["create", "fftpd", "binPath=", &bin_path, "DisplayName=", "fftps FTP/SFTP Server", "start=", "auto"],
+            )?;
+            run_command("sc.exe", &["start", "fftpd"])
+        }
+        SysAction::Uninstall => {
+            let _ = run_command("sc.exe", &["stop", "fftpd"]); // 未运行时忽略
+            run_command("sc.exe", &["delete", "fftpd"])
+        }
+        SysAction::AutostartOn => run_command("sc.exe", &["config", "fftpd", "start=", "auto"]),
+        SysAction::AutostartOff => run_command("sc.exe", &["config", "fftpd", "start=", "demand"]),
+    }
+}
+
+/// 服务端二进制位置：与 ftp-gui 同目录的 fftpd.exe
+#[cfg(windows)]
+fn fftpd_exe_path() -> Result<std::path::PathBuf, String> {
+    let dir = std::env::current_exe()
+        .map_err(|e| format!("无法定位程序目录：{e}"))?
+        .parent()
+        .map(|p| p.to_path_buf())
+        .ok_or_else(|| "无法定位程序目录".to_owned())?;
+    Ok(dir.join("fftpd.exe"))
+}
+
+/// 执行命令并收集输出；失败时把 stderr（无则 stdout/退出码）带回页面展示
+fn run_command(program: &str, args: &[&str]) -> Result<String, String> {
+    let output = std::process::Command::new(program)
+        .args(args)
+        .output()
+        .map_err(|e| format!("无法执行 {program}：{e}"))?;
+    if output.status.success() {
+        Ok(String::from_utf8_lossy(&output.stdout).trim().to_owned())
+    } else {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let detail = if stderr.trim().is_empty() {
+            stdout.trim().to_owned()
+        } else {
+            stderr.trim().to_owned()
+        };
+        Err(if detail.is_empty() {
+            format!("{program} 执行失败（退出码 {:?}）", output.status.code())
+        } else {
+            format!("{program} 执行失败：{detail}")
+        })
+    }
 }
 
 #[cfg(test)]

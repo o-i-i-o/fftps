@@ -1,0 +1,16 @@
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=FFTPS
+Name[zh_CN]=FFTPS文件传输服务器
+GenericName=SFTP/FTP Server Manager
+GenericName[zh_CN]=SFTP/FTP服务器管理工具
+Comment=Manage SFTP and FTP servers with GUI
+Comment[zh_CN]=图形化管理SFTP/FTP服务器
+Exec=/usr/bin/ftp-gui
+Icon=fftp-gui
+Terminal=false
+StartupNotify=true
+Categories=Network;FileTransfer;System;
+Keywords=ftp;sftp;server;file;transfer;
+Keywords[zh_CN]=ftp;sftp;服务器;文件;传输;

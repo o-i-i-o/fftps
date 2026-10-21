@@ -1,0 +1,26 @@
+#!/bin/sh
+# fftps 卸载后脚本（用户态服务模型）
+#
+# 各用户的配置与状态位于 ~/.config/fftpd 与 ~/.local/state/fftpd，
+# 属于用户数据，包卸载时不做清理（purge 亦不触碰用户主目录）。
+
+set -e
+
+case "$1" in
+    remove|purge)
+        if command -v update-desktop-database &> /dev/null; then
+            update-desktop-database -q || true
+        fi
+        # 用户管理器残留单元引用清理（单元文件已随包移除）
+        for runtime_dir in /run/user/[0-9]*; do
+            [ -d "$runtime_dir" ] || continue
+            uid="${runtime_dir##*/}"
+            user_name=$(getent passwd "$uid" | cut -d: -f1)
+            [ -n "$user_name" ] || continue
+            XDG_RUNTIME_DIR="$runtime_dir" su -s /bin/sh "$user_name" \
+                -c "systemctl --user daemon-reload" > /dev/null 2>&1 || true
+        done
+        ;;
+esac
+
+exit 0

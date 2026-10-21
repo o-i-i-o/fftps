@@ -1,0 +1,25 @@
+[Unit]
+Description=FFTPD SFTP/FTP Server (per-user service)
+Documentation=https://github.com/fftps/fftps
+After=network.target network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/fftpd
+Restart=on-failure
+RestartSec=3
+TimeoutStopSec=10
+
+# 用户态运行模型：无 User=/Group=，以启动服务的桌面用户身份运行。
+# 可写路径全部在 XDG 目录（~/.config/fftpd、~/.local/state/fftpd），
+# UDS 套接字位于 $XDG_RUNTIME_DIR/fftpd/fftpd.sock（0600）。
+
+NoNewPrivileges=true
+PrivateTmp=yes
+PrivateDevices=yes
+
+LimitNOFILE=65536
+
+[Install]
+WantedBy=default.target

@@ -1,0 +1,90 @@
+#!/bin/bash
+# fftps 安装后脚本（用户态服务模型）
+#
+# fftpd 以 systemd 用户服务运行，无需 root 权限、无需专用用户。
+# 本脚本职责：
+#   1. 把包内初始配置（/usr/share/fftps/config.toml，打包时由示例配置重命名）
+#      预置到活跃用户的 ~/.config/fftpd/config.toml；
+#   2. 为每个活跃桌面会话执行 systemctl --user daemon-reload，
+#      让用户管理器载入（升级后的）单元文件；
+#   3. 已启用且正在运行的用户服务重启一次，加载升级后的二进制。
+
+set -e
+
+# 以指定用户身份执行 systemctl --user（$3 起为子命令参数）
+user_systemctl() {
+    local uid="$1" user_name="$2"
+    shift 2
+    XDG_RUNTIME_DIR="/run/user/${uid}" su -s /bin/sh "$user_name" \
+        -c "systemctl --user $*" 2> /dev/null
+}
+
+# 全新安装：把包内初始配置放入用户配置目录（~ 替换为用户主目录）。
+# 已有配置一律不覆盖；失败不阻塞安装，首次启动 fftpd 时会自动生成默认配置。
+seed_default_config() {
+    local uid="$1" home="$2"
+    local src="/usr/share/fftps/config.toml"
+    local dest_dir="${home}/.config/fftpd"
+    local dest="${dest_dir}/config.toml"
+
+    [ -f "$src" ] || return 0
+    [ -e "$dest" ] && return 0
+
+    local escaped_home
+    escaped_home=$(printf '%s' "$home" | sed 's/[&|]/\\&/g')
+    mkdir -p "$dest_dir"
+    chown "$uid" "$dest_dir" 2> /dev/null || true
+    if sed "s|~|${escaped_home}|g" "$src" > "$dest" \
+        && chown "$uid" "$dest" 2> /dev/null; then
+        chmod 600 "$dest"
+        echo "已预置初始配置: $dest"
+    else
+        rm -f "$dest"
+        echo "警告: 预置初始配置失败，首次启动 fftpd 时会自动生成默认配置" >&2
+    fi
+}
+
+case "$1" in
+    configure)
+        # 刷新桌面环境缓存
+        if command -v update-desktop-database &> /dev/null; then
+            update-desktop-database -q || true
+        fi
+        if command -v gtk-update-icon-cache &> /dev/null; then
+            gtk-update-icon-cache -q -t -f /usr/share/icons/hicolor 2> /dev/null || true
+        fi
+
+        # 遍历活跃用户会话（/run/user/<uid> 存在即会话活跃）
+        for runtime_dir in /run/user/[0-9]*; do
+            [ -d "$runtime_dir" ] || continue
+            uid="${runtime_dir##*/}"
+            user_name=$(getent passwd "$uid" | cut -d: -f1)
+            home_dir=$(getent passwd "$uid" | cut -d: -f6)
+            if [ -z "$user_name" ] || [ "$user_name" = "root" ] || [ -z "$home_dir" ]; then
+                continue
+            fi
+
+            seed_default_config "$uid" "$home_dir"
+
+            # 载入（升级后的）单元文件；用户管理器不会自动重读
+            user_systemctl "$uid" "$user_name" daemon-reload || true
+
+            # 已启用且在运行：重启以加载新二进制（未启用/未运行则不打扰用户）
+            if user_systemctl "$uid" "$user_name" is-enabled fftpd 2> /dev/null | grep -q '^enabled'; then
+                if user_systemctl "$uid" "$user_name" is-active --quiet fftpd 2> /dev/null; then
+                    if user_systemctl "$uid" "$user_name" restart fftpd; then
+                        echo "已为用户 ${user_name} 重启 fftpd 用户服务"
+                    fi
+                fi
+            fi
+        done
+
+        echo "FFTPS 安装完成。"
+        echo "启用后台服务（以桌面用户运行，无需 root）："
+        echo "  systemctl --user enable --now fftpd"
+        echo "启动图形管理界面："
+        echo "  ftp-gui"
+        ;;
+esac
+
+exit 0

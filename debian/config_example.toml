@@ -1,0 +1,72 @@
+# fftps 配置示例（docs/design.md §5.1）
+#
+# 安装位置：/usr/share/fftps/config.toml（由 postinst 预置到 ~/.config/fftpd/config.toml）
+# 实际配置：~/.config/fftpd/config.toml（env 覆盖：FFTPD_CONFIG_DIR）
+# 缺失字段按默认值补齐；文件缺失时 fftpd 首次启动自动生成默认配置。
+# 可写路径语义：空串 = 未设置（使用默认值）。
+
+[ftp]
+enabled = true
+bind_ip = "0.0.0.0"
+port = 21
+welcome_message = "Welcome to fftpd"
+encoding = "UTF-8"
+default_transfer_mode = "binary"
+# passive_only | active_only | active_and_passive
+connection_mode = "passive_only"
+allow_anonymous = false
+# 匿名用户主目录，空 = 未设置
+anonymous_home = ""
+# 被动模式端口区间（含端点）
+passive_ports = [50000, 51000]
+# 单连接限速（KB/s），0 = 不限速
+max_speed_kbps = 0
+# 被动模式对外通告地址，空 = 使用实际连接地址
+masquerade_address = ""
+connection_timeout = 15
+idle_timeout = 15
+hide_version_info = false
+pooled_listener_mode = true
+allow_nat_clients = true
+# FTP 根目录，空 = 各用户 home
+ftp_root = ""
+
+[ftp.ftps]
+enabled = false
+require_ssl = false
+# 空 = 自动生成（rcgen）
+cert_path = ""
+key_path = ""
+
+[sftp]
+enabled = true
+bind_ip = "0.0.0.0"
+port = 2222
+# 空 = ~/.local/state/fftpd/ssh_host_ed25519_key（首次自动生成）
+host_key_path = ""
+max_auth_attempts = 3
+auth_timeout = 60
+log_level = "info"
+max_sessions_per_user = 5
+# 主机密钥轮换周期（天），0 = 不轮换
+host_key_rotation_days = 0
+
+[security]
+max_connections = 100
+max_connections_per_ip = 10
+allowed_ips = ["0.0.0.0/0"]
+denied_ips = []
+fail2ban_enabled = false
+fail2ban_threshold = 5
+fail2ban_ban_time = 3600
+allow_symlinks = false
+max_login_attempts = 5
+
+[logging]
+# 空 = ~/.local/state/fftpd/logs
+log_dir = ""
+log_level = "info"
+max_log_files = 10
+max_log_size = 10485760
+enable_json = false
+enable_gui_logging = true
