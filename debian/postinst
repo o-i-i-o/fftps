@@ -83,7 +83,7 @@ case "$1" in
         echo "启用后台服务（以桌面用户运行，无需 root）："
         echo "  systemctl --user enable --now fftpd"
         echo "启动图形管理界面："
-        echo "  ftp-gui"
+        echo "  fftp-gui"
         ;;
 esac
 

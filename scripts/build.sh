@@ -6,10 +6,10 @@
 #   ./scripts/build.sh all             # 全矩阵：linux-gnu x86_64/aarch64、musl、windows-gnu
 #
 # 目标矩阵:
-#   x86_64-unknown-linux-gnu     fftpd / ftp-gui
-#   aarch64-unknown-linux-gnu    fftpd / ftp-gui
-#   x86_64-unknown-linux-musl    fftpd / ftp-gui
-#   x86_64-pc-windows-gnu        fftpd.exe / ftp-gui.exe
+#   x86_64-unknown-linux-gnu     fftpd / fftp-gui
+#   aarch64-unknown-linux-gnu    fftpd / fftp-gui
+#   x86_64-unknown-linux-musl    fftpd / fftp-gui
+#   x86_64-pc-windows-gnu        fftpd.exe / fftp-gui.exe
 #
 # 工具策略: linux 目标与 windows-gnu 均用 cargo-zigbuild；
 # 若 cargo-zigbuild 对 windows-gnu 不可用（缺 zig / 构建失败），回退
@@ -49,10 +49,10 @@ show_help() {
     x86_64-unknown-linux-gnu      x86_64 Linux (glibc)
     aarch64-unknown-linux-gnu     ARM64 Linux (glibc)
     x86_64-unknown-linux-musl     x86_64 Linux (静态 musl)
-    x86_64-pc-windows-gnu         x86_64 Windows (fftpd.exe / ftp-gui.exe)
+    x86_64-pc-windows-gnu         x86_64 Windows (fftpd.exe / fftp-gui.exe)
     all                           全矩阵顺序构建
 
-产物: dist/<target>/{fftpd,ftp-gui}[.exe]（release profile）
+产物: dist/<target>/{fftpd,fftp-gui}[.exe]（release profile）
 
 依赖:
     cargo、rustup 目标、cargo-zigbuild、zig（windows-gnu 回退需要 mingw-w64）
@@ -117,9 +117,9 @@ collect_artifacts() {
     local out="${DIST_DIR}/${target}"
     mkdir -p "$out"
 
-    local names=(fftpd ftp-gui)
+    local names=(fftpd fftp-gui)
     if [[ "$target" == *windows* ]]; then
-        names=(fftpd.exe ftp-gui.exe)
+        names=(fftpd.exe fftp-gui.exe)
     fi
 
     for name in "${names[@]}"; do
@@ -151,7 +151,7 @@ build_target() {
     else
         if check_zigbuild; then
             log_info "使用 cargo-zigbuild 编译: ${target}"
-            cargo zigbuild --release --target "$target" -p fftpd -p ftp-gui
+            cargo zigbuild --release --target "$target" -p fftpd -p fftp-gui
         else
             log_error "linux 目标需要 cargo-zigbuild + zig"
             log_info "安装: cargo install cargo-zigbuild ；并安装 zig 后重试"
@@ -167,7 +167,7 @@ build_windows() {
     local target="$1"
     if check_zigbuild; then
         log_info "使用 cargo-zigbuild 编译: ${target}"
-        if cargo zigbuild --release --target "$target" -p fftpd -p ftp-gui; then
+        if cargo zigbuild --release --target "$target" -p fftpd -p fftp-gui; then
             return 0
         fi
         log_warning "cargo-zigbuild 对 ${target} 不可用，回退 mingw 原生编译"
@@ -178,7 +178,7 @@ build_windows() {
     check_mingw
     log_info "使用 mingw 链接器编译: ${target}"
     CARGO_TARGET_X86_64_PC_WINDOWS_GNU_LINKER=x86_64-w64-mingw32-gcc \
-        cargo build --release --target "$target" -p fftpd -p ftp-gui
+        cargo build --release --target "$target" -p fftpd -p fftp-gui
 }
 
 # ---------------------------------------------------------------------------

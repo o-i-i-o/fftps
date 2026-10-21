@@ -43,7 +43,7 @@ pub fn view<'a>(status: Option<&ServerStatus>) -> Element<'a, Message> {
     let detail = container(
         column![
             text("版本与运行信息").size(16),
-            form_row("管理程序（ftp-gui）", text(gui_version).size(13)),
+            form_row("管理程序（fftp-gui）", text(gui_version).size(13)),
             form_row("服务端（fftpd）", text(daemon_version).size(13)),
             form_row("IPC 端点", text(endpoint).size(13)),
             form_row("配置文件", text(config_path).size(13)),

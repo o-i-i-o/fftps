@@ -110,10 +110,14 @@ pub struct App {
 }
 
 impl App {
-    /// 初始状态 + 启动即连接
+    /// 初始状态 + 注册内嵌中文字体 + 启动即连接
     pub fn init() -> (Self, Task<Message>) {
         let mut app = Self::default();
-        let task = app.start_connect();
+        let task = Task::batch([
+            // 注册内嵌字体；与 main 中 default_font 的 family 名对应
+            iced::font::load(crate::CJK_FONT_BYTES).discard(),
+            app.start_connect(),
+        ]);
         (app, task)
     }
 

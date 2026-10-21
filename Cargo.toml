@@ -6,7 +6,7 @@ members = [
     "ftp",
     "sftp",
     "fftpd",
-    "ftp-gui",
+    "fftp-gui",
 ]
 
 [workspace.lints.clippy]

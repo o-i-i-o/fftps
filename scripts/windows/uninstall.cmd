@@ -28,7 +28,7 @@ echo.
 
 :: 定义路径
 set INSTALL_DIR=C:\Program Files\fftps
-set FFTPG_EXE=ftp-gui.exe
+set FFTPG_EXE=fftp-gui.exe
 set FFTPD_EXE=fftpd.exe
 set SERVICE_NAME=fftpd
 set DESKTOP_SHORTCUT=%USERPROFILE%\Desktop\FFTPS.lnk
@@ -91,7 +91,7 @@ if %errorLevel% equ 0 (
 )
 echo.
 
-:: 步骤 4: 停止 ftp-gui 管理程序
+:: 步骤 4: 停止 fftp-gui 管理程序
 echo [4/6] 停止 %FFTPG_EXE% 管理程序...
 tasklist | find "%FFTPG_EXE%" >nul 2>&1
 if %errorLevel% equ 0 (

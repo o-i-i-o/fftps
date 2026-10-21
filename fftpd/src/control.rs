@@ -96,7 +96,7 @@ impl Handler for ControlHandler {
 }
 
 impl ControlHandler {
-    /// 运行状态（与 ftp-gui `ServerStatus` 字段一一对应）
+    /// 运行状态（与 fftp-gui `ServerStatus` 字段一一对应）
     async fn status(&self) -> Result<Value, HandlerError> {
         let (ftp_running, sftp_running) = self.state.service_status().await;
         Ok(serde_json::json!({

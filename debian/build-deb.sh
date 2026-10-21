@@ -1,7 +1,7 @@
 #!/bin/bash
 # fftps DEB 打包脚本（从 wftpd-linux/debian/build-deb.sh 改名适配）
 #
-# cargo build 编译 fftpd / ftp-gui，拷贝到 /usr/bin，
+# cargo build 编译 fftpd / fftp-gui，拷贝到 /usr/bin，
 # 附 systemd --user 单元、桌面文件、图标、changelog/copyright 与初始配置。
 
 set -e
@@ -281,12 +281,12 @@ else
     fi
 fi
 
-if [ ! -f "${TARGET_DIR}/ftp-gui" ]; then
-    log_error "编译失败: 未找到可执行文件 ${TARGET_DIR}/ftp-gui"
+if [ ! -f "${TARGET_DIR}/fftp-gui" ]; then
+    log_error "编译失败: 未找到可执行文件 ${TARGET_DIR}/fftp-gui"
     exit 1
 fi
 
-log_success "找到已编译的可执行文件: ${TARGET_DIR}/ftp-gui"
+log_success "找到已编译的可执行文件: ${TARGET_DIR}/fftp-gui"
 
 log_info "[3/9] 创建 DEB 包目录结构..."
 DEB_DIR="${BUILD_DIR}/${PACKAGE_NAME}_${VERSION}_${TARGET_ARCH}"
@@ -302,11 +302,11 @@ mkdir -p "${DEB_DIR}/usr/share/${PACKAGE_NAME}"
 
 log_info "[4/9] 复制可执行文件..."
 
-if [ -f "${TARGET_DIR}/ftp-gui" ]; then
-    cp "${TARGET_DIR}/ftp-gui" "${DEB_DIR}/usr/bin/"
-    chmod 755 "${DEB_DIR}/usr/bin/ftp-gui"
-    chown root:root "${DEB_DIR}/usr/bin/ftp-gui" 2> /dev/null || true
-    log_info "  已复制: ftp-gui (GUI管理程序)"
+if [ -f "${TARGET_DIR}/fftp-gui" ]; then
+    cp "${TARGET_DIR}/fftp-gui" "${DEB_DIR}/usr/bin/"
+    chmod 755 "${DEB_DIR}/usr/bin/fftp-gui"
+    chown root:root "${DEB_DIR}/usr/bin/fftp-gui" 2> /dev/null || true
+    log_info "  已复制: fftp-gui (GUI管理程序)"
 fi
 
 if [ -f "${TARGET_DIR}/fftpd" ]; then
@@ -394,12 +394,12 @@ Architecture: ${TARGET_ARCH}
 Maintainer: fftps developers <developers@fftps.dev>
 Description: SFTP/FTP(FTPS) server suite with GUI management tool
  fftp-suite provides the fftpd FTP(FTPS)/SFTP server daemon and the
- ftp-gui cross-platform (iced) management frontend.
+ fftp-gui cross-platform (iced) management frontend.
  A pure Rust implementation for managing SFTP and FTP servers with a
  user-friendly interface.
 Description-zh_CN: SFTP/FTP(FTPS) 服务套件与图形化管理工具
  适用于Linux的SFTP+FTP(FTPS)服务套件。
- 使用纯Rust实现（fftpd 服务端 + ftp-gui iced 图形界面），
+ 使用纯Rust实现（fftpd 服务端 + fftp-gui iced 图形界面），
  提供友好的用户界面来管理SFTP和FTP服务器。
 Homepage: https://github.com/fftps/fftps
 Depends: libc6, libxkbcommon0

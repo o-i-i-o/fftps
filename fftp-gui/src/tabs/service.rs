@@ -657,7 +657,7 @@ fn sys_command(action: SysAction) -> Result<String, String> {
     }
 }
 
-/// 服务端二进制位置：与 ftp-gui 同目录的 fftpd.exe
+/// 服务端二进制位置：与 fftp-gui 同目录的 fftpd.exe
 #[cfg(windows)]
 fn fftpd_exe_path() -> Result<std::path::PathBuf, String> {
     let dir = std::env::current_exe()

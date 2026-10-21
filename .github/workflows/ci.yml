@@ -3,7 +3,7 @@
 # 注：cargo fmt 检查暂未纳入——common/ipc/ftp/sftp 在当前 stable rustfmt
 # 下存在全量格式漂移（迁移前遗留，另行列清理项）；clippy 同样不加 -D warnings，
 # pedantic 告警遗留约百处（集中于 common/ftp 旧迁移代码），
-# fftpd / ftp-gui 已全量零告警。
+# fftpd / fftp-gui 已全量零告警。
 name: CI
 
 on:
@@ -161,15 +161,15 @@ jobs:
           for t in x86_64-unknown-linux-gnu aarch64-unknown-linux-gnu x86_64-unknown-linux-musl; do
             STAGE="fftps-${TAG_VERSION}-${t}"
             mkdir -p "dist/${STAGE}"
-            cp "dist/${t}/fftpd" "dist/${t}/ftp-gui" "dist/${STAGE}/"
+            cp "dist/${t}/fftpd" "dist/${t}/fftp-gui" "dist/${STAGE}/"
             cp debian/config_example.toml "dist/${STAGE}/config.toml"
-            chmod 755 "dist/${STAGE}/fftpd" "dist/${STAGE}/ftp-gui"
+            chmod 755 "dist/${STAGE}/fftpd" "dist/${STAGE}/fftp-gui"
             tar -czf "dist/${STAGE}.tar.gz" -C dist "${STAGE}"
             rm -rf "dist/${STAGE}"
           done
           STAGE="fftps-${TAG_VERSION}-x86_64-pc-windows-gnu"
           mkdir -p "dist/${STAGE}"
-          cp dist/x86_64-pc-windows-gnu/fftpd.exe "dist/x86_64-pc-windows-gnu/ftp-gui.exe" "dist/${STAGE}/"
+          cp dist/x86_64-pc-windows-gnu/fftpd.exe "dist/x86_64-pc-windows-gnu/fftp-gui.exe" "dist/${STAGE}/"
           cp scripts/windows/install.cmd scripts/windows/uninstall.cmd "dist/${STAGE}/"
           (cd dist && zip -qr "${STAGE}.zip" "${STAGE}")
           rm -rf "dist/${STAGE}"

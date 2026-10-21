@@ -26,7 +26,7 @@ echo   FFTPS 安装程序
 echo ========================================
 echo.
 
-:: 获取脚本所在目录（脚本可与 fftpd.exe / ftp-gui.exe 同目录，
+:: 获取脚本所在目录（脚本可与 fftpd.exe / fftp-gui.exe 同目录，
 :: 也可位于 scripts/windows/，此时从 dist 产物或上级目录定位）
 set SCRIPT_DIR=%~dp0
 set BIN_DIR=%SCRIPT_DIR%
@@ -36,7 +36,7 @@ if not exist "%BIN_DIR%fftpd.exe" if exist "%SCRIPT_DIR%..\..\dist\x86_64-pc-win
 
 :: 定义目标路径
 set INSTALL_DIR=C:\Program Files\fftps\
-set FFTPG_EXE=ftp-gui.exe
+set FFTPG_EXE=fftp-gui.exe
 set FFTPD_EXE=fftpd.exe
 set SERVICE_NAME=fftpd
 set DESKTOP_SHORTCUT=%USERPROFILE%\Desktop\FFTPS.lnk
@@ -156,6 +156,6 @@ echo.
 echo 服务管理：
 echo   sc start %SERVICE_NAME%     sc stop %SERVICE_NAME%
 echo   sc delete %SERVICE_NAME%
-echo 或在 ftp-gui「服务」页操作。
+echo 或在 fftp-gui「服务」页操作。
 echo.
 exit
