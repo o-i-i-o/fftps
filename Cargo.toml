@@ -7,6 +7,7 @@ members = [
     "sftp",
     "fftpd",
     "fftp-gui",
+    "fftp-http",
 ]
 
 [workspace.lints.clippy]
@@ -54,6 +55,19 @@ chrono = { version = "0.4", features = ["serde"] }
 
 # 网络
 ipnet = "2"
+
+# Web 管理前端（fftp-http；axum 0.8 路径参数为 {name} 语法）
+axum = "0.8"
+hyper = { version = "1", features = ["server", "http1"] }
+hyper-util = { version = "0.1", features = ["tokio", "server-auto", "service"] }
+tower = { version = "0.5", features = ["util"] }
+tokio-stream = { version = "0.1", features = ["sync"] }
+# TLS：显式选 ring provider（libunftp 传递引入 aws-lc-rs，默认 provider 会歧义）
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "logging", "tls12"] }
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12"] }
+rustls-pemfile = "2"
+# 会话 token
+rand = "0.10"
 
 # 加密
 argon2 = "0.6"

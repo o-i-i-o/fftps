@@ -9,6 +9,7 @@ use std::sync::Arc;
 use anyhow::{Context, Result};
 use tokio::io::{split, AsyncRead, AsyncWrite, ReadHalf, WriteHalf};
 use tokio::sync::{broadcast, oneshot, Mutex};
+use tokio::task::JoinHandle;
 
 use crate::framing;
 use crate::protocol::{Command, ErrorCode, Event, Message, Notification, OpResult, Request, Response};
@@ -22,6 +23,8 @@ pub struct Client {
     pending: Pending,
     next_id: Arc<std::sync::atomic::AtomicU64>,
     events: broadcast::Sender<Event>,
+    /// 后台读任务：所有克隆共享；`close()` 中止它以释放底层连接
+    read_task: Arc<JoinHandle<()>>,
 }
 
 /// [`Client::request`] 的业务级错误
@@ -49,14 +52,23 @@ impl Client {
         let (events, _) = broadcast::channel(1024);
         let pending: Pending = Arc::default();
 
-        tokio::spawn(read_loop(reader, Arc::clone(&pending), events.clone()));
+        let read_task = tokio::spawn(read_loop(reader, Arc::clone(&pending), events.clone()));
 
         Self {
             writer: Arc::new(Mutex::new(writer)),
             pending,
             next_id: Arc::new(std::sync::atomic::AtomicU64::new(1)),
             events,
+            read_task: Arc::new(read_task),
         }
+    }
+
+    /// 关闭底层连接：中止后台读任务，所有克隆随之失效
+    ///
+    /// 仅 `drop` 无法关闭连接——读任务持有连接的读半部。需要主动释放
+    /// 连接的场景（如每流独占连接的 SSE 日志推送）必须显式调用。
+    pub fn close(&self) {
+        self.read_task.abort();
     }
 
     /// 订阅服务端推送事件

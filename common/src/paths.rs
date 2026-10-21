@@ -208,6 +208,20 @@ pub fn audit_log_path() -> PathBuf {
     default_log_dir().join("audit.log")
 }
 
+/// fftp-http 独立配置文件路径（Web 管理前端专用，fftpd 不读取）
+///
+/// 环境变量 `FFTPD_HTTP_CONFIG` 可整体覆盖（测试/多实例）；
+/// 默认与 `config.toml` 同目录（复用 [`config_path`] 的解析规则）。
+#[must_use]
+pub fn http_config_path() -> PathBuf {
+    std::env::var_os("FFTPD_HTTP_CONFIG")
+        .filter(|v| !v.is_empty())
+        .map_or_else(
+            || config_path().with_file_name("fftp-http.toml"),
+            PathBuf::from,
+        )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -218,6 +232,7 @@ mod tests {
         assert!(users_path().ends_with("users.json"));
         assert!(default_host_key_path().ends_with("ssh_host_ed25519_key"));
         assert!(config_dir().ends_with("fftpd"));
+        assert!(http_config_path().ends_with("fftp-http.toml"));
     }
 
     #[test]

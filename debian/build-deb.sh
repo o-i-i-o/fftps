@@ -316,6 +316,13 @@ if [ -f "${TARGET_DIR}/fftpd" ]; then
     log_info "  已复制：fftpd (后台服务程序)"
 fi
 
+if [ -f "${TARGET_DIR}/fftp-http" ]; then
+    cp "${TARGET_DIR}/fftp-http" "${DEB_DIR}/usr/bin/"
+    chmod 755 "${DEB_DIR}/usr/bin/fftp-http"
+    chown root:root "${DEB_DIR}/usr/bin/fftp-http" 2> /dev/null || true
+    log_info "  已复制: fftp-http (Web管理前端)"
+fi
+
 log_info "[5/9] 复制桌面文件..."
 if [ -f "${SCRIPT_DIR}/fftp-gui.desktop" ]; then
     cp "${SCRIPT_DIR}/fftp-gui.desktop" "${DEB_DIR}/usr/share/applications/"

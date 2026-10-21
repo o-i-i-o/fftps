@@ -204,10 +204,11 @@ impl UserManager {
     /// 使用 Argon2id 生成口令哈希（自动随机盐）
     ///
     /// 显式策略参数 `m=65536,t=3,p=4,len=32`（docs/design.md §5.2）。
+    /// 公开供 fftp-gui / fftp-http 生成各自管理面的口令哈希。
     ///
     /// # Errors
     /// 参数非法或 Argon2 哈希计算失败（如盐生成失败）时返回错误
-    fn hash_password(password: &str) -> Result<String> {
+    pub fn hash_password(password: &str) -> Result<String> {
         let params = argon2::Params::new(65536, 3, 4, Some(32))
             .map_err(|e| anyhow::anyhow!("Failed to create Argon2 params: {e}"))?;
         let argon2 = Argon2::new(argon2::Algorithm::Argon2id, argon2::Version::V0x13, params);
@@ -219,7 +220,8 @@ impl UserManager {
         Ok(hash)
     }
 
-    fn verify_password(password: &str, hash: &str) -> bool {
+    /// 校验口令与 PHC 哈希是否匹配（供 fftp-gui / fftp-http 登录校验复用）
+    pub fn verify_password(password: &str, hash: &str) -> bool {
         let parsed_hash = match PasswordHash::new(hash) {
             Ok(h) => h,
             Err(e) => {

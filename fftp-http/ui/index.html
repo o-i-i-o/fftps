@@ -1,0 +1,215 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>fftp Web 管理</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+
+<div id="offline" class="offline hidden">fftpd 连接断开，正在重连…（恢复后自动可用）</div>
+
+<header id="topbar" class="hidden">
+  <div class="brand">fftp<span>Web 管理</span></div>
+  <nav id="tabs">
+    <button data-tab="service" class="active">服务</button>
+    <button data-tab="config">配置</button>
+    <button data-tab="users">用户</button>
+    <button data-tab="logs">实时日志</button>
+    <button data-tab="logfiles">日志文件</button>
+    <button data-tab="fileop">文件操作</button>
+    <button data-tab="about">关于</button>
+  </nav>
+  <div class="userbox">
+    <span id="conn-dot" class="dot"></span><span id="conn-text">连接中…</span>
+    <span id="whoami" class="whoami"></span>
+    <button id="btn-logout" class="btn ghost">登出</button>
+  </div>
+</header>
+
+<main id="main" class="hidden">
+
+  <!-- 服务 -->
+  <section id="tab-service">
+    <div class="grid-2">
+      <div class="card">
+        <h3>运行状态</h3>
+        <div class="svc-row"><span class="svc-name">FTP</span><span id="ftp-badge" class="badge off">已停止</span></div>
+        <div class="svc-row"><span class="svc-name">SFTP</span><span id="sftp-badge" class="badge off">已停止</span></div>
+        <div class="meta-list">
+          <div><label>版本</label><span id="st-version">—</span></div>
+          <div><label>配置文件</label><span id="st-config" class="mono">—</span></div>
+          <div><label>用户库</label><span id="st-users" class="mono">—</span></div>
+          <div><label>IPC 端点</label><span id="st-endpoint" class="mono">—</span></div>
+        </div>
+      </div>
+      <div class="card">
+        <h3>服务操作</h3>
+        <table class="ops">
+          <thead><tr><th></th><th>FTP</th><th>SFTP</th><th>全部</th></tr></thead>
+          <tbody>
+            <tr><td>启动</td><td><button class="btn" data-svc="ftp" data-act="start">启动</button></td><td><button class="btn" data-svc="sftp" data-act="start">启动</button></td><td><button class="btn primary" data-svc="all" data-act="start">启动</button></td></tr>
+            <tr><td>停止</td><td><button class="btn" data-svc="ftp" data-act="stop">停止</button></td><td><button class="btn" data-svc="sftp" data-act="stop">停止</button></td><td><button class="btn primary" data-svc="all" data-act="stop">停止</button></td></tr>
+            <tr><td>重启</td><td><button class="btn" data-svc="ftp" data-act="restart">重启</button></td><td><button class="btn" data-svc="sftp" data-act="restart">重启</button></td><td><button class="btn primary" data-svc="all" data-act="restart">重启</button></td></tr>
+          </tbody>
+        </table>
+        <h3 class="danger-title">危险操作</h3>
+        <button id="btn-shutdown" class="btn danger">关停 fftpd 守护进程</button>
+      </div>
+    </div>
+
+    <div class="card">
+      <h3>日志设置</h3>
+      <form id="logcfg-form" class="form-grid">
+        <label>日志目录 <input id="lc-dir" type="text" placeholder="（空 = 默认目录）"></label>
+        <label>日志级别
+          <select id="lc-level">
+            <option value="error">error</option>
+            <option value="warn">warn</option>
+            <option value="info" selected>info</option>
+            <option value="debug">debug</option>
+            <option value="trace">trace</option>
+          </select>
+        </label>
+        <label>单文件上限（MB） <input id="lc-size" type="number" min="1" step="1"></label>
+        <label>保留文件数 <input id="lc-files" type="number" min="1" step="1"></label>
+        <label class="check"><input id="lc-gui" type="checkbox"> 同时写入控制台</label>
+        <div class="form-actions">
+          <button type="button" id="lc-reload" class="btn ghost">重新加载</button>
+          <button type="submit" class="btn primary">保存日志设置</button>
+        </div>
+      </form>
+    </div>
+  </section>
+
+  <!-- 配置 -->
+  <section id="tab-config" class="hidden">
+    <div class="card">
+      <h3>config.toml</h3>
+      <p class="hint">直接编辑 TOML 原文，保存后由 fftpd 校验；校验失败会回显错误且不生效。</p>
+      <textarea id="config-text" class="editor" spellcheck="false"></textarea>
+      <div class="form-actions">
+        <button id="config-reload" class="btn ghost">重新加载</button>
+        <button id="config-save" class="btn primary">保存配置</button>
+      </div>
+    </div>
+  </section>
+
+  <!-- 用户 -->
+  <section id="tab-users" class="hidden">
+    <div class="card">
+      <h3>users.json</h3>
+      <p class="hint">直接编辑用户库 JSON 原文，保存后由 fftpd 校验。</p>
+      <textarea id="users-text" class="editor" spellcheck="false"></textarea>
+      <div class="form-actions">
+        <button id="users-reload" class="btn ghost">重新加载</button>
+        <button id="users-save" class="btn primary">保存用户库</button>
+      </div>
+    </div>
+    <div class="card">
+      <h3>目录辅助</h3>
+      <div class="form-actions left">
+        <button id="dirs-ensure" class="btn">为全部用户补建主目录</button>
+      </div>
+      <form id="dirs-form" class="form-grid">
+        <label>目录路径 <input id="dirs-path" type="text" placeholder="/home/fftp/user1"></label>
+        <div class="form-actions left">
+          <button type="submit" class="btn">创建目录</button>
+          <button type="button" id="dirs-perms" class="btn">设置目录权限</button>
+        </div>
+      </form>
+    </div>
+  </section>
+
+  <!-- 实时日志 -->
+  <section id="tab-logs" class="hidden">
+    <div class="card full">
+      <div class="toolbar">
+        <button id="log-pause" class="btn">暂停</button>
+        <button id="log-clear" class="btn ghost">清屏</button>
+        <label class="check"><input id="log-autoscroll" type="checkbox" checked> 自动滚动</label>
+        <span id="log-state" class="hint"></span>
+      </div>
+      <div id="log-view" class="console"></div>
+    </div>
+  </section>
+
+  <!-- 日志文件 -->
+  <section id="tab-logfiles" class="hidden">
+    <div class="grid-2">
+      <div class="card">
+        <h3>日志文件</h3>
+        <ul id="logfile-list" class="filelist"><li class="hint">加载中…</li></ul>
+      </div>
+      <div class="card">
+        <h3>文件内容 <span id="logfile-name" class="mono"></span></h3>
+        <div class="toolbar">
+          <label>末尾条数
+            <select id="logfile-count">
+              <option>200</option><option>1000</option><option selected>5000</option>
+            </select>
+          </label>
+          <button id="logfile-refresh" class="btn ghost">刷新</button>
+        </div>
+        <div id="logfile-view" class="console small">选择左侧文件查看</div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 文件操作 -->
+  <section id="tab-fileop" class="hidden">
+    <div class="grid-2">
+      <div class="card">
+        <h3>文件操作日志</h3>
+        <ul id="fileop-list" class="filelist"><li class="hint">加载中…</li></ul>
+      </div>
+      <div class="card">
+        <h3>操作记录 <span id="fileop-name" class="mono"></span></h3>
+        <div class="toolbar">
+          <label>末尾条数
+            <select id="fileop-count">
+              <option>200</option><option>1000</option><option selected>5000</option>
+            </select>
+          </label>
+          <button id="fileop-refresh" class="btn ghost">刷新</button>
+        </div>
+        <div id="fileop-view" class="table-wrap small">选择左侧文件查看</div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 关于 -->
+  <section id="tab-about" class="hidden">
+    <div class="card">
+      <h3>关于 fftp-http</h3>
+      <div class="meta-list">
+        <div><label>fftpd 版本</label><span id="about-version">—</span></div>
+        <div><label>fftp-http 配置</label><span id="about-httpconfig">—</span></div>
+        <div><label>fftpd 配置</label><span id="about-config" class="mono">—</span></div>
+        <div><label>用户库</label><span id="about-users" class="mono">—</span></div>
+        <div><label>IPC 端点</label><span id="about-endpoint" class="mono">—</span></div>
+      </div>
+      <p class="hint">fftp-http 是与 fftp-gui 平级的 Web 管理前端，经 fftp-ipc 与 fftpd 通信；
+      管理员账户、监听地址、TLS 与 IP 黑白名单均在 fftp-http 自身配置文件中独立管理。</p>
+    </div>
+  </section>
+
+</main>
+
+<!-- 登录遮罩 -->
+<div id="login" class="overlay">
+  <form id="login-form" class="login-box">
+    <h2>fftp Web 管理</h2>
+    <label>用户名 <input id="login-user" type="text" autocomplete="username" required></label>
+    <label>口令 <input id="login-pass" type="password" autocomplete="current-password" required></label>
+    <p id="login-err" class="error hidden"></p>
+    <button type="submit" class="btn primary wide">登录</button>
+  </form>
+</div>
+
+<div id="toast" class="toast hidden"></div>
+
+<script src="/static/app.js"></script>
+</body>
+</html>
