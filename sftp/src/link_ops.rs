@@ -49,17 +49,17 @@ impl SftpState {
     ///
     /// # Errors
     /// 权限不足、路径越狱或创建失败时返回错误应答
-    pub async fn symlink(
+    pub fn symlink(
         &mut self,
         id: u32,
-        target: String,
-        link_path: String,
+        target: &str,
+        link_path: &str,
     ) -> Result<Status, StatusReply> {
         if !self.check_permission(|p| p.can_write) {
             return Err(status_err(StatusCode::PermissionDenied, "Permission denied"));
         }
 
-        let full_link = self.resolve_path_or_err(&link_path)?;
+        let full_link = self.resolve_path_or_err(link_path)?;
 
         // home 规范路径作为 jail 基准（链接路径已经 resolve 落在其内）
         let home_canon = PathBuf::from(&self.home_dir)
@@ -68,8 +68,8 @@ impl SftpState {
 
         // 目标必须解析到 home 之内（相对目标按链接父目录拼接）
         let link_parent = full_link.parent().unwrap_or(Path::new(&self.home_dir));
-        let resolved_target = if Path::new(&target).is_absolute() {
-            self.resolve_path_or_err(&target)?
+        let resolved_target = if Path::new(target).is_absolute() {
+            self.resolve_path_or_err(target)?
         } else {
             link_parent.join(&target)
         };
@@ -190,10 +190,7 @@ mod tests {
         std::fs::write(env.dir.path().join("target.txt"), b"t").unwrap();
 
         // 业务参数序：target 在前、link_path 在后
-        env.state
-            .symlink(1, "target.txt".to_string(), "/link.txt".to_string())
-            .await
-            .unwrap();
+        env.state.symlink(1, "target.txt", "/link.txt").unwrap();
         assert!(env.dir.path().join("link.txt").symlink_metadata().unwrap().is_symlink());
 
         let name = env.state.readlink(2, "/link.txt".to_string()).await.unwrap();
@@ -204,7 +201,7 @@ mod tests {
         assert!(attrs.attrs.is_symlink());
     }
 
-    /// READLINK 目标不是符号链接（或不存在）回 NO_SUCH_FILE
+    /// `READLINK` 目标不是符号链接（或不存在）回 `NO_SUCH_FILE`
     #[tokio::test]
     async fn readlink_non_symlink() {
         let mut env = crate::test_util::setup();
@@ -221,11 +218,7 @@ mod tests {
     #[tokio::test]
     async fn link_ops_denied_without_permission() {
         let mut env = setup_with_perms(|p| p.can_write = false);
-        let err = env
-            .state
-            .symlink(1, "t.txt".to_string(), "/l.txt".to_string())
-            .await
-            .unwrap_err();
+        let err = env.state.symlink(1, "t.txt", "/l.txt").unwrap_err();
         assert_eq!(err.status_code, StatusCode::PermissionDenied);
 
         let mut env = setup_with_perms(|p| {
@@ -246,12 +239,7 @@ mod tests {
         let mut env = crate::test_util::setup();
         let err = env
             .state
-            .symlink(
-                1,
-                "../../etc/passwd".to_string(),
-                "/evil.txt".to_string(),
-            )
-            .await
+            .symlink(1, "../../etc/passwd", "/evil.txt")
             .unwrap_err();
         assert_eq!(err.status_code, StatusCode::PermissionDenied);
         assert!(!env.dir.path().join("evil.txt").exists());

@@ -235,7 +235,7 @@ mod tests {
     use crate::protocol::OpenFlags;
     use crate::test_util::{setup, setup_with_perms};
 
-    /// STAT 返回文件大小；不存在的文件回 NO_SUCH_FILE
+    /// STAT 返回文件大小；不存在的文件回 `NO_SUCH_FILE`
     #[tokio::test]
     async fn stat_size_and_missing() {
         let mut env = setup();
@@ -284,7 +284,7 @@ mod tests {
         assert_eq!(err.status_code, StatusCode::PermissionDenied);
     }
 
-    /// SETSTAT：截断 + 修改时间；目标不存在回 NO_SUCH_FILE
+    /// SETSTAT：截断 + 修改时间；目标不存在回 `NO_SUCH_FILE`
     #[tokio::test]
     async fn setstat_truncate_and_times() {
         let mut env = setup();
@@ -342,7 +342,7 @@ mod tests {
         assert_eq!(err.status_code, StatusCode::Failure);
     }
 
-    /// apply_file_attributes：直接应用 size 属性
+    /// `apply_file_attributes`：直接应用 `size` 属性
     #[tokio::test]
     async fn apply_file_attributes_sets_size() {
         let dir = tempfile::tempdir().unwrap();

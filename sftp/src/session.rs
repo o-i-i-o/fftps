@@ -32,6 +32,8 @@ impl Drop for Session {
     }
 }
 
+// trait 方法签名统一为 async，无 await 点的实现遵循签名而非裁剪 async
+#[allow(clippy::unused_async_trait_impl)]
 impl ProtocolHandler for Session {
     type Error = StatusReply;
 
@@ -118,7 +120,7 @@ impl ProtocolHandler for Session {
     }
 
     async fn opendir(&mut self, id: u32, path: String) -> Result<Handle, Self::Error> {
-        self.state.opendir(id, path)
+        self.state.opendir(id, &path)
     }
 
     async fn readdir(&mut self, id: u32, handle: String) -> Result<Name, Self::Error> {
@@ -143,7 +145,7 @@ impl ProtocolHandler for Session {
     }
 
     async fn realpath(&mut self, id: u32, path: String) -> Result<Name, Self::Error> {
-        self.state.realpath(id, path)
+        self.state.realpath(id, &path)
     }
 
     async fn stat(&mut self, id: u32, path: String) -> Result<Attrs, Self::Error> {
@@ -172,7 +174,7 @@ impl ProtocolHandler for Session {
         linkpath: String,
         targetpath: String,
     ) -> Result<Status, Self::Error> {
-        self.state.symlink(id, linkpath, targetpath).await
+        self.state.symlink(id, &linkpath, &targetpath)
     }
 
     async fn block(
@@ -183,7 +185,7 @@ impl ProtocolHandler for Session {
         length: u64,
         flags: u32,
     ) -> Result<Status, Self::Error> {
-        self.state.block(id, handle, offset, length, flags)
+        self.state.block(id, &handle, offset, length, flags)
     }
 
     async fn unblock(
@@ -193,7 +195,7 @@ impl ProtocolHandler for Session {
         offset: u64,
         length: u64,
     ) -> Result<Status, Self::Error> {
-        self.state.unblock(id, handle, offset, length)
+        self.state.unblock(id, &handle, offset, length)
     }
 
     async fn extended(
@@ -288,7 +290,7 @@ mod tests {
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
     }
 
-    /// 无效报文类型回 STATUS BAD_MESSAGE（协议层兜底路径）
+    /// 无效报文类型回 `STATUS` `BAD_MESSAGE`（协议层兜底路径）
     #[tokio::test]
     async fn unknown_packet_type_rejected() {
         let env = crate::test_util::setup();

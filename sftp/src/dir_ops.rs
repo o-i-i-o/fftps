@@ -15,7 +15,7 @@ impl SftpState {
     ///
     /// # Errors
     /// 权限不足、句柄超限、路径越狱或目标不是目录时返回错误应答
-    pub fn opendir(&mut self, id: u32, path: String) -> Result<Handle, StatusReply> {
+    pub fn opendir(&mut self, id: u32, path: &str) -> Result<Handle, StatusReply> {
         if !self.check_permission(|p| p.can_list) {
             return Err(status_err(StatusCode::PermissionDenied, "Permission denied"));
         }
@@ -28,7 +28,7 @@ impl SftpState {
             return Err(status_err(StatusCode::Failure, "Too many open handles"));
         }
 
-        let full_path = self.resolve_path_or_err(&path)?;
+        let full_path = self.resolve_path_or_err(path)?;
 
         if !full_path.exists() {
             return Err(status_err(StatusCode::NoSuchFile, "No such directory"));
@@ -322,11 +322,11 @@ impl SftpState {
     ///
     /// # Errors
     /// 路径越狱或映射失败时返回错误应答
-    pub fn realpath(&mut self, id: u32, path: String) -> Result<Name, StatusReply> {
+    pub fn realpath(&mut self, id: u32, path: &str) -> Result<Name, StatusReply> {
         let full_path = if path.is_empty() || path == "." {
             PathBuf::from(&self.cwd)
         } else {
-            self.resolve_path(&path).map_err(|e| {
+            self.resolve_path(path).map_err(|e| {
                 tracing::warn!("REALPATH failed for '{path}': {e}");
                 status_err(StatusCode::NoSuchFile, &e.to_string())
             })?
@@ -420,13 +420,10 @@ mod tests {
             .unwrap_err();
         assert_eq!(err.status_code, StatusCode::Failure);
 
-        let handle = env.state.opendir(3, "/sub".to_string()).unwrap().handle;
+        let handle = env.state.opendir(3, "/sub").unwrap().handle;
 
         // 非目录路径拒绝
-        let err = env
-            .state
-            .opendir(4, "/sub/f.txt".to_string())
-            .unwrap_err();
+        let err = env.state.opendir(4, "/sub/f.txt").unwrap_err();
         assert_eq!(err.status_code, StatusCode::Failure);
 
         let name = env.state.readdir(5, handle.clone()).await.unwrap();
@@ -448,16 +445,16 @@ mod tests {
             .mkdir(10, "/empty".to_string(), FileAttributes::default())
             .await
             .unwrap();
-        let handle = env.state.opendir(11, "/empty".to_string()).unwrap().handle;
+        let handle = env.state.opendir(11, "/empty").unwrap().handle;
         let err = env.state.readdir(12, handle).await.unwrap_err();
         assert_eq!(err.status_code, StatusCode::Eof);
     }
 
-    /// 不存在的目录 OPENDIR 回 NO_SUCH_FILE
+    /// 不存在的目录 `OPENDIR` 回 `NO_SUCH_FILE`
     #[tokio::test]
     async fn opendir_missing_dir() {
         let mut env = crate::test_util::setup();
-        let err = env.state.opendir(1, "/missing".to_string()).unwrap_err();
+        let err = env.state.opendir(1, "/missing").unwrap_err();
         assert_eq!(err.status_code, StatusCode::NoSuchFile);
     }
 
@@ -534,19 +531,19 @@ mod tests {
     async fn realpath_maps_to_virtual_root() {
         let mut env = crate::test_util::setup();
 
-        let name = env.state.realpath(1, ".".to_string()).unwrap();
+        let name = env.state.realpath(1, ".").unwrap();
         assert_eq!(name.files[0].filename, "/");
 
-        let name = env.state.realpath(2, "/".to_string()).unwrap();
+        let name = env.state.realpath(2, "/").unwrap();
         assert_eq!(name.files[0].filename, "/");
 
         // 存在的文件映射为虚路径
         std::fs::write(env.dir.path().join("f.txt"), b"x").unwrap();
-        let name = env.state.realpath(3, "/f.txt".to_string()).unwrap();
+        let name = env.state.realpath(3, "/f.txt").unwrap();
         assert_eq!(name.files[0].filename, "/f.txt");
 
         // 越狱拒绝
-        let err = env.state.realpath(4, "/../escape".to_string()).unwrap_err();
+        let err = env.state.realpath(4, "/../escape").unwrap_err();
         assert_eq!(err.status_code, StatusCode::NoSuchFile);
     }
 }

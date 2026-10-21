@@ -560,7 +560,7 @@ mod tests {
         assert_eq!(err.status_code, StatusCode::Failure);
 
         // 目录句柄不能当文件句柄用
-        let dir_handle = env.state.opendir(3, "/".to_string()).unwrap().handle;
+        let dir_handle = env.state.opendir(3, "/").unwrap().handle;
         let err = env
             .state
             .read(4, dir_handle, 0, 8)

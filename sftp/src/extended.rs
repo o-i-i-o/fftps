@@ -21,6 +21,7 @@ use crate::protocol::{
 use crate::state::{SftpState, status_err, status_ok};
 use crate::types::{SftpFileHandle, MAX_HANDLES, SFTP_READ_BUFFER_SIZE};
 use std::time::Instant;
+use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
 
 /// 写请求帧（id + handle + offset + data）开销预留，limits 广播的写上限需留出该空间
 const LIMITS_MAX_WRITE_LEN: u64 = 261_120;
@@ -106,7 +107,7 @@ impl SftpState {
             "hardlink" | extensions::HARDLINK => self.hardlink(id, data).await,
             extensions::STATVFS => self.statvfs(id, &data),
             extensions::FSYNC => self.fsync(id, &data).await,
-            extensions::LIMITS => self.limits_reply(id),
+            extensions::LIMITS => limits_reply(id),
             _ => {
                 tracing::debug!(
                     client_ip = %self.client_ip,
@@ -131,14 +132,13 @@ impl SftpState {
         mut hasher: Box<dyn FileHasher + Send>,
     ) -> Result<Packet, StatusReply> {
         let mut buf = Bytes::copy_from_slice(data);
-        let (path, start, length) = match de::from_bytes::<DigestRequest>(&mut buf) {
-            Ok(r) => (r.path, r.start, r.length),
-            Err(_) => {
-                let mut fallback = Bytes::copy_from_slice(data);
-                match de::from_bytes::<DigestPathOnly>(&mut fallback) {
-                    Ok(r) => (r.path, 0, 0),
-                    Err(_) => return Err(malformed_request()),
-                }
+        let (path, start, length) = if let Ok(r) = de::from_bytes::<DigestRequest>(&mut buf) {
+            (r.path, r.start, r.length)
+        } else {
+            let mut fallback = Bytes::copy_from_slice(data);
+            match de::from_bytes::<DigestPathOnly>(&mut fallback) {
+                Ok(r) => (r.path, 0, 0),
+                Err(_) => return Err(malformed_request()),
             }
         };
 
@@ -159,8 +159,6 @@ impl SftpState {
                 });
             }
         };
-
-        use tokio::io::{AsyncReadExt, AsyncSeekExt};
 
         if start > 0 && file.seek(std::io::SeekFrom::Start(start)).await.is_err() {
             return Err(status_err(StatusCode::Failure, "Seek failed"));
@@ -432,8 +430,6 @@ impl SftpState {
         let FsyncExtension { handle } =
             de::from_bytes(&mut buf).map_err(|_| malformed_request())?;
 
-        use tokio::io::AsyncWriteExt;
-
         let Some(SftpFileHandle::File {
             file, last_access, ..
         }) = self
@@ -467,24 +463,21 @@ impl SftpState {
         tracing::debug!("SFTP FSYNC: handle {handle} flushed to disk");
         Ok(status_ok(id).into())
     }
+}
 
-    /// limits@openssh.com：广播服务端读/写/句柄上限
-    ///
-    /// 应答 data 按 OpenSSH 格式：`string("limits@openssh.com") + 4×u64`
-    fn limits_reply(&self, id: u32) -> Result<Packet, StatusReply> {
-        let max_packet_len = u64::from(Config::default().max_client_packet_len);
-        let mut payload = ser::to_bytes(extensions::LIMITS)
-            .map_err(|_| status_err(StatusCode::Failure, "Failed to encode limits reply"))?
-            .to_vec();
-        payload.extend_from_slice(&max_packet_len.to_be_bytes());
-        payload.extend_from_slice(&(SFTP_READ_BUFFER_SIZE as u64).to_be_bytes());
-        payload.extend_from_slice(&LIMITS_MAX_WRITE_LEN.to_be_bytes());
-        payload.extend_from_slice(&(MAX_HANDLES as u64).to_be_bytes());
-        Ok(Packet::ExtendedReply(ExtendedReply {
-            id,
-            data: payload,
-        }))
-    }
+/// limits@openssh.com：广播服务端读/写/句柄上限
+///
+/// 应答 data 按 OpenSSH 格式：`string("limits@openssh.com") + 4×u64`
+fn limits_reply(id: u32) -> Result<Packet, StatusReply> {
+    let max_packet_len = u64::from(Config::default().max_client_packet_len);
+    let mut payload = ser::to_bytes(extensions::LIMITS)
+        .map_err(|_| status_err(StatusCode::Failure, "Failed to encode limits reply"))?
+        .to_vec();
+    payload.extend_from_slice(&max_packet_len.to_be_bytes());
+    payload.extend_from_slice(&(SFTP_READ_BUFFER_SIZE as u64).to_be_bytes());
+    payload.extend_from_slice(&LIMITS_MAX_WRITE_LEN.to_be_bytes());
+    payload.extend_from_slice(&(MAX_HANDLES as u64).to_be_bytes());
+    Ok(Packet::ExtendedReply(ExtendedReply { id, data: payload }))
 }
 
 #[cfg(test)]
@@ -494,7 +487,7 @@ mod tests {
     use crate::protocol::message::{FileAttributes, StatusCode};
     use crate::test_util::setup;
 
-    /// 从 EXTENDED_REPLY 的 data 中取出 `u32 长度 + hex` 负载里的 hex 字符串
+    /// 从 `EXTENDED_REPLY` 的 data 中取出 `u32 长度 + hex` 负载里的 hex 字符串
     fn hex_of(data: &[u8]) -> String {
         let len = u32::from_be_bytes([data[0], data[1], data[2], data[3]]) as usize;
         String::from_utf8(data[4..4 + len].to_vec()).unwrap()
@@ -736,7 +729,7 @@ mod tests {
         assert_eq!(read_u64(24), crate::types::MAX_HANDLES as u64); // max_open_handles
     }
 
-    /// 未知扩展回 OP_UNSUPPORTED
+    /// 未知扩展回 `OP_UNSUPPORTED`
     #[tokio::test]
     async fn unknown_extension_unsupported() {
         let mut env = setup();

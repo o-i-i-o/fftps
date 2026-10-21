@@ -19,7 +19,7 @@ impl SftpState {
     pub fn block(
         &mut self,
         id: u32,
-        handle: String,
+        handle: &str,
         offset: u64,
         length: u64,
         flags: u32,
@@ -30,7 +30,7 @@ impl SftpState {
 
         let file_handle = self
             .handles
-            .get_mut(&handle)
+            .get_mut(handle)
             .filter(|h| matches!(h, SftpFileHandle::File { .. }));
         let Some(SftpFileHandle::File {
             path,
@@ -102,13 +102,13 @@ impl SftpState {
     pub fn unblock(
         &mut self,
         id: u32,
-        handle: String,
+        handle: &str,
         offset: u64,
         length: u64,
     ) -> Result<Status, StatusReply> {
         let file_handle = self
             .handles
-            .get_mut(&handle)
+            .get_mut(handle)
             .filter(|h| matches!(h, SftpFileHandle::File { .. }));
         let Some(SftpFileHandle::File {
             path,
@@ -165,30 +165,19 @@ mod tests {
         let mut env = setup();
         let handle = open_file(&mut env.state, 1).await;
 
-        env.state
-            .block(2, handle.clone(), 0, 100, 1)
-            .unwrap();
+        env.state.block(2, &handle, 0, 100, 1).unwrap();
         assert_eq!(env.state.locked_files.len(), 1);
 
         // 已锁文件再次加锁 → File already locked（FAILURE）
-        let err = env
-            .state
-            .block(3, handle.clone(), 0, 100, 1)
-            .unwrap_err();
+        let err = env.state.block(3, &handle, 0, 100, 1).unwrap_err();
         assert_eq!(err.status_code, StatusCode::Failure);
 
-        env.state
-            .unblock(4, handle.clone(), 0, 100)
-            .unwrap();
+        env.state.unblock(4, &handle, 0, 100).unwrap();
         assert!(env.state.locked_files.is_empty());
 
         // 释放后可重新加锁
-        env.state
-            .block(5, handle.clone(), 0, 100, 0)
-            .unwrap();
-        env.state
-            .unblock(6, handle, 0, 100)
-            .unwrap();
+        env.state.block(5, &handle, 0, 100, 0).unwrap();
+        env.state.unblock(6, &handle, 0, 100).unwrap();
     }
 
     /// BLOCK flags=2（解锁语义）幂等释放
@@ -197,12 +186,8 @@ mod tests {
         let mut env = setup();
         let handle = open_file(&mut env.state, 1).await;
 
-        env.state
-            .block(2, handle.clone(), 0, 10, 1)
-            .unwrap();
-        env.state
-            .block(3, handle.clone(), 0, 10, 2)
-            .unwrap();
+        env.state.block(2, &handle, 0, 10, 1).unwrap();
+        env.state.block(3, &handle, 0, 10, 2).unwrap();
         assert!(env.state.locked_files.is_empty());
     }
 
@@ -211,10 +196,7 @@ mod tests {
     async fn blocking_lock_rejected() {
         let mut env = setup();
         let handle = open_file(&mut env.state, 1).await;
-        let err = env
-            .state
-            .block(2, handle, 0, 10, 0x8 | 0x1)
-            .unwrap_err();
+        let err = env.state.block(2, &handle, 0, 10, 0x8 | 0x1).unwrap_err();
         assert_eq!(err.status_code, StatusCode::Failure);
         assert!(env.state.locked_files.is_empty());
     }
@@ -224,28 +206,16 @@ mod tests {
     async fn lock_invalid_handles() {
         let mut env = setup();
 
-        let err = env
-            .state
-            .block(1, "ghost".to_string(), 0, 10, 1)
-            .unwrap_err();
+        let err = env.state.block(1, "ghost", 0, 10, 1).unwrap_err();
         assert_eq!(err.status_code, StatusCode::Failure);
 
-        let err = env
-            .state
-            .unblock(2, "ghost".to_string(), 0, 10)
-            .unwrap_err();
+        let err = env.state.unblock(2, "ghost", 0, 10).unwrap_err();
         assert_eq!(err.status_code, StatusCode::Failure);
 
-        let dir_handle = env.state.opendir(3, "/".to_string()).unwrap().handle;
-        let err = env
-            .state
-            .block(4, dir_handle.clone(), 0, 10, 1)
-            .unwrap_err();
+        let dir_handle = env.state.opendir(3, "/").unwrap().handle;
+        let err = env.state.block(4, &dir_handle, 0, 10, 1).unwrap_err();
         assert_eq!(err.status_code, StatusCode::Failure);
-        let err = env
-            .state
-            .unblock(5, dir_handle, 0, 10)
-            .unwrap_err();
+        let err = env.state.unblock(5, &dir_handle, 0, 10).unwrap_err();
         assert_eq!(err.status_code, StatusCode::Failure);
     }
 }
