@@ -355,6 +355,10 @@ mod tests {
             &*ERRORS_TOTAL,
         ));
 
+        // HistogramVec 只有在产生标签组合后才出现在导出文本中，先落一组子指标
+        COMMAND_DURATION.with_label_values(&["FTP", "TEST"]);
+        TRANSFER_DURATION.with_label_values(&["FTP", "TEST"]);
+
         let text = gather_metrics();
         for name in [
             "wftpg_connections_total",
