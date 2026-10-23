@@ -298,6 +298,26 @@ mod tests {
     }
 
     #[test]
+    fn example_file_parses_with_documented_defaults() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../examples/fftp-http.toml.example");
+        let raw = std::fs::read_to_string(&path)
+            .unwrap_or_else(|e| panic!("读取示例配置失败 {}: {e}", path.display()));
+        let cfg: HttpConfig = toml::from_str(&raw).expect("示例配置应为合法 TOML 且字段有效");
+
+        assert_eq!(cfg.listen.address, "127.0.0.1");
+        assert_eq!(cfg.listen.port, 8080);
+        assert!(!cfg.tls.enabled);
+        assert!(cfg.ip_filter.whitelist.is_empty());
+        assert!(cfg.ip_filter.blacklist.is_empty());
+        assert_eq!(cfg.auth.session_ttl_secs, 43_200);
+        assert!(cfg.auth.api_token.is_empty());
+        // 管理员段在示例中默认注释，启用前应拒绝启动
+        assert!(cfg.admin_users.is_empty());
+        assert!(cfg.validate().is_err());
+    }
+
+    #[test]
     fn config_roundtrip_preserves_admin_users() {
         let cfg = base();
         let raw = toml::to_string(&cfg).unwrap();

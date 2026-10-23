@@ -1,0 +1,55 @@
+# fftp-http 配置示例（Web 管理前端专用，fftpd 不读取本文件）
+#
+# 使用步骤：
+#   1. 复制为实际配置文件（Linux 默认 ~/.config/fftpd/fftp-http.toml，
+#      Windows 默认 %ProgramData%\fftpd\fftp-http.toml），
+#      或用环境变量 FFTPD_HTTP_CONFIG 指定任意路径；
+#   2. 生成管理员口令哈希：fftp-http hash '你的口令'
+#      （用单引号包裹，避免 shell 展开哈希中的 $ 字符）；
+#   3. 取消文末 [[admin_users]] 段的注释并填入真实哈希，然后启动 fftp-http。
+#
+# 文件缺失时 fftp-http 会自动生成一份默认模板；管理员账户为空将拒绝启动。
+# 所有字段均可缺省，缺省值与本示例一致。
+
+[listen]
+# 绑定地址（IPv4/IPv6 字面量，如 127.0.0.1 / 0.0.0.0 / ::）。
+# 绑定非回环地址时必须启用 TLS（[tls].enabled）或配置 [auth].api_token，
+# 否则启动校验直接拒绝，避免管理界面明文暴露在网络上。
+address = "127.0.0.1"
+port = 8080
+
+[tls]
+# 启用后同一端口提供 HTTPS，会话 Cookie 追加 Secure 属性。
+# cert_path 为 PEM 证书链（服务器证书在前，可含中间 CA），key_path 为 PEM 私钥。
+# 启用时两者必须指向已存在的文件，否则启动失败。
+enabled = false
+cert_path = ""
+key_path = ""
+
+[ip_filter]
+# 直接匹配 TCP 对端地址（不信任 X-Forwarded-For，防伪造），支持单 IP 与 CIDR。
+# 语义：黑名单优先；whitelist 非空即进入白名单模式，未命中一律返回 403。
+# 规则作用于全部请求（含登录页与静态资源）。
+whitelist = []
+blacklist = []
+
+[auth]
+# 会话有效期（秒），默认 43200 = 12 小时。
+# 会话仅保存在进程内，fftp-http 重启后所有会话失效，需重新登录。
+session_ttl_secs = 43200
+# 可选静态 API token：配置后可用 `Authorization: Bearer <token>` 免登录访问 API，
+# 供脚本/自动化使用，权限等同管理员，建议配合 TLS 与 IP 白名单。
+# 生成建议：openssl rand -hex 32
+api_token = ""
+
+# 管理员账户（至少一条，否则启动失败；用户名不可重复）。
+# 口令哈希必须为 Argon2id PHC 字符串（以 $argon2id$ 开头），
+# 用 `fftp-http hash '<口令>'` 生成后替换下方占位值。
+#[[admin_users]]
+#username = "admin"
+#password_hash = "$argon2id$v=19$m=65536,t=3,p=4$<salt>$<hash>"
+
+# 需要多个管理员时，重复 [[admin_users]] 段即可：
+#[[admin_users]]
+#username = "ops"
+#password_hash = "$argon2id$v=19$m=65536,t=3,p=4$<salt>$<hash>"

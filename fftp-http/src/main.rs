@@ -150,8 +150,6 @@ fn init_logging() {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-
     #[test]
     fn hash_uses_shared_argon2_policy() {
         let hash = fftp_common::users::UserManager::hash_password("test-pass").unwrap();
