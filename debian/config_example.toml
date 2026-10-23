@@ -26,7 +26,9 @@ masquerade_address = ""
 connection_timeout = 15
 idle_timeout = 15
 hide_version_info = false
-pooled_listener_mode = true
+# 池化被动监听模式：libunftp 0.23.1 停止后不释放预绑定的被动端口，
+# 运行期 restart 会失败（需重启 fftpd 进程），默认关闭
+pooled_listener_mode = false
 allow_nat_clients = true
 # FTP 根目录，空 = 各用户 home
 ftp_root = ""

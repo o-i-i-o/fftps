@@ -250,6 +250,15 @@ impl FtpService {
             cfg.ftp.connection_mode.as_str()
         );
 
+        if cfg.ftp.pooled_listener_mode {
+            // 上游缺陷（libunftp 0.23.1）：池化模式把被动监听器交给分离的 accept 任务，
+            // stop() 只取消监听循环，不关闭这些任务持有的端口，运行期 restart 会绑定失败
+            tracing::warn!(
+                "已启用池化被动监听模式（pooled_listener_mode）：libunftp 停止后不会释放被动端口，\
+                 运行期 restart 将失败，需重启 fftpd 进程恢复；建议保持默认关闭"
+            );
+        }
+
         let server = self.assemble_server(&cfg, root_mode, ftps_paths, shutdown_rx)?;
         self.running.store(true, Ordering::SeqCst);
         let running = Arc::clone(&self.running);
@@ -423,6 +432,7 @@ mod tests {
         let mut cfg = Config::default();
         cfg.ftp.bind_ip = "127.0.0.1".to_string();
         cfg.ftp.port = 0;
+        // libunftp 0.23.1 池化模式停止时不释放被动端口，测试显式走 legacy 模式
         cfg.ftp.pooled_listener_mode = false;
         cfg
     }

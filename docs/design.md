@@ -136,7 +136,7 @@ masquerade_address = ""
 connection_timeout = 15
 idle_timeout = 15
 hide_version_info = false
-pooled_listener_mode = true
+pooled_listener_mode = false           # 池化被动监听；上游 0.23.1 停止不释放端口，默认关闭
 allow_nat_clients = true
 ftp_root = ""                           # 空 = 各用户 home
 [ftp.ftps]

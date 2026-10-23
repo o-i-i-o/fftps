@@ -271,21 +271,22 @@ impl SftpHandler {
         let Ok(content) = tokio::fs::read_to_string(&authorized_keys).await else {
             return false;
         };
-        for line in content.lines().map(str::trim) {
-            if line.is_empty() || line.starts_with('#') {
-                continue;
-            }
-            // 兼容 OpenSSH 单行公钥与纯 base64 两种存储格式
-            let stored = russh::keys::PublicKey::from_openssh(line)
-                .or_else(|_| russh::keys::parse_public_key_base64(line));
-            if let Ok(stored_pubkey) = stored
-                && public_key == &stored_pubkey
-            {
-                return true;
-            }
-        }
-        false
+        content
+            .lines()
+            .map(str::trim)
+            .filter(|line| !line.is_empty() && !line.starts_with('#'))
+            .any(|line| authorized_key_line_matches(line, public_key))
     }
+}
+
+/// 单行 `authorized_keys` 与客户端公钥是否匹配
+///
+/// `PublicKey` 的相等比较包含注释字段，而 SSH 认证报文中不携带注释；
+/// 若按整体比较，带注释的标准 OpenSSH 公钥行将永远无法匹配。
+fn authorized_key_line_matches(line: &str, public_key: &PublicKey) -> bool {
+    let stored = russh::keys::PublicKey::from_openssh(line)
+        .or_else(|_| russh::keys::parse_public_key_base64(line));
+    matches!(stored, Ok(k) if public_key.key_data() == k.key_data())
 }
 
 impl russh::server::Handler for SftpHandler {
@@ -663,5 +664,19 @@ mod tests {
         assert!(handler.check_auth_preconditions("alice").is_none());
         // 第 3 次超过上限 2
         assert!(handler.check_auth_preconditions("alice").is_some());
+    }
+
+    #[test]
+    fn authorized_keys_line_matches_ignoring_comment() {
+        let bare = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIF/0OFXQSRRXlUI29qILoNdMSbtW/89Z+yfvFWRPjKd6";
+        let with_comment = format!("{bare} alice@example");
+        let client = PublicKey::from_openssh(bare).expect("解析测试公钥");
+
+        assert!(
+            authorized_key_line_matches(&with_comment, &client),
+            "带注释的标准 OpenSSH 公钥行必须匹配"
+        );
+        assert!(authorized_key_line_matches(bare, &client));
+        assert!(!authorized_key_line_matches("not-a-key", &client));
     }
 }

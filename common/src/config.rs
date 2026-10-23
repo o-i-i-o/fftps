@@ -80,6 +80,11 @@ pub struct FtpConfig {
     /// 空闲超时（秒）
     pub idle_timeout: u64,
     pub hide_version_info: bool,
+    /// 是否启用 libunftp 池化被动监听器
+    ///
+    /// 上游 libunftp 0.23.1 停止服务时不会关闭池化模式预绑定的被动端口，
+    /// 运行期重启会因端口被占用而失败（只能重启 fftpd 进程恢复），
+    /// 因此默认关闭，仅在确认无需运行期重启时才可显式开启。
     pub pooled_listener_mode: bool,
     pub allow_nat_clients: bool,
     /// FTP 根目录，空串 = 各用户 home
@@ -105,7 +110,7 @@ impl Default for FtpConfig {
             connection_timeout: 15,
             idle_timeout: 15,
             hide_version_info: false,
-            pooled_listener_mode: true,
+            pooled_listener_mode: false,
             allow_nat_clients: true,
             ftp_root: String::new(),
             ftps: FtpsConfig::default(),
@@ -581,7 +586,7 @@ mod tests {
         assert_eq!(config.ftp.passive_ports, (50000, 51000));
         assert_eq!(config.ftp.connection_timeout, 15);
         assert_eq!(config.ftp.idle_timeout, 15);
-        assert!(config.ftp.pooled_listener_mode);
+        assert!(!config.ftp.pooled_listener_mode);
         assert!(config.ftp.allow_nat_clients);
         assert!(!config.ftp.ftps.enabled);
 
@@ -604,6 +609,24 @@ mod tests {
         assert_eq!(config.logging.max_log_size, 10_485_760);
         assert!(!config.logging.enable_json);
         assert!(config.logging.enable_gui_logging);
+    }
+
+    /// 打包示例配置必须可解析，且与内置默认值完全一致（防止文档漂移）
+    #[test]
+    fn packaged_example_matches_builtin_defaults() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("..")
+            .join("debian")
+            .join("config_example.toml");
+        let content = std::fs::read_to_string(&path)
+            .unwrap_or_else(|e| panic!("读取 {} 失败: {e}", path.display()));
+        let example: Config = toml::from_str(&content).expect("示例配置必须可解析");
+
+        assert_eq!(
+            serde_json::to_value(&example).unwrap(),
+            serde_json::to_value(Config::default()).unwrap(),
+            "debian/config_example.toml 与内置默认值不一致"
+        );
     }
 
     #[test]
