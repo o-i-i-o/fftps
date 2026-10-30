@@ -189,11 +189,8 @@ pub async fn login(
     ConnectInfo(peer): ConnectInfo<std::net::SocketAddr>,
     Json(body): Json<LoginRequest>,
 ) -> Response {
-    let admin = state
-        .config
-        .admin_users
-        .iter()
-        .find(|u| u.username == body.username);
+    let admins = state.admins();
+    let admin = admins.iter().find(|u| u.username == body.username);
     let ok = admin.is_some_and(|AdminUser { password_hash, .. }| {
         fftp_common::users::UserManager::verify_password(&body.password, password_hash)
     });

@@ -152,6 +152,55 @@ impl HttpConfig {
         toml::from_str(&raw).with_context(|| format!("解析配置失败: {}", path.display()))
     }
 
+    /// 将管理员账户写回配置文件：仅替换 `[[admin_users]]` 段，保留文件其余
+    /// 内容与注释；写入前对完整新内容做解析 + 启动校验，避免落盘非法配置
+    ///
+    /// # Errors
+    /// 读取失败或生成的新内容解析/校验失败时返回错误
+    pub fn save_admin_users(path: &Path, users: &[AdminUser]) -> Result<()> {
+        let raw = std::fs::read_to_string(path)
+            .with_context(|| format!("读取配置失败: {}", path.display()))?;
+
+        // 剔除现存 [[admin_users]] 块（段头起至下一个段头/文件尾），其余原样保留
+        let mut kept: Vec<&str> = Vec::new();
+        let mut in_admin = false;
+        for line in raw.lines() {
+            let trimmed = line.trim_start();
+            if trimmed.starts_with("[[admin_users]") {
+                in_admin = true;
+                continue;
+            }
+            // 非注释的段头（[x] / [[x]]）结束 admin 块
+            if in_admin && trimmed.starts_with('[') {
+                in_admin = false;
+            }
+            if !in_admin {
+                kept.push(line);
+            }
+        }
+        while kept.last().is_some_and(|l| l.trim().is_empty()) {
+            kept.pop();
+        }
+
+        let mut out = kept.join("\n");
+        for u in users {
+            // AdminUser 为纯字符串字段，经 toml 序列化自动处理转义
+            out.push_str("\n\n[[admin_users]]\n");
+            out.push_str(&toml::to_string(u)?);
+        }
+
+        // 写入前校验：解析新内容并复用启动校验规则
+        let parsed: HttpConfig = toml::from_str(&out)
+            .with_context(|| format!("生成的新配置解析失败: {}", path.display()))?;
+        parsed
+            .validate()
+            .context("生成的新配置未通过启动校验（未写入文件）")?;
+
+        std::fs::write(path, out)
+            .with_context(|| format!("写入配置失败: {}", path.display()))?;
+        Ok(())
+    }
+
     /// 绑定地址是否仅回环（解析失败按 false 处理，由 [`Self::validate`] 报错）
     #[must_use]
     pub fn is_loopback_only(&self) -> bool {
@@ -324,5 +373,43 @@ mod tests {
         let parsed: HttpConfig = toml::from_str(&raw).unwrap();
         assert_eq!(parsed.admin_users.len(), 1);
         assert_eq!(parsed.admin_users[0].username, "admin");
+    }
+
+    #[test]
+    fn save_admin_users_replaces_block_and_preserves_rest() {
+        let dir = std::env::temp_dir().join(format!("fftp-http-cfg-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("http.toml");
+        let hash = "$argon2id$v=19$m=65536,t=3,p=4$dummy";
+        std::fs::write(
+            &path,
+            format!(
+                "# 头部注释\n[listen]\naddress = \"127.0.0.1\"\nport = 8080\n\n\
+                 [[admin_users]]\nusername = \"old\"\npassword_hash = \"{hash}\"\n"
+            ),
+        )
+        .unwrap();
+
+        let users = vec![
+            AdminUser { username: "a".into(), password_hash: hash.into() },
+            AdminUser { username: "b".into(), password_hash: hash.into() },
+        ];
+        HttpConfig::save_admin_users(&path, &users).unwrap();
+
+        let raw = std::fs::read_to_string(&path).unwrap();
+        assert!(raw.contains("# 头部注释"));
+        assert!(raw.contains("[listen]"));
+        assert!(!raw.contains("old"));
+        let cfg: HttpConfig = toml::from_str(&raw).unwrap();
+        assert_eq!(cfg.admin_users.len(), 2);
+        assert_eq!(cfg.admin_users[1].username, "b");
+
+        // 全部删除应被启动校验拒绝，且不落盘
+        assert!(HttpConfig::save_admin_users(&path, &[]).is_err());
+        let cfg: HttpConfig = toml::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(cfg.admin_users.len(), 2);
+
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_dir(&dir);
     }
 }

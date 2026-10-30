@@ -61,6 +61,16 @@ body {
 .userbox { display: flex; align-items: center; gap: 10px; font-size: 13px; }
 .whoami { opacity: 0.85; }
 
+/* 用户名旁的设置图标按钮 */
+.icon-btn {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 28px; height: 28px; padding: 0;
+  border: 1px solid transparent; border-radius: 6px;
+  background: transparent; color: #c6cdd8; cursor: pointer;
+}
+.icon-btn:hover { color: #fff; border-color: #454f5e; background: rgba(255, 255, 255, 0.08); }
+.icon-btn svg { display: block; }
+
 .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--warn); display: inline-block; }
 .dot.ok { background: #3ddc84; }
 .dot.bad { background: #ff6b5e; }
@@ -135,7 +145,7 @@ main { padding: 16px; max-width: 1200px; margin: 0 auto; }
 .form-grid label { display: flex; flex-direction: column; gap: 4px; font-size: 13px; color: var(--text-muted); }
 .form-grid label.check { flex-direction: row; align-items: center; color: var(--text); }
 .form-grid label.wide input { min-width: 340px; }
-.form-grid input[type="text"], .form-grid input[type="number"], .form-grid select {
+.form-grid input[type="text"], .form-grid input[type="number"], .form-grid input[type="password"], .form-grid select {
   border: 1px solid var(--border); border-radius: 6px; padding: 6px 8px; font-size: 13px;
   min-width: 160px; background: var(--surface); color: var(--text);
 }
@@ -179,6 +189,13 @@ main { padding: 16px; max-width: 1200px; margin: 0 auto; }
 .row-actions .btn + .btn { margin-left: 6px; }
 .danger-link { color: var(--danger); }
 .danger-link:hover { border-color: var(--danger); color: var(--danger); }
+
+/* Web 管理员账户弹窗 */
+#admin-dialog .dialog-box { width: 480px; }
+#admin-dialog .form-actions .spacer { flex: 1; }
+#admin-table { max-height: 260px; }
+#admin-table td.uname { font-weight: 600; white-space: nowrap; }
+#admin-table td.uname .badge { margin-left: 6px; }
 
 /* 高级 JSON 原文折叠卡 */
 details.json-card summary { cursor: pointer; font-weight: 600; font-size: 14px; }

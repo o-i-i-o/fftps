@@ -4,6 +4,9 @@
 //! 唯一写入者，本层不做业务校验（SaveConfig/SaveUsers 由 fftpd 侧
 //! fftp-common 类型校验并回传错误）。写操作统一经 `AppState::audit`
 //! 落审计日志。
+//!
+//! 例外：`/api/admin-users` 管理 fftp-http 自身管理员账户，不经 IPC，
+//! 直接读写 fftp-http.toml（见 [`crate::config`]）。
 
 use std::sync::Arc;
 
@@ -92,6 +95,20 @@ pub struct UserHashBody {
     pub password: String,
 }
 
+/// 管理员账户条目（GET 响应；PUT 输入，password 仅新增/改密时携带）
+#[derive(Debug, Serialize, Deserialize)]
+pub struct AdminUserEntry {
+    pub username: String,
+    #[serde(default, skip_serializing)]
+    pub password: String,
+}
+
+/// 管理员账户列表响应/请求体
+#[derive(Debug, Serialize, Deserialize)]
+pub struct AdminUsersBody {
+    pub users: Vec<AdminUserEntry>,
+}
+
 /// 近期日志条数查询参数
 #[derive(Debug, Deserialize)]
 pub struct CountQuery {
@@ -123,6 +140,7 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         .route("/api/config", get(get_config).put(put_config))
         .route("/api/users", get(get_users).put(put_users))
         .route("/api/user-hash", post(user_hash))
+        .route("/api/admin-users", get(get_admin_users).put(put_admin_users))
         .route("/api/initial", get(get_initial))
         .route("/api/user-directories/ensure", post(ensure_user_dirs))
         .route("/api/user-directory", post(create_user_dir))
@@ -295,6 +313,81 @@ async fn user_hash(
 async fn get_initial(State(state): State<Arc<AppState>>) -> ApiResult<Json<InitialState>> {
     let data = state.daemon.request(Command::GetInitialState).await?;
     Ok(Json(parse_data(data)?))
+}
+
+// ---------- fftp-http 自身管理员（不经 IPC，本地配置文件） ----------
+
+/// GET /api/admin-users → fftp-http 管理员账户列表（不含口令哈希）
+async fn get_admin_users(State(state): State<Arc<AppState>>) -> Json<AdminUsersBody> {
+    Json(AdminUsersBody {
+        users: state
+            .admins()
+            .iter()
+            .map(|u| AdminUserEntry { username: u.username.clone(), password: String::new() })
+            .collect(),
+    })
+}
+
+/// PUT /api/admin-users，body `{"users": [{"username", "password"?}]}`
+///
+/// 全量替换管理员列表：带 `password` 的条目为新增/改密（本地 Argon2id 哈希），
+/// 不带的沿用现有哈希（用户名必须已存在）。规则：至少保留一名管理员、
+/// 用户名唯一且不含空白/路径分隔符、不能移除当前登录账户。
+async fn put_admin_users(
+    State(state): State<Arc<AppState>>,
+    user: AuthedUser,
+    Json(body): Json<AdminUsersBody>,
+) -> ApiResult<Json<AdminUsersBody>> {
+    if body.users.is_empty() {
+        return Err(ApiError::bad_request("至少保留一名管理员账户"));
+    }
+    let existing = state.admins();
+    let mut new_users: Vec<crate::config::AdminUser> = Vec::with_capacity(body.users.len());
+    for entry in &body.users {
+        let name = entry.username.trim();
+        if name.is_empty() {
+            return Err(ApiError::bad_request("用户名不能为空"));
+        }
+        if name.len() > 64 || name.chars().any(|c| c.is_whitespace() || c.is_control() || "/\\\"'".contains(c)) {
+            return Err(ApiError::bad_request(format!(
+                "用户名 {name:?} 含非法字符（空白/引号/路径分隔符）或超过 64 字符"
+            )));
+        }
+        if new_users.iter().any(|u| u.username == name) {
+            return Err(ApiError::bad_request(format!("用户名重复: {name}")));
+        }
+        let password_hash = if entry.password.is_empty() {
+            existing
+                .iter()
+                .find(|u| u.username == name)
+                .map(|u| u.password_hash.clone())
+                .ok_or_else(|| {
+                    ApiError::bad_request(format!("新用户 {name} 必须提供口令"))
+                })?
+        } else {
+            fftp_common::users::UserManager::hash_password(&entry.password)
+                .map_err(|e| ApiError::internal(format!("口令哈希失败: {e:#}")))?
+        };
+        new_users.push(crate::config::AdminUser {
+            username: name.to_string(),
+            password_hash,
+        });
+    }
+    // Web 会话操作者必须保留在列表中，避免自锁（api_token 认证无对应账户）
+    if user.0 != "api_token" && !new_users.iter().any(|u| u.username == user.0) {
+        return Err(ApiError::bad_request("不能移除当前登录账户"));
+    }
+
+    // 先落盘（校验通过才写），成功后再更新运行期列表
+    crate::config::HttpConfig::save_admin_users(&state.http_config_path, &new_users)?;
+    let count = new_users.len();
+    state.set_admins(new_users);
+    state
+        .audit(&user.0, "save_admin_users", "fftp-http.toml", &format!("管理员共 {count} 名"))
+        .await;
+    Ok(Json(AdminUsersBody {
+        users: body.users, // 原样回显（password 字段已被 skip_serializing 剔除）
+    }))
 }
 
 // ---------- 目录辅助 ----------

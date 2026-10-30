@@ -35,6 +35,11 @@ impl ApiError {
     }
 
     #[must_use]
+    pub fn bad_request(message: impl Into<String>) -> Self {
+        Self::new(StatusCode::BAD_REQUEST, "validation", message)
+    }
+
+    #[must_use]
     pub fn forbidden(message: impl Into<String>) -> Self {
         Self::new(StatusCode::FORBIDDEN, "forbidden", message)
     }

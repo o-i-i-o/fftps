@@ -976,6 +976,132 @@ $("dirs-perms").addEventListener("click", async () => {
   } catch (e) { toast(errMsg(e), true); }
 });
 
+// ---------- Web 管理员账户（fftp-http 自身登录账户） ----------
+
+let adminsCache = [];   // [{ username }]
+let editingAdmin = null;
+
+function resetAdminForm() {
+  editingAdmin = null;
+  $("ad-name").value = "";
+  $("ad-name").disabled = false;
+  $("ad-pass").value = "";
+  $("ad-pass").placeholder = "登录口令";
+  $("ad-submit").textContent = "添加账户";
+  $("ad-cancel-edit").classList.add("hidden");
+  $("admin-dlg-err").classList.add("hidden");
+}
+
+async function openAdminDialog() {
+  resetAdminForm();
+  $("admin-dialog").classList.remove("hidden");
+  await loadAdmins();
+}
+
+function closeAdminDialog() {
+  $("admin-dialog").classList.add("hidden");
+}
+
+async function loadAdmins() {
+  try {
+    const res = await api("/api/admin-users");
+    adminsCache = (res.users || []).map((u) => u.username);
+    renderAdmins();
+  } catch (e) {
+    $("admin-table").textContent = "加载失败：" + errMsg(e);
+  }
+}
+
+function renderAdmins() {
+  const wrap = $("admin-table");
+  if (!adminsCache.length) {
+    wrap.innerHTML = '<p class="hint">（暂无账户）</p>';
+    return;
+  }
+  const table = document.createElement("table");
+  table.className = "optable";
+  table.innerHTML = "<thead><tr><th>用户名</th><th>操作</th></tr></thead>";
+  const tbody = document.createElement("tbody");
+  for (const name of adminsCache) {
+    const tr = document.createElement("tr");
+    tr.innerHTML =
+      `<td class="uname">${escapeHtml(name)}` +
+      (name === state.user ? '<span class="badge role">当前</span>' : "") +
+      `</td>` +
+      `<td class="row-actions">` +
+      `<button type="button" class="btn" data-aedit="${escapeHtml(name)}">编辑</button>` +
+      `<button type="button" class="btn ghost danger-link" data-adel="${escapeHtml(name)}">删除</button></td>`;
+    tbody.appendChild(tr);
+  }
+  table.appendChild(tbody);
+  wrap.textContent = "";
+  wrap.appendChild(table);
+  wrap.querySelectorAll("[data-aedit]").forEach((b) =>
+    b.addEventListener("click", () => startEditAdmin(b.dataset.aedit)));
+  wrap.querySelectorAll("[data-adel]").forEach((b) =>
+    b.addEventListener("click", () => deleteAdmin(b.dataset.adel)));
+}
+
+function startEditAdmin(name) {
+  editingAdmin = name;
+  $("ad-name").value = name;
+  $("ad-name").disabled = true;
+  $("ad-pass").value = "";
+  $("ad-pass").placeholder = "留空则不修改口令";
+  $("ad-submit").textContent = "更新账户";
+  $("ad-cancel-edit").classList.remove("hidden");
+  $("admin-dlg-err").classList.add("hidden");
+  $("ad-pass").focus();
+}
+
+function showAdminErr(msg) {
+  const el = $("admin-dlg-err");
+  el.textContent = msg;
+  el.classList.remove("hidden");
+}
+
+// 保存全量列表：带 password 的条目为新增/改密，其余沿用服务端现有哈希
+async function saveAdmins(list) {
+  const res = await api("/api/admin-users", { method: "PUT", body: { users: list } });
+  adminsCache = (res.users || []).map((u) => u.username);
+  renderAdmins();
+}
+
+$("btn-admin-settings").addEventListener("click", openAdminDialog);
+$("ad-close").addEventListener("click", closeAdminDialog);
+$("ad-cancel-edit").addEventListener("click", resetAdminForm);
+
+$("admin-form").addEventListener("submit", async (ev) => {
+  ev.preventDefault();
+  const name = $("ad-name").value.trim();
+  const pass = $("ad-pass").value;
+  if (!name) { showAdminErr("用户名不能为空"); return; }
+  const list = adminsCache.map((u) => ({ username: u }));
+  if (editingAdmin) {
+    if (pass) {
+      const entry = list.find((u) => u.username === editingAdmin);
+      if (entry) entry.password = pass;
+    }
+  } else {
+    if (!pass) { showAdminErr("请输入登录口令"); return; }
+    if (list.some((u) => u.username === name)) { showAdminErr("用户名已存在"); return; }
+    list.push({ username: name, password: pass });
+  }
+  try {
+    await saveAdmins(list);
+    toast(editingAdmin ? "账户已更新：" + editingAdmin : "账户已添加：" + name);
+    resetAdminForm();
+  } catch (e) { showAdminErr(errMsg(e)); }
+});
+
+async function deleteAdmin(name) {
+  if (!confirm(`确认删除 Web 管理员 ${name}？保存后立即生效，该账户将无法再登录。`)) return;
+  try {
+    await saveAdmins(adminsCache.filter((u) => u !== name).map((u) => ({ username: u })));
+    toast("账户已删除：" + name);
+  } catch (e) { toast("删除失败：" + errMsg(e), true); }
+}
+
 // ---------- 启动 ----------
 
 showLogin();

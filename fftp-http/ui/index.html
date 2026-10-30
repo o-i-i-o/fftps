@@ -23,6 +23,9 @@
   <div class="userbox">
     <span id="conn-dot" class="dot"></span><span id="conn-text">连接中…</span>
     <span id="whoami" class="whoami"></span>
+    <button id="btn-admin-settings" class="icon-btn" type="button" title="管理 Web 管理员账户" aria-label="管理 Web 管理员账户">
+      <svg viewBox="0 0 24 24" width="15" height="15" fill="currentColor" aria-hidden="true"><path d="M19.14 12.94c.04-.3.06-.61.06-.94 0-.32-.02-.64-.07-.94l2.03-1.58a.49.49 0 0 0 .12-.61l-1.92-3.32a.49.49 0 0 0-.59-.22l-2.39.96c-.5-.38-1.03-.7-1.62-.94l-.36-2.54a.48.48 0 0 0-.48-.41h-3.84c-.24 0-.43.17-.47.41l-.36 2.54c-.59.24-1.13.57-1.62.94l-2.39-.96a.49.49 0 0 0-.59.22L2.74 8.87c-.12.21-.08.47.12.61l2.03 1.58c-.05.3-.09.63-.09.94s.02.64.07.94l-2.03 1.58a.49.49 0 0 0-.12.61l1.92 3.32c.12.22.37.29.59.22l2.39-.96c.5.38 1.03.7 1.62.94l.36 2.54c.05.24.24.41.48.41h3.84c.24 0 .44-.17.47-.41l.36-2.54c.59-.24 1.13-.56 1.62-.94l2.39.96c.22.08.47 0 .59-.22l1.92-3.32a.49.49 0 0 0-.12-.61l-2.01-1.58zM12 15.6A3.6 3.6 0 1 1 12 8.4a3.6 3.6 0 0 1 0 7.2z"/></svg>
+    </button>
     <button id="btn-logout" class="btn ghost">登出</button>
   </div>
 </header>
@@ -325,6 +328,26 @@
     <div class="form-actions">
       <button type="button" id="ud-cancel" class="btn ghost">取消</button>
       <button type="submit" class="btn primary">保存</button>
+    </div>
+  </form>
+</div>
+
+<!-- Web 管理员账户弹窗（fftp-http 自身登录账户，独立于 FTP/SFTP 用户库） -->
+<div id="admin-dialog" class="overlay hidden">
+  <form id="admin-form" class="dialog-box">
+    <h3>Web 管理员账户</h3>
+    <p class="hint">管理 fftp-http 自身的登录账户（与 FTP/SFTP 用户库无关）。变更保存到 fftp-http.toml 并立即生效，无需重启。</p>
+    <div id="admin-table" class="table-wrap admin-table">加载中…</div>
+    <div class="form-grid">
+      <label>用户名 <input id="ad-name" type="text" autocomplete="off" maxlength="64"></label>
+      <label>口令 <input id="ad-pass" type="password" autocomplete="new-password" placeholder="登录口令"></label>
+    </div>
+    <p id="admin-dlg-err" class="error hidden"></p>
+    <div class="form-actions">
+      <button type="button" id="ad-cancel-edit" class="btn ghost hidden">取消编辑</button>
+      <button type="submit" id="ad-submit" class="btn primary">添加账户</button>
+      <span class="spacer"></span>
+      <button type="button" id="ad-close" class="btn ghost">关闭</button>
     </div>
   </form>
 </div>

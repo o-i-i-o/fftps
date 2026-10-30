@@ -57,13 +57,13 @@ fn run() -> Result<()> {
     tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()?
-        .block_on(serve(cfg))
+        .block_on(serve(cfg, path))
 }
 
 /// 启动 HTTP/HTTPS 服务：统一 accept loop，TLS 按配置决定 IO 层
-async fn serve(cfg: config::HttpConfig) -> Result<()> {
+async fn serve(cfg: config::HttpConfig, http_config_path: std::path::PathBuf) -> Result<()> {
     let daemon = daemon::Daemon::spawn();
-    let state = state::AppState::new(cfg, daemon);
+    let state = state::AppState::new(cfg, daemon, http_config_path);
     let app = routes::build_router(Arc::clone(&state));
 
     let acceptor = if state.config.tls.enabled {
