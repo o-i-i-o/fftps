@@ -1,0 +1,87 @@
+// 文件日志页：文件操作审计日志浏览
+//
+// 经 GetFileOpLogFiles 列文件、GetFileOpLogContent 加载内容，
+// 支持按用户与操作过滤（过滤条件变更时 Rust 重建模型）。
+
+import { Theme, FileOpRow } from "common.slint";
+import { Button, ComboBox, LineEdit, ListView } from "std-widgets.slint";
+
+// 文件日志页状态（Rust 侧驱动）
+export global FileLogsState {
+    in property <[string]> file-names;
+    in-out property <int> file-idx;
+    in property <[FileOpRow]> entries;
+    in property <int> count;
+    in property <bool> loading;
+    in property <bool> connected;
+    in property <string> error;
+    in-out property <string> user-filter;
+    in-out property <string> op-filter;
+    callback refresh();
+    callback load();
+    callback select-file(int);
+    callback filter-changed();
+}
+
+export component FileLogsPage inherits VerticalLayout {
+    spacing: 10px;
+
+    HorizontalLayout {
+        spacing: 10px;
+        Text { text: "文件日志"; font-size: 22px; vertical-alignment: center; }
+        ComboBox {
+            min-width: 220px;
+            model: FileLogsState.file-names;
+            current-index <=> FileLogsState.file-idx;
+            enabled: FileLogsState.file-names.length > 0;
+            selected => { FileLogsState.select-file(self.current-index); }
+        }
+        Button { text: "刷新"; enabled: FileLogsState.connected && !FileLogsState.loading; clicked => { FileLogsState.refresh(); } }
+        Button { text: "加载"; enabled: FileLogsState.connected && !FileLogsState.loading; clicked => { FileLogsState.load(); } }
+        LineEdit {
+            text <=> FileLogsState.user-filter;
+            placeholder-text: "按用户过滤";
+            min-width: 150px;
+            edited => { FileLogsState.filter-changed(); }
+        }
+        LineEdit {
+            text <=> FileLogsState.op-filter;
+            placeholder-text: "按操作过滤";
+            min-width: 150px;
+            edited => { FileLogsState.filter-changed(); }
+        }
+        Text { text: "共 " + FileLogsState.count + " 条"; font-size: 13px; vertical-alignment: center; }
+    }
+
+    if FileLogsState.error != "" : Text { text: FileLogsState.error; font-size: 13px; color: Theme.error; }
+
+    HorizontalLayout {
+        spacing: 10px;
+        Text { text: "时间"; font-size: 13px; min-width: 160px; }
+        Text { text: "用户"; font-size: 13px; min-width: 90px; }
+        Text { text: "IP"; font-size: 13px; min-width: 120px; }
+        Text { text: "操作"; font-size: 13px; min-width: 80px; }
+        Text { text: "文件"; font-size: 13px; horizontal-stretch: 1; }
+        Text { text: "大小"; font-size: 13px; min-width: 90px; }
+        Text { text: "协议"; font-size: 13px; min-width: 60px; }
+        Text { text: "结果"; font-size: 13px; min-width: 60px; }
+    }
+
+    ListView {
+        vertical-stretch: 1;
+        for row in FileLogsState.entries: Rectangle {
+            height: 20px;
+            HorizontalLayout {
+                spacing: 10px;
+                Text { text: row.time; font-size: 12px; color: Theme.muted; min-width: 160px; vertical-alignment: center; }
+                Text { text: row.user; font-size: 12px; min-width: 90px; vertical-alignment: center; }
+                Text { text: row.ip; font-size: 12px; min-width: 120px; vertical-alignment: center; }
+                Text { text: row.op; font-size: 12px; min-width: 80px; vertical-alignment: center; }
+                Text { text: row.file; font-size: 12px; horizontal-stretch: 1; overflow: TextOverflow.elide; vertical-alignment: center; }
+                Text { text: row.size; font-size: 12px; min-width: 90px; vertical-alignment: center; }
+                Text { text: row.protocol; font-size: 12px; min-width: 60px; vertical-alignment: center; }
+                Text { text: row.success ? "成功" : "失败"; font-size: 12px; color: row.success ? Theme.info : Theme.error; min-width: 60px; vertical-alignment: center; }
+            }
+        }
+    }
+}

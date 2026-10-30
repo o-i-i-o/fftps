@@ -1,0 +1,172 @@
+// 安全页：config.toml [security] 段结构化编辑
+//
+// IP 名单为 [string] 模型（Rust 增删），数值字段为文本缓冲，
+// 保存时由 Rust 解析校验后经读-改-写提交。
+
+import { Theme } from "common.slint";
+import { Button, CheckBox, GroupBox, LineEdit, ScrollView } from "std-widgets.slint";
+
+// 安全页状态（Rust 侧驱动）
+export global SecurityState {
+    in property <bool> connected;
+    in property <bool> busy;
+    in property <string> error;
+    in property <string> info;
+    // IP 名单
+    in property <[string]> allowed;
+    in property <[string]> denied;
+    in-out property <string> allowed-input;
+    in-out property <string> denied-input;
+    // 连接数
+    in-out property <string> max-conn;
+    in-out property <string> max-conn-per-ip;
+    // 登录防护 / fail2ban
+    in-out property <bool> f2b-enabled;
+    in-out property <string> f2b-threshold;
+    in-out property <string> f2b-ban;
+    in-out property <string> max-login;
+    // 其他
+    in-out property <bool> allow-symlinks;
+    callback reload();
+    callback save();
+    callback audit();
+    callback add-allowed();
+    callback add-denied();
+    callback remove-allowed(int);
+    callback remove-denied(int);
+}
+
+component FormRow inherits HorizontalLayout {
+    in property <string> label;
+    spacing: 8px;
+    Text { text: root.label; font-size: 13px; min-width: 170px; vertical-alignment: center; }
+    @children
+}
+
+export component SecurityPage inherits VerticalLayout {
+    spacing: 10px;
+
+    HorizontalLayout {
+        spacing: 10px;
+        Text { text: "安全"; font-size: 22px; vertical-alignment: center; }
+        Button { text: "刷新"; enabled: SecurityState.connected && !SecurityState.busy; clicked => { SecurityState.reload(); } }
+        Button { text: "保存"; enabled: SecurityState.connected && !SecurityState.busy; clicked => { SecurityState.save(); } }
+        Button { text: "记录审计日志"; enabled: SecurityState.connected && !SecurityState.busy; clicked => { SecurityState.audit(); } }
+        if SecurityState.info != "" : Text { text: SecurityState.info; font-size: 13px; color: Theme.info; vertical-alignment: center; }
+    }
+
+    if SecurityState.error != "" : Text { text: SecurityState.error; font-size: 13px; color: Theme.error; }
+
+    Text {
+        text: "config.toml 的 [security] 段：IP 名单、fail2ban、连接数与登录防护。";
+        font-size: 13px;
+    }
+
+    ScrollView {
+        vertical-stretch: 1;
+        HorizontalLayout {
+            spacing: 12px;
+
+            VerticalLayout {
+                spacing: 12px;
+                horizontal-stretch: 1;
+
+                GroupBox {
+                    title: "IP 名单（CIDR）";
+                    VerticalLayout {
+                        spacing: 12px;
+                        VerticalLayout {
+                            spacing: 6px;
+                            HorizontalLayout {
+                                spacing: 8px;
+                                Text { text: "允许名单（空 = 全部放行）"; font-size: 13px; vertical-alignment: center; }
+                                LineEdit {
+                                    text <=> SecurityState.allowed-input;
+                                    placeholder-text: "192.168.1.0/24";
+                                    min-width: 180px;
+                                    accepted => { SecurityState.add-allowed(); }
+                                }
+                                Button { text: "添加"; clicked => { SecurityState.add-allowed(); } }
+                            }
+                            if SecurityState.allowed.length == 0 : Text { text: "（空）"; font-size: 12px; color: Theme.muted; }
+                            for entry[i] in SecurityState.allowed: HorizontalLayout {
+                                spacing: 8px;
+                                Text { text: entry; font-size: 13px; horizontal-stretch: 1; overflow: TextOverflow.elide; vertical-alignment: center; }
+                                Button { text: "删除"; clicked => { SecurityState.remove-allowed(i); } }
+                            }
+                        }
+                        VerticalLayout {
+                            spacing: 6px;
+                            HorizontalLayout {
+                                spacing: 8px;
+                                Text { text: "拒绝名单（优先于允许）"; font-size: 13px; vertical-alignment: center; }
+                                LineEdit {
+                                    text <=> SecurityState.denied-input;
+                                    placeholder-text: "10.0.0.1";
+                                    min-width: 180px;
+                                    accepted => { SecurityState.add-denied(); }
+                                }
+                                Button { text: "添加"; clicked => { SecurityState.add-denied(); } }
+                            }
+                            if SecurityState.denied.length == 0 : Text { text: "（空）"; font-size: 12px; color: Theme.muted; }
+                            for entry[i] in SecurityState.denied: HorizontalLayout {
+                                spacing: 8px;
+                                Text { text: entry; font-size: 13px; horizontal-stretch: 1; overflow: TextOverflow.elide; vertical-alignment: center; }
+                                Button { text: "删除"; clicked => { SecurityState.remove-denied(i); } }
+                            }
+                        }
+                    }
+                }
+
+                GroupBox {
+                    title: "连接数";
+                    VerticalLayout {
+                        spacing: 8px;
+                        FormRow {
+                            label: "全局最大连接数";
+                            LineEdit { text <=> SecurityState.max-conn; placeholder-text: "100"; min-width: 120px; }
+                        }
+                        FormRow {
+                            label: "单 IP 最大连接数";
+                            LineEdit { text <=> SecurityState.max-conn-per-ip; placeholder-text: "10"; min-width: 120px; }
+                        }
+                    }
+                }
+            }
+
+            VerticalLayout {
+                spacing: 12px;
+                horizontal-stretch: 1;
+
+                GroupBox {
+                    title: "登录防护 / fail2ban";
+                    VerticalLayout {
+                        spacing: 8px;
+                        CheckBox { text: "启用 fail2ban"; checked <=> SecurityState.f2b-enabled; }
+                        FormRow {
+                            label: "触发封禁的失败次数";
+                            LineEdit { text <=> SecurityState.f2b-threshold; placeholder-text: "5"; min-width: 120px; }
+                        }
+                        FormRow {
+                            label: "封禁时长（秒）";
+                            LineEdit { text <=> SecurityState.f2b-ban; placeholder-text: "3600"; min-width: 120px; }
+                        }
+                        FormRow {
+                            label: "最大登录尝试次数";
+                            LineEdit { text <=> SecurityState.max-login; placeholder-text: "5"; min-width: 120px; }
+                        }
+                    }
+                }
+
+                GroupBox {
+                    title: "其他";
+                    VerticalLayout {
+                        spacing: 8px;
+                        CheckBox { text: "允许跟随符号链接（allow_symlinks）"; checked <=> SecurityState.allow-symlinks; }
+                        Text { text: "说明：名单为空表示全部放行；拒绝名单优先于允许名单。"; font-size: 12px; }
+                    }
+                }
+            }
+        }
+    }
+}

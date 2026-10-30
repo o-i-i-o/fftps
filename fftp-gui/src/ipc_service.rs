@@ -1,8 +1,9 @@
 //! IPC 服务层：连接管理与请求封装
 //!
-//! 界面层不直接使用 fftp-ipc：请求封装为 future，由 update 以
-//! [`iced::Task::perform`] 驱动，任何界面路径都不做阻塞 IO。
-//! 本模块只提供纯异步请求与连接状态记账，重连调度由应用壳负责。
+//! 界面层不直接使用 fftp-ipc：请求封装为 future，由应用壳的
+//! [`crate::app::dispatch`] 派发到 tokio 运行时，任何界面路径都不做
+//! 阻塞 IO。本模块只提供纯异步请求与连接状态记账，重连调度由应用壳
+//! 负责。
 
 use std::fmt;
 use std::time::Duration;
@@ -15,7 +16,7 @@ use serde::Deserialize;
 /// 重连退避上限（秒）
 const BACKOFF_MAX_SECS: u64 = 10;
 
-/// 连接状态（底部状态栏展示）
+/// 连接状态（连接记账与底部状态栏展示的数据来源）
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub enum ConnState {
     /// 正在连接
@@ -25,18 +26,6 @@ pub enum ConnState {
     Connected,
     /// 已断开（附带原因），等待退避重连
     Disconnected(String),
-}
-
-impl ConnState {
-    /// 状态栏展示文案
-    #[must_use]
-    pub fn label(&self) -> String {
-        match self {
-            ConnState::Connecting => "连接中…".to_owned(),
-            ConnState::Connected => "已连接".to_owned(),
-            ConnState::Disconnected(reason) => format!("已断开（{reason}）"),
-        }
-    }
 }
 
 /// 请求失败原因
@@ -96,12 +85,6 @@ pub struct IpcService {
 }
 
 impl IpcService {
-    /// 当前连接状态
-    #[must_use]
-    pub fn state(&self) -> &ConnState {
-        &self.state
-    }
-
     /// 当前连接（未连接时为 `None`）
     #[must_use]
     pub fn conn(&self) -> Option<&IpcConn> {

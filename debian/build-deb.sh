@@ -401,12 +401,12 @@ Architecture: ${TARGET_ARCH}
 Maintainer: fftps developers <developers@fftps.dev>
 Description: SFTP/FTP(FTPS) server suite with GUI management tool
  fftp-suite provides the fftpd FTP(FTPS)/SFTP server daemon and the
- fftp-gui cross-platform (iced) management frontend.
+ fftp-gui cross-platform (Slint) management frontend.
  A pure Rust implementation for managing SFTP and FTP servers with a
  user-friendly interface.
 Description-zh_CN: SFTP/FTP(FTPS) 服务套件与图形化管理工具
  适用于Linux的SFTP+FTP(FTPS)服务套件。
- 使用纯Rust实现（fftpd 服务端 + fftp-gui iced 图形界面），
+ 使用纯Rust实现（fftpd 服务端 + fftp-gui Slint 图形界面），
  提供友好的用户界面来管理SFTP和FTP服务器。
 Homepage: https://github.com/fftps/fftps
 Depends: libc6, libxkbcommon0
@@ -441,7 +441,7 @@ ${PACKAGE_NAME} (${VERSION}) stable; urgency=medium
 
   * Release version ${VERSION}
   * Support SFTP and FTP(FTPS) server management
-  * iced cross-platform GUI interface
+  * Slint cross-platform GUI interface
   * Per-user systemd service model (no root needed)
   * Multi-architecture support
 

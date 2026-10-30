@@ -1,106 +1,26 @@
-//! 用户页：结构化用户管理（列表 + 新增/编辑/删除/改密对话框）
+//! 用户页：结构化用户管理（列表 + 新增/编辑/改密/删除内联对话框）
 //!
-//! 本地维护用户表并渲染列表；所有变更经 `GetUsers` → 应用 → `SaveUsers`
-//! 以 `users.json` 原文整体提交（后端是唯一写入者）。原文的解析/序列化
-//! 统一走 [`UserManager`]；新用户口令在 GUI 侧生成 Argon2id PHC 哈希
-//! （参数与 `UserManager` 内部实现一致：`m=65536,t=3,p=4,len=32`）。
+//! 本地维护用户表（`Core::users`）并刷新列表模型；对话框表单为
+//! `UsersState` 的 in-out 属性，提交时校验并经 `GetUsers` → 应用 →
+//! `SaveUsers` 以 `users.json` 原文整体提交（后端是唯一写入者）。
+//! 新用户口令在 GUI 侧生成 Argon2id PHC 哈希（参数与 `UserManager`
+//! 内部实现一致：`m=65536,t=3,p=4,len=32`）。
 
 use std::collections::BTreeMap;
+use std::rc::Rc;
 
 use argon2::password_hash::PasswordHasher;
 use argon2::{Algorithm, Argon2, Version};
 use chrono::Utc;
 use fftp_common::users::{is_safe_username, Permissions, User, UserManager};
 use fftp_ipc::protocol::Command;
-use iced::widget::{
-    button, checkbox, column, container, row, scrollable, text, text_input, Widget,
-};
-use iced::{Element, Length, Task};
+use slint::{ComponentHandle, ModelRc, SharedString, VecModel};
 
-use crate::app::Message;
-use crate::ipc_service::{self, IpcConn, IpcError, IpcService, TextContent};
-use crate::tabs::{error_line, form_row, info_line, relay_error, ERROR_COLOR, MUTED_COLOR};
+use crate::app::{dispatch, relay, wire0, wire1, SharedCore, UiWeak};
+use crate::ipc_service::{self, IpcConn, IpcError, TextContent};
+use crate::{AppWindow, UserRow, UsersState};
 
-/// 权限位（对应 [`Permissions`] 的 8 个开关）
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Perm {
-    /// 读取文件
-    Read,
-    /// 写入文件
-    Write,
-    /// 删除文件
-    Delete,
-    /// 列出目录
-    List,
-    /// 创建目录
-    Mkdir,
-    /// 删除目录
-    Rmdir,
-    /// 重命名
-    Rename,
-    /// 追加写入
-    Append,
-}
-
-impl Perm {
-    /// 全部权限位
-    pub const ALL: [Self; 8] = [
-        Perm::Read,
-        Perm::Write,
-        Perm::Delete,
-        Perm::List,
-        Perm::Mkdir,
-        Perm::Rmdir,
-        Perm::Rename,
-        Perm::Append,
-    ];
-
-    /// 展示名
-    #[must_use]
-    pub fn label(self) -> &'static str {
-        match self {
-            Perm::Read => "读取",
-            Perm::Write => "写入",
-            Perm::Delete => "删除文件",
-            Perm::List => "列出目录",
-            Perm::Mkdir => "创建目录",
-            Perm::Rmdir => "删除目录",
-            Perm::Rename => "重命名",
-            Perm::Append => "追加写入",
-        }
-    }
-
-    /// 取权限位当前值
-    #[must_use]
-    pub fn get(self, perms: &Permissions) -> bool {
-        match self {
-            Perm::Read => perms.can_read,
-            Perm::Write => perms.can_write,
-            Perm::Delete => perms.can_delete,
-            Perm::List => perms.can_list,
-            Perm::Mkdir => perms.can_mkdir,
-            Perm::Rmdir => perms.can_rmdir,
-            Perm::Rename => perms.can_rename,
-            Perm::Append => perms.can_append,
-        }
-    }
-
-    /// 写权限位
-    pub fn set(self, perms: &mut Permissions, on: bool) {
-        match self {
-            Perm::Read => perms.can_read = on,
-            Perm::Write => perms.can_write = on,
-            Perm::Delete => perms.can_delete = on,
-            Perm::List => perms.can_list = on,
-            Perm::Mkdir => perms.can_mkdir = on,
-            Perm::Rmdir => perms.can_rmdir = on,
-            Perm::Rename => perms.can_rename = on,
-            Perm::Append => perms.can_append = on,
-        }
-    }
-}
-
-/// 新增/编辑用户表单
+/// 新增/编辑用户表单（对话框属性的 Rust 投影，提交时构造）
 #[derive(Debug, Clone, Default)]
 pub struct UserForm {
     /// 编辑目标用户名（`None` = 新增）
@@ -121,8 +41,6 @@ pub struct UserForm {
     pub quota_mb: String,
     /// 限速文本（KB/s，空 = 不限）
     pub speed_limit_kbps: String,
-    /// 表单错误
-    pub error: Option<String>,
 }
 
 impl UserForm {
@@ -145,7 +63,6 @@ impl UserForm {
                 .permissions
                 .speed_limit_kbps
                 .map_or_else(String::new, |v| v.to_string()),
-            error: None,
         }
     }
 
@@ -195,98 +112,6 @@ impl UserForm {
     }
 }
 
-/// 修改口令表单
-#[derive(Debug, Clone, Default)]
-pub struct PasswordForm {
-    /// 用户名
-    pub username: String,
-    /// 新口令
-    pub password: String,
-    /// 确认口令
-    pub confirm: String,
-    /// 表单错误
-    pub error: Option<String>,
-}
-
-/// 对话框状态
-#[derive(Debug, Default)]
-pub enum Dialog {
-    /// 无对话框
-    #[default]
-    None,
-    /// 新增/编辑用户
-    User(Box<UserForm>),
-    /// 修改口令
-    Password(PasswordForm),
-    /// 删除确认（附用户名）
-    Delete(String),
-}
-
-/// 用户表单字段变更
-#[derive(Debug, Clone)]
-pub enum FormMsg {
-    /// 用户名
-    Username(String),
-    /// 口令
-    Password(String),
-    /// 主目录
-    HomeDir(String),
-    /// 权限位
-    Perm(Perm, bool),
-    /// 配额（MB）
-    Quota(String),
-    /// 限速（KB/s）
-    SpeedLimit(String),
-    /// 管理员
-    Admin(bool),
-    /// 启用
-    Enabled(bool),
-}
-
-/// 口令表单字段变更
-#[derive(Debug, Clone)]
-pub enum PasswordMsg {
-    /// 新口令
-    Password(String),
-    /// 确认口令
-    Confirm(String),
-}
-
-/// 用户页消息
-#[derive(Debug, Clone)]
-pub enum Msg {
-    /// 载入 `users.json` 原文
-    Content(String),
-    /// 打开新增用户对话框
-    New,
-    /// 打开编辑对话框
-    Edit(String),
-    /// 打开删除确认
-    Delete(String),
-    /// 打开改密对话框
-    ChangePassword(String),
-    /// 关闭对话框
-    Close,
-    /// 用户表单字段
-    Form(FormMsg),
-    /// 口令表单字段
-    Password(PasswordMsg),
-    /// 创建主目录（`CreateUserDirectory`）
-    CreateDir,
-    /// 设置目录权限（`SetupDirectoryPermissions`）
-    SetupDirPerms,
-    /// 初始化用户目录（`EnsureUserDirectories`）
-    EnsureDirs,
-    /// 目录辅助操作完成（附成功提示）
-    DirDone(Result<(), IpcError>, &'static str),
-    /// 提交对话框（应用变更并保存）
-    Submit,
-    /// 确认删除
-    ConfirmDelete,
-    /// `SaveUsers` 响应（服务端返回的原文）
-    Saved(Result<String, IpcError>),
-}
-
 /// 用户库变更（`GetUsers` → 应用 → `SaveUsers` 整体提交）
 #[derive(Debug, Clone)]
 enum UserOp {
@@ -296,357 +121,6 @@ enum UserOp {
     Delete(String),
     /// 修改口令（已哈希）
     SetPassword { username: String, hash: String },
-}
-
-/// 用户页状态
-#[derive(Debug, Default)]
-pub struct UsersTab {
-    /// 本地用户表（按用户名排序展示）
-    users: BTreeMap<String, User>,
-    /// 当前对话框
-    dialog: Dialog,
-    /// 提交进行中
-    busy: bool,
-    error: Option<String>,
-    info: Option<String>,
-}
-
-impl UsersTab {
-    /// 更新页面状态；`ipc` 用于发起保存请求
-    pub fn update(&mut self, msg: Msg, ipc: &IpcService) -> Task<Message> {
-        match msg {
-            Msg::Content(content) => {
-                match parse_users(&content) {
-                    Ok(users) => {
-                        self.users = users;
-                        self.error = None;
-                    }
-                    Err(e) => self.error = Some(e),
-                }
-                self.info = None;
-                Task::none()
-            }
-            Msg::New => {
-                self.dialog = Dialog::User(Box::new(UserForm {
-                    enabled: true,
-                    ..UserForm::default()
-                }));
-                Task::none()
-            }
-            Msg::Edit(username) => {
-                if let Some(user) = self.users.get(&username) {
-                    self.dialog = Dialog::User(Box::new(UserForm::for_edit(user)));
-                } else {
-                    self.error = Some(format!("用户不存在：{username}"));
-                }
-                Task::none()
-            }
-            Msg::Delete(username) => {
-                self.dialog = Dialog::Delete(username);
-                Task::none()
-            }
-            Msg::ChangePassword(username) => {
-                self.dialog = Dialog::Password(PasswordForm {
-                    username,
-                    ..PasswordForm::default()
-                });
-                Task::none()
-            }
-            Msg::Close => {
-                self.dialog = Dialog::None;
-                Task::none()
-            }
-            Msg::Form(m) => {
-                if let Dialog::User(form) = &mut self.dialog {
-                    apply_form(form, m);
-                }
-                Task::none()
-            }
-            Msg::Password(m) => {
-                if let Dialog::Password(form) = &mut self.dialog {
-                    match m {
-                        PasswordMsg::Password(v) => form.password = v,
-                        PasswordMsg::Confirm(v) => form.confirm = v,
-                    }
-                }
-                Task::none()
-            }
-            Msg::CreateDir => self.dir_op(ipc, DirOp::Create),
-            Msg::SetupDirPerms => self.dir_op(ipc, DirOp::Perms),
-            Msg::EnsureDirs => self.dir_op(ipc, DirOp::Ensure),
-            Msg::DirDone(result, ok_text) => self.on_dir_done(result, ok_text),
-            Msg::Submit => self.submit(ipc),
-            Msg::ConfirmDelete => {
-                let Dialog::Delete(username) = &self.dialog else {
-                    return Task::none();
-                };
-                let op = UserOp::Delete(username.clone());
-                self.dispatch(ipc, op)
-            }
-            Msg::Saved(result) => self.on_saved(result),
-        }
-    }
-
-    /// 目录辅助操作响应
-    fn on_dir_done(&mut self, result: Result<(), IpcError>, ok_text: &'static str) -> Task<Message> {
-        self.busy = false;
-        match result {
-            Ok(()) => {
-                self.error = None;
-                self.info = Some(ok_text.to_owned());
-                Task::none()
-            }
-            Err(e) => {
-                self.error = Some(e.message().to_owned());
-                relay_error(&e)
-            }
-        }
-    }
-
-    /// `SaveUsers` 响应：刷新本地用户表
-    fn on_saved(&mut self, result: Result<String, IpcError>) -> Task<Message> {
-        self.busy = false;
-        match result {
-            Ok(content) => {
-                match parse_users(&content) {
-                    Ok(users) => self.users = users,
-                    Err(e) => self.error = Some(e),
-                }
-                self.dialog = Dialog::None;
-                self.error = None;
-                self.info = Some("用户库已保存".to_owned());
-                Task::none()
-            }
-            Err(e) => {
-                self.error = Some(e.message().to_owned());
-                relay_error(&e)
-            }
-        }
-    }
-
-    /// 校验对话框并生成变更操作
-    fn submit(&mut self, ipc: &IpcService) -> Task<Message> {
-        let op = match &mut self.dialog {
-            Dialog::User(form) => {
-                let existing = form.editing.as_ref().and_then(|name| self.users.get(name));
-                match form.build(existing) {
-                    Ok(user) => {
-                        if form.editing.is_none() && self.users.contains_key(&user.username) {
-                            form.error = Some(format!("用户已存在：{}", user.username));
-                            return Task::none();
-                        }
-                        UserOp::Upsert(user)
-                    }
-                    Err(e) => {
-                        form.error = Some(e);
-                        return Task::none();
-                    }
-                }
-            }
-            Dialog::Password(form) => {
-                if form.password.is_empty() {
-                    form.error = Some("新口令不能为空".to_owned());
-                    return Task::none();
-                }
-                if form.password != form.confirm {
-                    form.error = Some("两次输入的口令不一致".to_owned());
-                    return Task::none();
-                }
-                match hash_password(&form.password) {
-                    Ok(hash) => UserOp::SetPassword {
-                        username: form.username.clone(),
-                        hash,
-                    },
-                    Err(e) => {
-                        form.error = Some(e);
-                        return Task::none();
-                    }
-                }
-            }
-            _ => return Task::none(),
-        };
-        self.dispatch(ipc, op)
-    }
-
-    /// 提交变更（经 `GetUsers` → 应用 → `SaveUsers`）
-    fn dispatch(&mut self, ipc: &IpcService, op: UserOp) -> Task<Message> {
-        let Some(conn) = ipc.conn().cloned() else {
-            self.error = Some("未连接 fftpd，无法保存".to_owned());
-            return Task::none();
-        };
-        self.busy = true;
-        self.error = None;
-        self.info = None;
-        Task::perform(apply_op(conn, op), |r| Message::Users(Msg::Saved(r)))
-    }
-
-    /// 目录辅助操作
-    fn dir_op(&mut self, ipc: &IpcService, op: DirOp) -> Task<Message> {
-        let Some(conn) = ipc.conn().cloned() else {
-            self.error = Some("未连接 fftpd，无法操作目录".to_owned());
-            return Task::none();
-        };
-        let path = match &self.dialog {
-            Dialog::User(form) => form.home_dir.trim().to_owned(),
-            _ => String::new(),
-        };
-        if matches!(op, DirOp::Create | DirOp::Perms) && path.is_empty() {
-            self.error = Some("请先填写主目录".to_owned());
-            return Task::none();
-        }
-        self.busy = true;
-        self.error = None;
-        self.info = None;
-        let cmd = match op {
-            DirOp::Create => Command::CreateUserDirectory { path },
-            DirOp::Perms => Command::SetupDirectoryPermissions { path },
-            DirOp::Ensure => Command::EnsureUserDirectories,
-        };
-        let ok_text = match op {
-            DirOp::Create => "目录已创建",
-            DirOp::Perms => "目录权限已设置",
-            DirOp::Ensure => "用户目录已初始化",
-        };
-        Task::perform(
-            async move { ipc_service::request_ok(conn, cmd).await },
-            move |r| Message::Users(Msg::DirDone(r, ok_text)),
-        )
-    }
-
-    /// 渲染页面
-    #[must_use]
-    pub fn view(&self, connected: bool) -> Element<'_, Message> {
-        let mut toolbar = row![
-            text("用户管理").size(22),
-            button(text("新增用户")).on_press_maybe(
-                (!self.busy && matches!(self.dialog, Dialog::None)).then_some(Message::Users(Msg::New))
-            ),
-        ]
-        .spacing(10);
-        if let Some(info) = &self.info {
-            toolbar = toolbar.push(info_line(info));
-        }
-
-        let mut page = column![toolbar].spacing(10).width(Length::Fill).height(Length::Fill);
-        if let Some(error) = &self.error {
-            page = page.push(error_line(error));
-        }
-        page = page.push(match &self.dialog {
-            Dialog::None => text("口令以 Argon2id 哈希存储；变更经“保存”整体提交到 users.json。")
-                .size(12)
-                .color(MUTED_COLOR)
-                .boxed(),
-            Dialog::User(form) => self.user_dialog(form, connected),
-            Dialog::Password(form) => password_dialog(form, connected, self.busy),
-            Dialog::Delete(username) => delete_dialog(username, connected, self.busy),
-        });
-        page = page.push(self.user_list());
-        page.boxed()
-    }
-
-    /// 用户列表
-    fn user_list(&self) -> Element<'_, Message> {
-        let header = row![
-            text("用户名").size(13).width(Length::Fixed(130.0)),
-            text("状态").size(13).width(Length::Fixed(70.0)),
-            text("角色").size(13).width(Length::Fixed(70.0)),
-            text("主目录").size(13).width(Length::Fill),
-            text("配额").size(13).width(Length::Fixed(100.0)),
-            text("限速").size(13).width(Length::Fixed(100.0)),
-            text("操作").size(13).width(Length::Fixed(210.0)),
-        ]
-        .spacing(10);
-
-        let rows = column(self.users.values().map(|user| user_row(user, self.busy))).spacing(4);
-        container(
-            column![
-                header,
-                scrollable(rows).height(Length::Fill),
-            ]
-            .spacing(6),
-        )
-        .padding(12)
-        .width(Length::Fill)
-        .height(Length::Fill)
-        .style(container::rounded_box)
-        .boxed()
-    }
-
-    /// 新增/编辑对话框
-    ///
-    /// 文本输入借用 `form` 的字段，返回值生命周期显式绑定到 `form`
-    ///（调用处 `form` 借自 `&self`，与视图借用同域）。
-    fn user_dialog<'a>(&self, form: &'a UserForm, connected: bool) -> Element<'a, Message> {
-        let title = if form.editing.is_some() {
-            "编辑用户"
-        } else {
-            "新增用户"
-        };
-        let mut fields = column![
-            text(title).size(18),
-            form_row(
-                "用户名",
-                text_input("字母数字/_/-", &form.username)
-                    .on_input_maybe(
-                        form.editing.is_none()
-                            .then_some(|v| Message::Users(Msg::Form(FormMsg::Username(v))))
-                    )
-                    .width(Length::Fixed(280.0)),
-            ),
-            form_row(
-                "主目录",
-                text_input("/srv/ftp/user", &form.home_dir)
-                    .on_input(|v| Message::Users(Msg::Form(FormMsg::HomeDir(v))))
-                    .width(Length::Fixed(360.0)),
-            ),
-            suggested_row(&form.username),
-            row![
-                button(text("创建目录")).on_press_maybe(
-                    (connected && !self.busy).then_some(Message::Users(Msg::CreateDir))
-                ),
-                button(text("设置目录权限")).on_press_maybe(
-                    (connected && !self.busy).then_some(Message::Users(Msg::SetupDirPerms))
-                ),
-                button(text("初始化用户目录")).on_press_maybe(
-                    (connected && !self.busy).then_some(Message::Users(Msg::EnsureDirs))
-                ),
-            ]
-            .spacing(8),
-        ]
-        .spacing(8);
-
-        if form.editing.is_none() {
-            fields = fields.push(form_row(
-                "口令",
-                text_input("新用户口令", &form.password)
-                    .on_input(|v| Message::Users(Msg::Form(FormMsg::Password(v))))
-                    .secure(true)
-                    .width(Length::Fixed(280.0)),
-            ));
-        }
-
-        fields = fields.push(account_row(form));
-
-        if let Some(error) = &form.error {
-            fields = fields.push(error_line(error));
-        }
-        fields = fields.push(
-            row![
-                button(text("保存")).on_press_maybe(
-                    (connected && !self.busy).then_some(Message::Users(Msg::Submit))
-                ),
-                button(text("取消")).on_press_maybe((!self.busy).then_some(Message::Users(Msg::Close))),
-            ]
-            .spacing(8)
-            .boxed(),
-        );
-
-        container(fields.spacing(8))
-            .padding(16)
-            .width(Length::Fill)
-            .style(container::rounded_box)
-            .boxed()
-    }
 }
 
 /// 目录辅助操作
@@ -660,160 +134,333 @@ enum DirOp {
     Ensure,
 }
 
-/// 用户列表行
-fn user_row(user: &User, busy: bool) -> Element<'_, Message> {
-    let username = user.username.clone();
-    row![
-        text(user.username.clone()).size(13).width(Length::Fixed(130.0)),
-        text(if user.enabled { "启用" } else { "禁用" })
-            .size(13)
-            .color(if user.enabled {
-                crate::tabs::INFO_COLOR
-            } else {
-                ERROR_COLOR
-            })
-            .width(Length::Fixed(70.0)),
-        text(if user.is_admin { "管理员" } else { "普通" })
-            .size(13)
-            .width(Length::Fixed(70.0)),
-        text(user.home_dir.clone()).size(13).width(Length::Fill),
-        text(limit_text(user.permissions.quota_mb, "MB"))
-            .size(13)
-            .width(Length::Fixed(100.0)),
-        text(limit_text(user.permissions.speed_limit_kbps, "KB/s"))
-            .size(13)
-            .width(Length::Fixed(100.0)),
-        row![
-            button(text("编辑")).on_press_maybe(
-                (!busy).then_some(Message::Users(Msg::Edit(username.clone())))
-            ),
-            button(text("改密")).on_press_maybe(
-                (!busy).then_some(Message::Users(Msg::ChangePassword(username.clone())))
-            ),
-            button(text("删除")).on_press_maybe((!busy).then_some(Message::Users(Msg::Delete(username)))),
-        ]
-        .spacing(4)
-        .width(Length::Fixed(210.0)),
-    ]
-    .spacing(10)
-    .boxed()
+/// 回调接线
+pub fn wire(weak: &UiWeak, core: &SharedCore) {
+    let ui = weak.upgrade().unwrap();
+    let state = ui.global::<UsersState>();
+    state.on_new_user(wire0(weak, core, on_new_user));
+    state.on_edit_user(wire1(weak, core, on_edit_user));
+    state.on_delete_user(wire1(weak, core, on_delete_user));
+    state.on_change_password(wire1(weak, core, on_change_password));
+    state.on_close_dialog(wire0(weak, core, |ui, _core| {
+        ui.global::<UsersState>().set_dialog_kind(0);
+    }));
+    state.on_submit(wire0(weak, core, on_submit));
+    state.on_confirm_delete(wire0(weak, core, on_confirm_delete));
+    state.on_create_dir(wire0(weak, core, |ui, core| dir_op(ui, core, DirOp::Create)));
+    state.on_setup_perms(wire0(weak, core, |ui, core| dir_op(ui, core, DirOp::Perms)));
+    state.on_ensure_dirs(wire0(weak, core, |ui, core| dir_op(ui, core, DirOp::Ensure)));
+    state.on_use_suggestion(wire1(weak, core, on_use_suggestion));
+    state.on_username_changed(wire0(weak, core, update_suggestions));
 }
 
-/// 对话框中的账号属性行：启用/管理员开关 + 配额/限速表单 + 权限位
-fn account_row(form: &UserForm) -> Element<'_, Message> {
-    let perms = column(Perm::ALL.map(|perm| {
-        checkbox(perm.get(&form.permissions))
-            .label(perm.label())
-            .on_toggle(move |on| Message::Users(Msg::Form(FormMsg::Perm(perm, on))))
-            .boxed()
-    }))
-    .spacing(4);
-
-    row![
-        column![
-            checkbox(form.enabled)
-                .label("启用")
-                .on_toggle(|v| Message::Users(Msg::Form(FormMsg::Enabled(v)))),
-            checkbox(form.is_admin)
-                .label("管理员")
-                .on_toggle(|v| Message::Users(Msg::Form(FormMsg::Admin(v)))),
-        ]
-        .spacing(6),
-        column![
-            form_row(
-                "配额（MB）",
-                text_input("不限", &form.quota_mb)
-                    .on_input(|v| Message::Users(Msg::Form(FormMsg::Quota(v))))
-                    .width(Length::Fixed(120.0)),
-            ),
-            form_row(
-                "限速（KB/s）",
-                text_input("不限", &form.speed_limit_kbps)
-                    .on_input(|v| Message::Users(Msg::Form(FormMsg::SpeedLimit(v))))
-                    .width(Length::Fixed(120.0)),
-            ),
-        ]
-        .spacing(6),
-        column![text("权限").size(13), perms].spacing(6),
-    ]
-    .spacing(24)
-    .align_y(iced::Alignment::Start)
-    .boxed()
-}
-
-/// 改密对话框
-fn password_dialog(form: &PasswordForm, connected: bool, busy: bool) -> Element<'_, Message> {
-    let mut fields = column![
-        text(format!("修改口令：{}", form.username)).size(18),
-        form_row(
-            "新口令",
-            text_input("新口令", &form.password)
-                .on_input(|v| Message::Users(Msg::Password(PasswordMsg::Password(v))))
-                .secure(true)
-                .width(Length::Fixed(280.0)),
-        ),
-        form_row(
-            "确认口令",
-            text_input("再输入一次", &form.confirm)
-                .on_input(|v| Message::Users(Msg::Password(PasswordMsg::Confirm(v))))
-                .secure(true)
-                .width(Length::Fixed(280.0)),
-        ),
-    ]
-    .spacing(8);
-    if let Some(error) = &form.error {
-        fields = fields.push(error_line(error));
+/// 载入 `users.json` 原文并刷新列表（初始状态/保存响应共用）
+pub fn load(ui: &AppWindow, core: &SharedCore, content: &str) {
+    let state = ui.global::<UsersState>();
+    match parse_users(content) {
+        Ok(users) => {
+            core.lock().unwrap().users = users;
+            state.set_error("".into());
+        }
+        Err(e) => state.set_error(e.into()),
     }
-    fields = fields.push(
-        row![
-            button(text("保存")).on_press_maybe((connected && !busy).then_some(Message::Users(Msg::Submit))),
-            button(text("取消")).on_press_maybe((!busy).then_some(Message::Users(Msg::Close))),
-        ]
-        .spacing(8)
-        .boxed(),
-    );
-    container(fields)
-        .padding(16)
-        .width(Length::Fill)
-        .style(container::rounded_box)
-        .boxed()
+    state.set_info("".into());
+    refresh_model(ui, core);
 }
 
-/// 删除确认对话框
-fn delete_dialog(username: &str, connected: bool, busy: bool) -> Element<'_, Message> {
-    container(
-        column![
-            text(format!("确认删除用户 “{username}”？")).size(18),
-            text("删除后需保存才会写入 users.json，此操作不可撤销。").size(13),
-            row![
-                button(text("确认删除")).on_press_maybe(
-                    (connected && !busy).then_some(Message::Users(Msg::ConfirmDelete))
+/// 由本地用户表重建列表模型（按用户名排序）
+pub fn refresh_model(ui: &AppWindow, core: &SharedCore) {
+    let rows: Vec<UserRow> = {
+        let c = core.lock().unwrap();
+        c.users
+            .values()
+            .map(|user| UserRow {
+                username: user.username.clone().into(),
+                enabled: user.enabled,
+                admin: user.is_admin,
+                home: user.home_dir.clone().into(),
+                quota: limit_text(user.permissions.quota_mb, "MB").into(),
+                limit: limit_text(user.permissions.speed_limit_kbps, "KB/s").into(),
+            })
+            .collect()
+    };
+    ui.global::<UsersState>()
+        .set_users(ModelRc::from(Rc::new(VecModel::from(rows))));
+}
+
+/// 打开新增用户对话框（默认启用，权限取 [`Permissions::default`]）
+fn on_new_user(ui: &AppWindow, core: &SharedCore) {
+    let state = ui.global::<UsersState>();
+    state.set_dialog_kind(1);
+    state.set_editing("".into());
+    state.set_username("".into());
+    state.set_password("".into());
+    state.set_home_dir("".into());
+    state.set_is_admin(false);
+    state.set_enabled(true);
+    state.set_quota("".into());
+    state.set_speed("".into());
+    set_perms(ui, &Permissions::default());
+    state.set_form_error("".into());
+    update_suggestions(ui, core);
+}
+
+/// 打开编辑对话框
+fn on_edit_user(ui: &AppWindow, core: &SharedCore, name: SharedString) {
+    let name = String::from(name);
+    let user = core.lock().unwrap().users.get(&name).cloned();
+    let Some(user) = user else {
+        ui.global::<UsersState>()
+            .set_error(format!("用户不存在：{name}").into());
+        return;
+    };
+    let form = UserForm::for_edit(&user);
+    let state = ui.global::<UsersState>();
+    state.set_dialog_kind(1);
+    state.set_editing(form.editing.clone().unwrap_or_default().into());
+    state.set_username(form.username.clone().into());
+    state.set_password(form.password.clone().into());
+    state.set_home_dir(form.home_dir.clone().into());
+    state.set_is_admin(form.is_admin);
+    state.set_enabled(form.enabled);
+    state.set_quota(form.quota_mb.clone().into());
+    state.set_speed(form.speed_limit_kbps.clone().into());
+    set_perms(ui, &form.permissions);
+    state.set_form_error("".into());
+    update_suggestions(ui, core);
+}
+
+/// 打开改密对话框
+fn on_change_password(ui: &AppWindow, _core: &SharedCore, name: SharedString) {
+    let state = ui.global::<UsersState>();
+    state.set_dialog_kind(2);
+    state.set_pwd_username(name);
+    state.set_pwd_new("".into());
+    state.set_pwd_confirm("".into());
+    state.set_pwd_error("".into());
+}
+
+/// 打开删除确认
+fn on_delete_user(ui: &AppWindow, _core: &SharedCore, name: SharedString) {
+    let state = ui.global::<UsersState>();
+    state.set_dialog_kind(3);
+    state.set_del_username(name);
+}
+
+/// 权限位写入 UI
+fn set_perms(ui: &AppWindow, perms: &Permissions) {
+    let state = ui.global::<UsersState>();
+    state.set_perm_read(perms.can_read);
+    state.set_perm_write(perms.can_write);
+    state.set_perm_delete(perms.can_delete);
+    state.set_perm_list(perms.can_list);
+    state.set_perm_mkdir(perms.can_mkdir);
+    state.set_perm_rmdir(perms.can_rmdir);
+    state.set_perm_rename(perms.can_rename);
+    state.set_perm_append(perms.can_append);
+}
+
+/// 从 UI 读回权限位
+fn read_perms(ui: &AppWindow) -> Permissions {
+    let state = ui.global::<UsersState>();
+    Permissions {
+        can_read: state.get_perm_read(),
+        can_write: state.get_perm_write(),
+        can_delete: state.get_perm_delete(),
+        can_list: state.get_perm_list(),
+        can_mkdir: state.get_perm_mkdir(),
+        can_rmdir: state.get_perm_rmdir(),
+        can_rename: state.get_perm_rename(),
+        can_append: state.get_perm_append(),
+        ..Permissions::default()
+    }
+}
+
+/// 对话框属性 → 表单投影
+fn form_from_ui(ui: &AppWindow) -> UserForm {
+    let state = ui.global::<UsersState>();
+    let editing = state.get_editing().to_string();
+    UserForm {
+        editing: (!editing.is_empty()).then_some(editing),
+        username: state.get_username().to_string(),
+        password: state.get_password().to_string(),
+        home_dir: state.get_home_dir().to_string(),
+        permissions: read_perms(ui),
+        is_admin: state.get_is_admin(),
+        enabled: state.get_enabled(),
+        quota_mb: state.get_quota().to_string(),
+        speed_limit_kbps: state.get_speed().to_string(),
+    }
+}
+
+/// 提交对话框（新增/编辑与改密共用入口）
+fn on_submit(ui: &AppWindow, core: &SharedCore) {
+    let state = ui.global::<UsersState>();
+    match state.get_dialog_kind() {
+        1 => {
+            let form = form_from_ui(ui);
+            let existing = form
+                .editing
+                .as_ref()
+                .and_then(|name| core.lock().unwrap().users.get(name).cloned());
+            match form.build(existing.as_ref()) {
+                Ok(user) => {
+                    if form.editing.is_none()
+                        && core.lock().unwrap().users.contains_key(&user.username)
+                    {
+                        state.set_form_error(format!("用户已存在：{}", user.username).into());
+                        return;
+                    }
+                    send_op(ui, core, UserOp::Upsert(user));
+                }
+                Err(e) => state.set_form_error(e.into()),
+            }
+        }
+        2 => {
+            let password = state.get_pwd_new().to_string();
+            if password.is_empty() {
+                state.set_pwd_error("新口令不能为空".into());
+                return;
+            }
+            if password != state.get_pwd_confirm().as_ref() {
+                state.set_pwd_error("两次输入的口令不一致".into());
+                return;
+            }
+            match hash_password(&password) {
+                Ok(hash) => send_op(
+                    ui,
+                    core,
+                    UserOp::SetPassword {
+                        username: state.get_pwd_username().to_string(),
+                        hash,
+                    },
                 ),
-                button(text("取消")).on_press_maybe((!busy).then_some(Message::Users(Msg::Close))),
-            ]
-            .spacing(8),
-        ]
-        .spacing(10),
-    )
-    .padding(16)
-    .width(Length::Fill)
-    .style(container::rounded_box)
-    .boxed()
+                Err(e) => state.set_pwd_error(e.into()),
+            }
+        }
+        _ => {}
+    }
 }
 
-/// 建议主目录行（点击填入表单）
-fn suggested_row(username: &str) -> Element<'static, Message> {
-    let buttons = suggested_dirs(username).into_iter().map(|dir| {
-        button(text(shorten(&dir, 24)))
-            .on_press(Message::Users(Msg::Form(FormMsg::HomeDir(dir))))
-            .boxed()
-    });
-    row![
-        text("建议目录").size(13).width(Length::Fixed(150.0)),
-        row(buttons).spacing(6),
-    ]
-    .spacing(8)
-    .boxed()
+/// 确认删除
+fn on_confirm_delete(ui: &AppWindow, core: &SharedCore) {
+    let username = ui.global::<UsersState>().get_del_username().to_string();
+    if username.is_empty() {
+        return;
+    }
+    send_op(ui, core, UserOp::Delete(username));
+}
+
+/// 提交变更（经 `GetUsers` → 应用 → `SaveUsers`）
+fn send_op(ui: &AppWindow, core: &SharedCore, op: UserOp) {
+    let Some(conn) = core.lock().unwrap().ipc.conn().cloned() else {
+        ui.global::<UsersState>()
+            .set_error("未连接 fftpd，无法保存".into());
+        return;
+    };
+    let state = ui.global::<UsersState>();
+    state.set_busy(true);
+    state.set_error("".into());
+    state.set_info("".into());
+    dispatch(ui.as_weak(), core, apply_op(conn, op), on_saved);
+}
+
+/// `SaveUsers` 响应：刷新本地用户表并关闭对话框
+fn on_saved(ui: &AppWindow, core: &SharedCore, result: Result<String, IpcError>) {
+    let state = ui.global::<UsersState>();
+    state.set_busy(false);
+    match result {
+        Ok(content) => {
+            match parse_users(&content) {
+                Ok(users) => {
+                    core.lock().unwrap().users = users;
+                }
+                Err(e) => {
+                    state.set_error(e.into());
+                    return;
+                }
+            }
+            state.set_dialog_kind(0);
+            state.set_error("".into());
+            state.set_info("用户库已保存".into());
+            refresh_model(ui, core);
+        }
+        Err(e) => {
+            state.set_error(e.message().into());
+            relay(ui, core, &e);
+        }
+    }
+}
+
+/// 目录辅助操作
+fn dir_op(ui: &AppWindow, core: &SharedCore, op: DirOp) {
+    let Some(conn) = core.lock().unwrap().ipc.conn().cloned() else {
+        ui.global::<UsersState>()
+            .set_error("未连接 fftpd，无法操作目录".into());
+        return;
+    };
+    let state = ui.global::<UsersState>();
+    let path = state.get_home_dir().trim().to_owned();
+    if matches!(op, DirOp::Create | DirOp::Perms) && path.is_empty() {
+        state.set_error("请先填写主目录".into());
+        return;
+    }
+    let (cmd, ok_text) = match op {
+        DirOp::Create => (Command::CreateUserDirectory { path }, "目录已创建"),
+        DirOp::Perms => (Command::SetupDirectoryPermissions { path }, "目录权限已设置"),
+        DirOp::Ensure => (Command::EnsureUserDirectories, "用户目录已初始化"),
+    };
+    state.set_busy(true);
+    state.set_error("".into());
+    state.set_info("".into());
+    dispatch(
+        ui.as_weak(),
+        core,
+        async move { ipc_service::request_ok(conn, cmd).await },
+        move |ui, core, result: Result<(), IpcError>| on_dir_done(ui, core, result, ok_text),
+    );
+}
+
+/// 目录辅助操作响应
+fn on_dir_done(ui: &AppWindow, core: &SharedCore, result: Result<(), IpcError>, ok_text: &str) {
+    let state = ui.global::<UsersState>();
+    state.set_busy(false);
+    match result {
+        Ok(()) => {
+            state.set_error("".into());
+            state.set_info(ok_text.into());
+        }
+        Err(e) => {
+            state.set_error(e.message().into());
+            relay(ui, core, &e);
+        }
+    }
+}
+
+/// 点击建议目录：按缩写找回完整路径填入主目录
+fn on_use_suggestion(ui: &AppWindow, core: &SharedCore, short: SharedString) {
+    let short = String::from(short);
+    let full = {
+        let c = core.lock().unwrap();
+        c.suggestion_map
+            .iter()
+            .find(|(s, _)| *s == short)
+            .map(|(_, full)| full.clone())
+    };
+    if let Some(dir) = full {
+        ui.global::<UsersState>().set_home_dir(dir.into());
+    }
+}
+
+/// 按当前用户名刷新建议目录（新增/编辑打开与用户名编辑时触发）
+fn update_suggestions(ui: &AppWindow, core: &SharedCore) {
+    let username = ui.global::<UsersState>().get_username().to_string();
+    let dirs = suggested_dirs(&username);
+    let shorts: Vec<SharedString> = dirs.iter().map(|d| shorten(d, 24).into()).collect();
+    core.lock().unwrap().suggestion_map =
+        shorts.iter().map(SharedString::to_string).zip(dirs).collect();
+    ui.global::<UsersState>()
+        .set_suggestions(ModelRc::from(Rc::new(VecModel::from(shorts))));
 }
 
 /// 建议的主目录候选（本地计算，参考旧版 Linux GUI 的 `suggested_dirs`）
@@ -851,21 +498,6 @@ fn limit_text(value: Option<u64>, unit: &str) -> String {
         Some(v) => format!("{v} {unit}"),
         None => "不限".to_owned(),
     }
-}
-
-/// 表单字段应用
-fn apply_form(form: &mut UserForm, msg: FormMsg) {
-    match msg {
-        FormMsg::Username(v) => form.username = v,
-        FormMsg::Password(v) => form.password = v,
-        FormMsg::HomeDir(v) => form.home_dir = v,
-        FormMsg::Perm(perm, on) => perm.set(&mut form.permissions, on),
-        FormMsg::Quota(v) => form.quota_mb = v,
-        FormMsg::SpeedLimit(v) => form.speed_limit_kbps = v,
-        FormMsg::Admin(v) => form.is_admin = v,
-        FormMsg::Enabled(v) => form.enabled = v,
-    }
-    form.error = None;
 }
 
 /// 解析可选数值（空 = 不限）
@@ -1030,7 +662,7 @@ mod tests {
         let mut form = UserForm {
             username: "bob".to_owned(),
             home_dir: "/srv/ftp/x".to_owned(),
-            // 与新增对话框（Msg::New）一致：默认启用
+            // 与新增对话框（on_new_user）一致：默认启用
             enabled: true,
             ..UserForm::default()
         };
@@ -1047,5 +679,15 @@ mod tests {
         assert_eq!(parse_optional("  ", "配额").unwrap(), None);
         assert_eq!(parse_optional("10", "配额").unwrap(), Some(10));
         assert!(parse_optional("x", "配额").is_err());
+    }
+
+    #[test]
+    fn shorten_keeps_tail_within_limit() {
+        assert_eq!(shorten("/srv/ftp/alice", 24), "/srv/ftp/alice");
+        let long = "/very/long/home/directory/path/for/user";
+        let short = shorten(long, 10);
+        assert!(short.starts_with('…'));
+        assert!(short.chars().count() <= 10);
+        assert!(long.ends_with(short.strip_prefix('…').unwrap()));
     }
 }

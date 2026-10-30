@@ -1,0 +1,89 @@
+// 应用壳：顶部导航 + 页面切换 + 底部状态栏
+//
+// 各页面组件只经各自 global 与 Rust 侧通信；本文件不承载业务状态。
+
+import { Theme } from "common.slint";
+import { Button } from "std-widgets.slint";
+import { ServerPage } from "server.slint";
+import { UsersPage } from "users.slint";
+import { SecurityPage } from "security.slint";
+import { LogsPage } from "logs.slint";
+import { FileLogsPage } from "file_logs.slint";
+import { ServicePage } from "service.slint";
+import { AboutPage } from "about.slint";
+
+// 公开 API：Rust 侧经 include_modules! 访问的类型必须从入口文件 re-export
+export { LogRow, UserRow, FileOpRow } from "common.slint";
+export { ServerState } from "server.slint";
+export { UsersState } from "users.slint";
+export { SecurityState } from "security.slint";
+export { LogsState } from "logs.slint";
+export { FileLogsState } from "file_logs.slint";
+export { ServiceState } from "service.slint";
+export { AboutState } from "about.slint";
+
+// 连接与导航状态（Rust 侧驱动）
+export global AppState {
+    // 0 服务器 / 1 用户 / 2 安全 / 3 日志 / 4 文件日志 / 5 服务 / 6 关于
+    in-out property <int> current-tab;
+    in property <bool> connected;
+    in property <string> conn-label;
+    in property <color> conn-color;
+    in property <string> endpoint;
+    in property <string> notice;
+    callback select-tab(int);
+}
+
+export component AppWindow inherits Window {
+    title: "fftps 管理程序（f-ftp suite）";
+    width: 1100px;
+    height: 760px;
+
+    VerticalLayout {
+        padding: 12px;
+        spacing: 10px;
+
+        HorizontalLayout {
+            spacing: 8px;
+            for t[i] in ["服务器", "用户", "安全", "日志", "文件日志", "服务", "关于"]: Button {
+                text: t;
+                primary: AppState.current-tab == i;
+                enabled: AppState.current-tab != i;
+                clicked => { AppState.select-tab(i); }
+            }
+        }
+
+        Rectangle {
+            vertical-stretch: 1;
+            if AppState.current-tab == 0: ServerPage { width: 100%; height: 100%; }
+            if AppState.current-tab == 1: UsersPage { width: 100%; height: 100%; }
+            if AppState.current-tab == 2: SecurityPage { width: 100%; height: 100%; }
+            if AppState.current-tab == 3: LogsPage { width: 100%; height: 100%; }
+            if AppState.current-tab == 4: FileLogsPage { width: 100%; height: 100%; }
+            if AppState.current-tab == 5: ServicePage { width: 100%; height: 100%; }
+            if AppState.current-tab == 6: AboutPage { width: 100%; height: 100%; }
+        }
+
+        Rectangle {
+            border-width: 1px;
+            border-color: Theme.border;
+            border-radius: 6px;
+            background: Theme.card;
+            HorizontalLayout {
+                padding: 8px;
+                spacing: 16px;
+                Text { text: "连接状态："; font-size: 12px; vertical-alignment: center; }
+                Text { text: AppState.conn-label; font-size: 12px; color: AppState.conn-color; vertical-alignment: center; }
+                Text { text: "IPC 端点：" + AppState.endpoint; font-size: 12px; vertical-alignment: center; }
+                Text {
+                    text: AppState.notice;
+                    font-size: 12px;
+                    color: Theme.error;
+                    horizontal-stretch: 1;
+                    overflow: TextOverflow.elide;
+                    vertical-alignment: center;
+                }
+            }
+        }
+    }
+}

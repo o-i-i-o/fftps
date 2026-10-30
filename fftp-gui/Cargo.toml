@@ -1,6 +1,6 @@
 [package]
 name = "fftp-gui"
-description = "fftps 前端管理程序（iced 跨平台 GUI）"
+description = "fftps 前端管理程序（Slint 跨平台 GUI）"
 version.workspace = true
 edition.workspace = true
 authors.workspace = true
@@ -9,10 +9,6 @@ license.workspace = true
 [dependencies]
 fftp-common = { workspace = true }
 fftp-ipc = { workspace = true }
-# 必须启用 tokio 执行器：fftp-ipc 内部使用 tokio::spawn，
-# 且日志订阅要桥接 tokio broadcast 通道、重连退避用 tokio 定时器
-# 使用 iced 开发版源码（github master 分支），代码已按 master API 编写
-iced = { git = "https://github.com/iced-rs/iced", branch = "master", features = ["tokio"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
 tokio = { workspace = true }
@@ -21,6 +17,18 @@ toml = { workspace = true }
 # GUI 侧按同参数（Argon2id m=65536,t=3,p=4,len=32）生成 PHC 字符串
 argon2 = { workspace = true }
 chrono = { workspace = true }
+# 默认 winit + femtovg 后端（零系统 GUI 依赖）；目标国产系统
+# （UOS/Deepin/麒麟，Qt5 桌面）可加 `--features qt` 启用 Qt 后端，
+# 并以 SLINT_BACKEND=qt 选择运行时后端
+slint = { workspace = true }
+arboard = { workspace = true }
+
+[build-dependencies]
+slint-build = { workspace = true }
+
+[features]
+default = []
+qt = ["slint/backend-qt"]
 
 [[bin]]
 name = "fftp-gui"

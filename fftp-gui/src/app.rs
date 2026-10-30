@@ -1,428 +1,466 @@
-//! 应用壳：tab 导航、连接管理、日志订阅桥接
+//! 应用壳：连接监督、页面切换、日志流桥接
 //!
 //! - 启动即连接 fftpd；断线后按指数退避（1~10s）自动重连；
 //! - 底部状态栏显示连接状态与 IPC 端点，断线时写操作按钮禁用；
-//! - 日志页经 [`iced::Subscription`] + [`iced::stream::channel`] 桥接
-//!   `tokio::sync::broadcast::Receiver`，把服务端推送转成界面消息。
+//! - 进入日志页时派发桥接任务：先订阅本地事件广播、再请求服务端
+//!   `SubscribeLogs`（保证补推历史不丢），推送经事件循环写回 UI 模型。
+//!
+//! 线程模型：UI 状态只允许在事件循环线程变更。tokio 任务的回传一律经
+//! [`slint::Weak::upgrade_in_event_loop`]；可变共享状态收敛在
+//! [`Core`]（`Send`）内，UI 线程与 tokio 任务均经 `Mutex` 短临界区访问，
+//! 锁内不做 IO、不调用其他持锁路径。
 
-use fftp_ipc::protocol::{Command, Event};
-use iced::futures::{SinkExt, StreamExt};
-use iced::widget::{button, column, container, row, text, Widget};
-use iced::{Color, Element, Length, Subscription, Task};
+use std::collections::{BTreeMap, VecDeque};
+use std::future::Future;
+use std::sync::{Arc, Mutex};
+
+use fftp_common::users::User;
+use fftp_ipc::protocol::{Command, Event, FileOpLogEntry, LogEntry};
+use slint::ComponentHandle;
 use tokio::sync::broadcast::error::RecvError;
 
-use crate::ipc_service::{self, ConnState, InitialState, IpcConn, IpcError, IpcService, ServerStatus};
-use crate::tabs::{about, file_logs, logs, security, server, service, users};
+use crate::ipc_service::{self, InitialState, IpcConn, IpcError, IpcService, ServerStatus};
+use crate::tabs::{about, file_logs, logs, security, server, service, users, FileOption};
+use crate::{
+    AppWindow, AppState, FileLogsState, LogsState, SecurityState, ServerState, ServiceState,
+    UsersState,
+};
 
-/// 顶部导航的 tab
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub enum Tab {
-    /// 服务器（运行状态 + `config.toml` 表单/原文）
-    #[default]
-    Server,
-    /// 用户（`users.json` 管理）
-    Users,
-    /// 安全（`[security]` 段 + 审计）
-    Security,
-    /// 日志（实时订阅 + 文件历史）
-    Logs,
-    /// 文件日志（文件操作审计）
-    FileLogs,
-    /// 服务（启停重启 + 日志设置）
-    Service,
-    /// 关于
-    About,
+/// 全局共享状态句柄
+pub type SharedCore = Arc<Mutex<Core>>;
+
+/// UI 弱句柄（tokio 任务的回传入口）
+pub type UiWeak = slint::Weak<AppWindow>;
+
+fn color_connected() -> slint::Color {
+    slint::Color::from_rgb_u8(46, 160, 67)
 }
 
-impl Tab {
-    /// 全部 tab（导航顺序）
-    pub const ALL: [Tab; 7] = [
-        Tab::Server,
-        Tab::Users,
-        Tab::Security,
-        Tab::Logs,
-        Tab::FileLogs,
-        Tab::Service,
-        Tab::About,
-    ];
+fn color_connecting() -> slint::Color {
+    slint::Color::from_rgb_u8(210, 153, 34)
+}
 
-    /// 导航标题
+fn color_disconnected() -> slint::Color {
+    slint::Color::from_rgb_u8(248, 81, 73)
+}
+
+/// 应用共享状态（`Send`）：连接记账、跨页数据与日志流控制
+pub struct Core {
+    /// IPC 连接管理与状态记账
+    pub ipc: IpcService,
+    /// tokio 运行时句柄（派发异步请求）
+    pub rt: tokio::runtime::Handle,
+    /// 本地用户表（用户页展示与重名校验）
+    pub users: BTreeMap<String, User>,
+    /// 实时日志环形缓冲（重建过滤视图的数据源）
+    pub logs_live: VecDeque<LogEntry>,
+    /// 历史文件日志条目
+    pub logs_file_entries: Vec<LogEntry>,
+    /// 日志文件列表
+    pub logs_files: Vec<FileOption>,
+    /// 当前选中的日志文件
+    pub logs_selected: Option<FileOption>,
+    /// 审计日志文件列表
+    pub filelog_files: Vec<FileOption>,
+    /// 当前选中的审计日志文件
+    pub filelog_selected: Option<FileOption>,
+    /// 审计日志条目
+    pub filelog_entries: Vec<FileOpLogEntry>,
+    /// 日志流桥接任务句柄（离开日志页/断线时中止）
+    pub log_abort: Option<tokio::task::AbortHandle>,
+    /// 建议主目录候选（缩写展示文本 → 完整路径）
+    pub suggestion_map: Vec<(String, String)>,
+}
+
+impl Core {
     #[must_use]
-    pub fn title(self) -> &'static str {
-        match self {
-            Tab::Server => "服务器",
-            Tab::Users => "用户",
-            Tab::Security => "安全",
-            Tab::Logs => "日志",
-            Tab::FileLogs => "文件日志",
-            Tab::Service => "服务",
-            Tab::About => "关于",
+    pub fn new(rt: tokio::runtime::Handle) -> Self {
+        Self {
+            ipc: IpcService::default(),
+            rt,
+            users: BTreeMap::new(),
+            logs_live: VecDeque::new(),
+            logs_file_entries: Vec::new(),
+            logs_files: Vec::new(),
+            logs_selected: None,
+            filelog_files: Vec::new(),
+            filelog_selected: None,
+            filelog_entries: Vec::new(),
+            log_abort: None,
+            suggestion_map: Vec::new(),
         }
     }
 }
 
-/// 全局消息
-#[derive(Debug, Clone)]
-pub enum Message {
-    /// 切换 tab
-    SelectTab(Tab),
-    /// 连接建立/失败（首连与重连共用）
-    ConnectFinished(Result<IpcConn, String>),
-    /// 退避计时到，再次尝试连接
-    RetryConnect,
-    /// 子页请求发现连接断开
-    ConnectionLost(String),
-    /// 日志订阅流因断线结束（附订阅所在的连接代数）
-    LogStreamEnded(u64),
-    /// `GetInitialState` 响应
-    InitialState(Result<InitialState, IpcError>),
-    /// 服务页状态轮询触发（5s 间隔）
-    PollStatus,
-    /// 无副作用占位（fire-and-forget 任务）
-    Ignored,
-    /// 服务器页消息
-    Server(server::Msg),
-    /// 用户页消息
-    Users(users::Msg),
-    /// 安全页消息
-    Security(security::Msg),
-    /// 日志页消息
-    Logs(logs::Msg),
-    /// 文件日志页消息
-    FileLogs(file_logs::Msg),
-    /// 服务页消息
-    Service(service::Msg),
+/// 把异步请求派发到 tokio 运行时，完成后回 UI 线程执行 `on_done`
+pub fn dispatch<T, F>(
+    weak: UiWeak,
+    core: &SharedCore,
+    fut: impl Future<Output = T> + Send + 'static,
+    on_done: F,
+) where
+    T: Send + 'static,
+    F: FnOnce(&AppWindow, &SharedCore, T) + Send + 'static,
+{
+    let rt = core.lock().unwrap().rt.clone();
+    let core = core.clone();
+    rt.spawn(async move {
+        let result = fut.await;
+        let _ = weak.upgrade_in_event_loop(move |ui| on_done(&ui, &core, result));
+    });
 }
 
-/// 应用状态
-#[derive(Debug, Default)]
-pub struct App {
-    ipc: IpcService,
-    tab: Tab,
-    server: server::ServerTab,
-    users: users::UsersTab,
-    security: security::SecurityTab,
-    logs: logs::LogsTab,
-    file_logs: file_logs::FileLogsTab,
-    service: service::ServiceTab,
-    /// 状态栏提示（非页面级错误）
-    notice: Option<String>,
-}
-
-impl App {
-    /// 初始状态 + 注册内嵌中文字体 + 启动即连接
-    pub fn init() -> (Self, Task<Message>) {
-        let mut app = Self::default();
-        let task = Task::batch([
-            // 注册内嵌字体；与 main 中 default_font 的 family 名对应
-            iced::font::load(crate::CJK_FONT_BYTES).discard(),
-            app.start_connect(),
-        ]);
-        (app, task)
+/// 把 `fn(&AppWindow, &SharedCore)` 包装为无参 Slint 回调
+pub fn wire0(
+    weak: &UiWeak,
+    core: &SharedCore,
+    f: fn(&AppWindow, &SharedCore),
+) -> impl FnMut() + 'static {
+    let weak = weak.clone();
+    let core = core.clone();
+    move || {
+        if let Some(ui) = weak.upgrade() {
+            f(&ui, &core);
+        }
     }
+}
 
-    fn update(&mut self, message: Message) -> Task<Message> {
-        match message {
-            Message::SelectTab(tab) => self.select_tab(tab),
-            Message::ConnectFinished(result) => self.on_connect(result),
-            Message::RetryConnect => self.start_connect(),
-            Message::ConnectionLost(reason) => self.on_disconnected(reason),
-            Message::LogStreamEnded(generation) => {
-                if generation == self.ipc.generation() {
-                    self.on_disconnected("连接已断开".to_owned())
-                } else {
-                    Task::none()
+/// 把 `fn(&AppWindow, &SharedCore, A)` 包装为单参 Slint 回调
+pub fn wire1<A: 'static>(
+    weak: &UiWeak,
+    core: &SharedCore,
+    f: fn(&AppWindow, &SharedCore, A),
+) -> impl FnMut(A) + 'static {
+    let weak = weak.clone();
+    let core = core.clone();
+    move |a| {
+        if let Some(ui) = weak.upgrade() {
+            f(&ui, &core, a);
+        }
+    }
+}
+
+/// 把 `fn(&AppWindow, &SharedCore, A, B)` 包装为双参 Slint 回调
+pub fn wire2<A: 'static, B: 'static>(
+    weak: &UiWeak,
+    core: &SharedCore,
+    f: fn(&AppWindow, &SharedCore, A, B),
+) -> impl FnMut(A, B) + 'static {
+    let weak = weak.clone();
+    let core = core.clone();
+    move |a, b| {
+        if let Some(ui) = weak.upgrade() {
+            f(&ui, &core, a, b);
+        }
+    }
+}
+
+/// 初始属性与全部回调接线
+pub fn wire(ui: &AppWindow, core: &SharedCore) {
+    let weak = ui.as_weak();
+
+    // 底部状态栏与关于页的本地回退信息
+    let app = ui.global::<AppState>();
+    app.set_connected(false);
+    app.set_conn_label("连接中…".into());
+    app.set_conn_color(color_connecting());
+    app.set_endpoint(fftp_ipc::transport::endpoint_display().into());
+    app.set_notice("".into());
+    about::set_fallback(ui);
+    ui.global::<ServiceState>()
+        .set_hint(service::platform_hint().into());
+
+    // 页面切换：离开日志页时退订日志流，进入新页时载入数据
+    app.on_select_tab(wire1(&weak, core, |ui, core, tab: i32| {
+        let previous = ui.global::<AppState>().get_current_tab();
+        ui.global::<AppState>().set_current_tab(tab);
+        if previous == 3 && tab != 3 {
+            stop_log_stream(core);
+        }
+        enter_tab(ui, core, tab);
+    }));
+
+    server::wire(&weak, core);
+    users::wire(&weak, core);
+    security::wire(&weak, core);
+    logs::wire(&weak, core);
+    file_logs::wire(&weak, core);
+    service::wire(&weak, core);
+
+    start_status_poll(weak.clone(), core.clone());
+}
+
+/// 进入页面时触发数据载入（服务器/用户页由 `GetInitialState` 覆盖）
+fn enter_tab(ui: &AppWindow, core: &SharedCore, tab: i32) {
+    match tab {
+        2 => security::reload(ui, core),
+        3 => {
+            logs::refresh_files(ui, core);
+            start_log_stream(ui.as_weak(), core);
+        }
+        4 => file_logs::refresh(ui, core),
+        5 => {
+            service::reload_log(ui, core);
+            request_status(ui, core);
+        }
+        _ => {}
+    }
+}
+
+/// 服务页 5 秒轮询：仅服务页且已连接时刷新运行状态
+fn start_status_poll(weak: UiWeak, core: SharedCore) {
+    let rt = core.lock().unwrap().rt.clone();
+    rt.spawn(async move {
+        let mut interval = tokio::time::interval(std::time::Duration::from_secs(5));
+        loop {
+            interval.tick().await;
+            let w = weak.clone();
+            let c = core.clone();
+            let _ = w.upgrade_in_event_loop(move |ui| {
+                let app = ui.global::<AppState>();
+                if app.get_current_tab() == 5 && app.get_connected() {
+                    request_status(&ui, &c);
                 }
-            }
-            Message::InitialState(result) => self.on_initial_state(result),
-            Message::PollStatus => self.service.update(service::Msg::RefreshStatus, &self.ipc),
-            Message::Ignored => Task::none(),
-            Message::Server(m) => self.server.update(m, &self.ipc),
-            Message::Users(m) => self.users.update(m, &self.ipc),
-            Message::Security(m) => self.security.update(m, &self.ipc),
-            Message::Logs(m) => self.logs.update(m, &self.ipc),
-            Message::FileLogs(m) => self.file_logs.update(m, &self.ipc),
-            Message::Service(m) => self.service.update(m, &self.ipc),
+            });
         }
-    }
+    });
+}
 
-    /// 发起一次连接（首连或重连）
-    fn start_connect(&mut self) -> Task<Message> {
-        self.ipc.mark_connecting();
-        Task::perform(ipc_service::connect(), Message::ConnectFinished)
-    }
+/// 应用启动时的首次连接（自 tokio 任务上下文切入 UI 线程）
+pub fn start_connect(weak: &UiWeak, core: &SharedCore) {
+    let _ = weak.clone().upgrade_in_event_loop({
+        let core = core.clone();
+        move |ui| begin_connect(&ui, &core)
+    });
+}
 
-    fn on_connect(&mut self, result: Result<IpcConn, String>) -> Task<Message> {
-        match result {
-            Ok(conn) => {
-                self.ipc.mark_connected(conn.clone());
-                self.notice = None;
-                // 连接成功后拉取一次数据刷新各页，并载入当前页数据
-                let tab = self.tab;
-                Task::batch([
-                    Task::perform(
-                        ipc_service::request::<ServerStatus>(conn.clone(), Command::GetStatus),
-                        |r| Message::Server(server::Msg::Status(r)),
-                    ),
-                    Task::perform(
-                        ipc_service::request::<InitialState>(conn, Command::GetInitialState),
-                        Message::InitialState,
-                    ),
-                    Self::enter_tab(tab),
-                ])
-            }
-            Err(reason) => {
-                self.ipc.mark_disconnected(reason);
-                self.schedule_reconnect()
-            }
+/// 发起一次连接（首连与重连共用）
+fn begin_connect(ui: &AppWindow, core: &SharedCore) {
+    core.lock().unwrap().ipc.mark_connecting();
+    let app = ui.global::<AppState>();
+    app.set_conn_label("连接中…".into());
+    app.set_conn_color(color_connecting());
+    dispatch(ui.as_weak(), core, ipc_service::connect(), handle_connect);
+}
+
+/// 连接结果：成功后刷新各页数据，失败进入退避重连
+fn handle_connect(ui: &AppWindow, core: &SharedCore, result: Result<IpcConn, String>) {
+    let conn = match result {
+        Ok(conn) => conn,
+        Err(reason) => {
+            core.lock().unwrap().ipc.mark_disconnected(reason.clone());
+            set_conn_state(ui, false, color_disconnected());
+            ui.global::<AppState>().set_notice(reason.into());
+            set_pages_connected(ui, false);
+            schedule_reconnect(ui.as_weak(), core);
+            return;
         }
+    };
+    {
+        let mut c = core.lock().unwrap();
+        c.ipc.mark_connected(conn.clone());
     }
+    set_conn_state(ui, true, color_connected());
+    ui.global::<AppState>().set_notice("".into());
+    set_pages_connected(ui, true);
 
-    fn on_initial_state(&mut self, result: Result<InitialState, IpcError>) -> Task<Message> {
-        match result {
-            Ok(state) => Task::batch([
-                Task::done(Message::Server(server::Msg::Content(state.config))),
-                Task::done(Message::Users(users::Msg::Content(state.users))),
-            ]),
-            Err(e) => self.on_request_error(&e),
+    dispatch(
+        ui.as_weak(),
+        core,
+        async move { ipc_service::request::<InitialState>(conn, Command::GetInitialState).await },
+        handle_initial,
+    );
+    request_status(ui, core);
+    let tab = ui.global::<AppState>().get_current_tab();
+    enter_tab(ui, core, tab);
+}
+
+/// `GetInitialState` 响应：服务器页表单 + 用户页列表
+fn handle_initial(ui: &AppWindow, core: &SharedCore, result: Result<InitialState, IpcError>) {
+    match result {
+        Ok(state) => {
+            server::apply_content(ui, &state.config);
+            users::load(ui, core, &state.users);
         }
-    }
-
-    fn on_request_error(&mut self, err: &IpcError) -> Task<Message> {
-        if err.is_disconnected() {
-            self.on_disconnected(err.message().to_owned())
-        } else {
-            self.notice = Some(err.message().to_owned());
-            Task::none()
-        }
-    }
-
-    /// 连接断开：更新状态并调度退避重连（重复信号忽略）
-    fn on_disconnected(&mut self, reason: String) -> Task<Message> {
-        if !self.ipc.is_connected() {
-            return Task::none();
-        }
-        self.ipc.mark_disconnected(reason.clone());
-        self.notice = Some(reason);
-        self.schedule_reconnect()
-    }
-
-    fn schedule_reconnect(&mut self) -> Task<Message> {
-        let delay = self.ipc.next_backoff();
-        Task::perform(
-            async move {
-                tokio::time::sleep(delay).await;
-            },
-            |()| Message::RetryConnect,
-        )
-    }
-
-    fn select_tab(&mut self, tab: Tab) -> Task<Message> {
-        let previous = self.tab;
-        self.tab = tab;
-        let mut tasks = Vec::new();
-        if previous == Tab::Logs && tab != Tab::Logs {
-            // 离开日志页：取消服务端日志订阅
-            if let Some(conn) = self.ipc.conn().cloned() {
-                tasks.push(Task::perform(
-                    async move {
-                        ipc_service::request::<serde_json::Value>(conn, Command::UnsubscribeLogs)
-                            .await
-                    },
-                    |_| Message::Ignored,
-                ));
+        Err(e) => {
+            if !relay(ui, core, &e) {
+                ui.global::<AppState>().set_notice(e.message().into());
             }
         }
-        tasks.push(Self::enter_tab(tab));
-        Task::batch(tasks)
-    }
-
-    /// 进入 tab 时触发该页数据载入（服务器/用户页由 `GetInitialState` 覆盖）
-    fn enter_tab(tab: Tab) -> Task<Message> {
-        match tab {
-            Tab::Server | Tab::Users | Tab::About => Task::none(),
-            Tab::Security => Task::done(Message::Security(security::Msg::Reload)),
-            Tab::Logs => Task::done(Message::Logs(logs::Msg::RefreshFiles)),
-            Tab::FileLogs => Task::done(Message::FileLogs(file_logs::Msg::Refresh)),
-            Tab::Service => Task::batch([
-                Task::done(Message::Service(service::Msg::Reload)),
-                Task::done(Message::Service(service::Msg::RefreshStatus)),
-            ]),
-        }
-    }
-
-    /// 日志订阅桥 + 服务页状态轮询
-    ///
-    /// 日志订阅身份 =（"log-stream", 连接代数）：重连后代数变化自动换新流，
-    /// 离开日志页或断线后不再返回该订阅，`iced` 会回收旧流；
-    /// 服务页在连接期间以 5s 间隔轮询 `GetStatus` 刷新运行状态。
-    fn subscription(&self) -> Subscription<Message> {
-        Subscription::batch([self.log_stream_subscription(), self.poll_subscription()])
-    }
-
-    /// 服务页状态轮询（仅服务页且已连接时）
-    fn poll_subscription(&self) -> Subscription<Message> {
-        if self.tab != Tab::Service || !self.ipc.is_connected() {
-            return Subscription::none();
-        }
-        iced::time::every(std::time::Duration::from_secs(5)).map(|_| Message::PollStatus)
-    }
-
-    /// 日志订阅桥：进入日志页且已连接时启动
-    ///
-    /// `iced` 0.14 的 [`Subscription::run_with`] 要求 `fn(&D) -> S`（不可捕获
-    /// 外部状态），连接经身份结构 [`LogStream`] 带入；其 `Hash` 仅取代数，
-    /// 因此订阅身份 =（"log-stream", 连接代数）：重连后代数变化自动换新流，
-    /// 离开日志页或断线后不再返回该订阅，`iced` 会回收旧流。
-    fn log_stream_subscription(&self) -> Subscription<Message> {
-        if self.tab != Tab::Logs {
-            return Subscription::none();
-        }
-        let Some(conn) = self.ipc.conn().cloned() else {
-            return Subscription::none();
-        };
-        let generation = self.ipc.generation();
-        Subscription::run_with(LogStream { conn, generation }, log_stream)
-    }
-
-    fn view(&self) -> Element<'_, Message> {
-        let nav = row(Tab::ALL.iter().map(|tab| {
-            let active = *tab == self.tab;
-            button(text(tab.title()))
-                .on_press_maybe((!active).then_some(Message::SelectTab(*tab)))
-                .style(if active {
-                    button::primary
-                } else {
-                    button::secondary
-                })
-                .boxed()
-        }))
-        .spacing(8)
-        .padding(12);
-
-        let content: Element<'_, Message> = match self.tab {
-            Tab::Server => self.server.view(self.ipc.is_connected()),
-            Tab::Users => self.users.view(self.ipc.is_connected()),
-            Tab::Security => self.security.view(self.ipc.is_connected()),
-            Tab::Logs => self.logs.view(),
-            Tab::FileLogs => self.file_logs.view(self.ipc.is_connected()),
-            Tab::Service => self.service.view(self.ipc.is_connected(), self.server.status()),
-            Tab::About => about::view(self.server.status()),
-        };
-
-        column![
-            nav,
-            container(content)
-                .width(Length::Fill)
-                .height(Length::Fill)
-                .padding(12),
-            self.status_bar(),
-        ]
-        .boxed()
-    }
-
-    /// 底部状态栏：连接状态 / IPC 端点 / 提示
-    fn status_bar(&self) -> Element<'_, Message> {
-        let color = match self.ipc.state() {
-            ConnState::Connecting => Color::from_rgb8(210, 153, 34),
-            ConnState::Connected => Color::from_rgb8(46, 160, 67),
-            ConnState::Disconnected(_) => Color::from_rgb8(248, 81, 73),
-        };
-        let notice = self.notice.clone().unwrap_or_default();
-        container(
-            row![
-                text("连接状态：").size(12),
-                text(self.ipc.state().label()).size(12).color(color),
-                text(format!(
-                    "IPC 端点：{}",
-                    fftp_ipc::transport::endpoint_display()
-                ))
-                .size(12),
-                text(notice).size(12).color(Color::from_rgb8(248, 81, 73)),
-            ]
-            .spacing(16)
-            .padding(12),
-        )
-        .style(container::rounded_box)
-        .boxed()
     }
 }
 
-/// 日志订阅身份：连接 + 连接代数
+/// 拉取运行状态（服务器/服务/关于页共用；连接成功与 5s 轮询触发）
+pub fn request_status(ui: &AppWindow, core: &SharedCore) {
+    let conn = {
+        let c = core.lock().unwrap();
+        c.ipc.conn().cloned()
+    };
+    let Some(conn) = conn else {
+        return;
+    };
+    dispatch(
+        ui.as_weak(),
+        core,
+        async move { ipc_service::request::<ServerStatus>(conn, Command::GetStatus).await },
+        on_status,
+    );
+}
+
+/// `GetStatus` 响应：刷新服务器页/服务页状态卡与关于页
+fn on_status(ui: &AppWindow, core: &SharedCore, result: Result<ServerStatus, IpcError>) {
+    match result {
+        Ok(status) => {
+            server::set_status(ui, &status);
+            service::set_status(ui, &status);
+            about::set_from_status(ui, &status);
+        }
+        Err(e) => {
+            // 轮询场景下的业务错误静默；断线触发全局重连
+            relay(ui, core, &e);
+        }
+    }
+}
+
+/// 页面错误中转：断线错误触发全局断线处理；返回是否为断线
+pub fn relay(ui: &AppWindow, core: &SharedCore, err: &IpcError) -> bool {
+    if err.is_disconnected() {
+        handle_disconnect(ui, core, err.message().to_owned());
+        true
+    } else {
+        false
+    }
+}
+
+/// 连接断开：更新状态并调度退避重连（重复信号忽略）
+pub fn handle_disconnect(ui: &AppWindow, core: &SharedCore, reason: String) {
+    {
+        let mut c = core.lock().unwrap();
+        if !c.ipc.is_connected() {
+            return;
+        }
+        c.ipc.mark_disconnected(reason.clone());
+        stop_log_stream_locked(&mut c);
+    }
+    set_conn_state(ui, false, color_disconnected());
+    ui.global::<AppState>().set_notice(reason.into());
+    set_pages_connected(ui, false);
+    schedule_reconnect(ui.as_weak(), core);
+}
+
+/// 退避计时到，再次尝试连接
+fn schedule_reconnect(weak: UiWeak, core: &SharedCore) {
+    let (delay, rt) = {
+        let mut c = core.lock().unwrap();
+        (c.ipc.next_backoff(), c.rt.clone())
+    };
+    let core = core.clone();
+    rt.spawn(async move {
+        tokio::time::sleep(delay).await;
+        let _ = weak.upgrade_in_event_loop(move |ui| begin_connect(&ui, &core));
+    });
+}
+
+/// 同步底部状态栏
+fn set_conn_state(ui: &AppWindow, connected: bool, color: slint::Color) {
+    let app = ui.global::<AppState>();
+    app.set_connected(connected);
+    app.set_conn_label(if connected { "已连接" } else { "已断开" }.into());
+    app.set_conn_color(color);
+}
+
+/// 同步各页面“已连接”开关（写操作按钮的启用条件）
+fn set_pages_connected(ui: &AppWindow, on: bool) {
+    ui.global::<ServerState>().set_connected(on);
+    ui.global::<UsersState>().set_connected(on);
+    ui.global::<SecurityState>().set_connected(on);
+    ui.global::<FileLogsState>().set_connected(on);
+    ui.global::<ServiceState>().set_connected(on);
+}
+
+/// 停止日志流：中止桥接任务；仍连接时向服务端退订
+pub fn stop_log_stream(core: &SharedCore) {
+    let mut c = core.lock().unwrap();
+    stop_log_stream_locked(&mut c);
+}
+
+fn stop_log_stream_locked(c: &mut Core) {
+    if let Some(handle) = c.log_abort.take() {
+        handle.abort();
+    }
+    if let Some(conn) = c.ipc.conn().cloned() {
+        let rt = c.rt.clone();
+        rt.spawn(async move {
+            let _ =
+                ipc_service::request::<serde_json::Value>(conn, Command::UnsubscribeLogs).await;
+        });
+    }
+}
+
+/// 进入日志页且已连接时启动日志流桥接
 ///
-/// `Hash` 仅取代数（连接不参与哈希）：代数一致即同一订阅，与
-/// 旧版 `run_with_id(("log-stream", 代数))` 的身份语义一致。
-struct LogStream {
-    conn: IpcConn,
-    generation: u64,
-}
-
-impl std::hash::Hash for LogStream {
-    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
-        self.generation.hash(state);
-    }
-}
-
-/// `run_with` 的流构造器（`fn` 指针，不可捕获）：把连接克隆进
-/// [`iced::stream::channel`]，先订阅事件再请求订阅，保证服务端补推的
-/// 历史日志不丢失；断线/回收时以 `LogStreamEnded` 收尾。
-///
-/// 返回 [`BoxStream`] 具体类型：`run_with` 的 `fn(&D) -> S` 形参要求
-/// 固定返回类型，fn item 的 RPIT 无法与之协变。
-fn log_stream(data: &LogStream) -> iced::futures::stream::BoxStream<'static, Message> {
-    let conn = data.conn.clone();
-    let generation = data.generation;
-    // 0.14 的 channel 形参为 AsyncFnOnce，闭包参数需显式标注以推导条目类型
-    iced::stream::channel(
-        256,
-        move |mut output: iced::futures::channel::mpsc::Sender<Message>| async move {
-        let client = &conn.0;
+/// 先订阅本地事件广播、再请求服务端 `SubscribeLogs`（先建接收端，
+/// 保证服务端补推的历史不丢）；每条推送携带连接代数守卫，重连后的
+/// 旧流静默退出；订阅失败/断流按断线收尾。
+pub fn start_log_stream(weak: UiWeak, core: &SharedCore) {
+    let (conn, stream_gen, rt) = {
+        let c = core.lock().unwrap();
+        if c.log_abort.is_some() || !c.ipc.is_connected() {
+            return;
+        }
+        let Some(conn) = c.ipc.conn().cloned() else {
+            return;
+        };
+        (conn, c.ipc.generation(), c.rt.clone())
+    };
+    let core = core.clone();
+    let join = {
+        let core = core.clone();
+        rt.spawn(async move {
+        let client = conn.0.clone();
         let mut rx = client.subscribe_events();
-        if let Err(e) = client
-            .request(Command::SubscribeLogs { tail_count: 200 })
-            .await
-        {
+        if let Err(e) = client.request(Command::SubscribeLogs { tail_count: 200 }).await {
             let err = ipc_service::map_error(e);
-            if err.is_disconnected() {
-                let _ = output.send(Message::LogStreamEnded(generation)).await;
-                return;
-            }
-            let _ = output
-                .send(Message::Logs(logs::Msg::SubscribeFailed(err)))
-                .await;
+            let w = weak.clone();
+            let c2 = core.clone();
+            let _ = w.upgrade_in_event_loop(move |ui| {
+                c2.lock().unwrap().log_abort = None;
+                if !relay(&ui, &c2, &err) {
+                    ui.global::<LogsState>().set_error(err.message().into());
+                }
+            });
+            return;
         }
         loop {
             match rx.recv().await {
                 Ok(Event::Log { entry }) => {
-                    if output.send(Message::Logs(logs::Msg::Entry(entry))).await.is_err() {
+                    if core.lock().unwrap().ipc.generation() != stream_gen {
                         return;
                     }
+                    let w = weak.clone();
+                    let c2 = core.clone();
+                    let _ = w
+                        .upgrade_in_event_loop(move |ui| logs::on_log_entry(&ui, &c2, &entry));
                 }
                 Err(RecvError::Lagged(count)) => {
-                    if output.send(Message::Logs(logs::Msg::Lagged(count))).await.is_err() {
+                    if core.lock().unwrap().ipc.generation() != stream_gen {
                         return;
                     }
+                    let w = weak.clone();
+                    let c2 = core.clone();
+                    let _ = w
+                        .upgrade_in_event_loop(move |ui| logs::on_log_lagged(&ui, &c2, count));
                 }
                 Err(RecvError::Closed) => break,
             }
         }
-        let _ = output.send(Message::LogStreamEnded(generation)).await;
-        },
-    )
-    .boxed()
-}
-
-/// `iced` update 入口
-pub fn update(app: &mut App, message: Message) -> Task<Message> {
-    app.update(message)
-}
-
-/// `iced` view 入口
-pub fn view(app: &App) -> Element<'_, Message> {
-    app.view()
-}
-
-/// `iced` subscription 入口
-pub fn subscription(app: &App) -> Subscription<Message> {
-    app.subscription()
+        // 订阅流结束：当代数未变（未被重连顶替）时按断线处理
+        let _ = weak.upgrade_in_event_loop(move |ui| {
+            if core.lock().unwrap().ipc.generation() == stream_gen {
+                handle_disconnect(&ui, &core, "连接已断开".to_owned());
+            }
+        });
+        })
+    };
+    core.lock().unwrap().log_abort = Some(join.abort_handle());
 }

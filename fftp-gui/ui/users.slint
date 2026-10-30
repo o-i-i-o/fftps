@@ -1,0 +1,238 @@
+// 用户页：用户列表 + 新增/编辑/改密/删除（内联对话框）
+//
+// 列表模型由 Rust 维护；对话框表单为 in-out 属性，提交时由 Rust
+// 校验并经 GetUsers → 应用 → SaveUsers 整体提交。
+
+import { Theme, UserRow } from "common.slint";
+import { Button, CheckBox, LineEdit, ScrollView } from "std-widgets.slint";
+
+// 用户页状态（Rust 侧驱动）
+export global UsersState {
+    // 0 无对话框 / 1 新增或编辑 / 2 改密 / 3 删除确认
+    in-out property <int> dialog-kind;
+    // 页面公共
+    in property <bool> connected;
+    in property <bool> busy;
+    in property <string> error;
+    in property <string> info;
+    // 列表
+    in property <[UserRow]> users;
+    // 新增/编辑表单（editing 非空 = 编辑）
+    in property <string> editing;
+    in-out property <string> username;
+    in-out property <string> password;
+    in-out property <string> home-dir;
+    in-out property <bool> is-admin;
+    in-out property <bool> enabled;
+    in-out property <string> quota;
+    in-out property <string> speed;
+    in-out property <bool> perm-read;
+    in-out property <bool> perm-write;
+    in-out property <bool> perm-delete;
+    in-out property <bool> perm-list;
+    in-out property <bool> perm-mkdir;
+    in-out property <bool> perm-rmdir;
+    in-out property <bool> perm-rename;
+    in-out property <bool> perm-append;
+    in property <string> form-error;
+    in property <[string]> suggestions;
+    // 改密表单
+    in property <string> pwd-username;
+    in-out property <string> pwd-new;
+    in-out property <string> pwd-confirm;
+    in property <string> pwd-error;
+    // 删除确认
+    in property <string> del-username;
+    callback new-user();
+    callback edit-user(string);
+    callback delete-user(string);
+    callback change-password(string);
+    callback close-dialog();
+    callback submit();
+    callback confirm-delete();
+    callback create-dir();
+    callback setup-perms();
+    callback ensure-dirs();
+    callback use-suggestion(string);
+    callback username-changed();
+}
+
+component FormRow inherits HorizontalLayout {
+    in property <string> label;
+    spacing: 8px;
+    Text { text: root.label; font-size: 13px; min-width: 150px; vertical-alignment: center; }
+    @children
+}
+
+export component UsersPage inherits VerticalLayout {
+    spacing: 10px;
+
+    HorizontalLayout {
+        spacing: 10px;
+        Text { text: "用户管理"; font-size: 22px; vertical-alignment: center; }
+        Button { text: "新增用户"; enabled: !UsersState.busy && UsersState.dialog-kind == 0; clicked => { UsersState.new-user(); } }
+        if UsersState.info != "" : Text { text: UsersState.info; font-size: 13px; color: Theme.info; vertical-alignment: center; }
+    }
+
+    if UsersState.error != "" : Text { text: UsersState.error; font-size: 13px; color: Theme.error; }
+
+    if UsersState.dialog-kind == 0 : Text {
+        text: "口令以 Argon2id 哈希存储；变更经“保存”整体提交到 users.json。";
+        font-size: 12px;
+        color: Theme.muted;
+    }
+
+    if UsersState.dialog-kind == 1 : Rectangle {
+        background: Theme.card;
+        border-width: 1px;
+        border-color: Theme.border;
+        border-radius: 8px;
+        VerticalLayout {
+            padding: 12px;
+            spacing: 8px;
+            Text { text: UsersState.editing == "" ? "新增用户" : "编辑用户"; font-size: 18px; }
+            FormRow {
+                label: "用户名";
+                LineEdit { text <=> UsersState.username; placeholder-text: "字母数字/_/-"; min-width: 280px; enabled: UsersState.editing == ""; edited => { UsersState.username-changed(); } }
+            }
+            FormRow {
+                label: "主目录";
+                LineEdit { text <=> UsersState.home-dir; placeholder-text: "/srv/ftp/user"; min-width: 360px; }
+            }
+            HorizontalLayout {
+                spacing: 8px;
+                Text { text: "建议目录"; font-size: 13px; min-width: 150px; vertical-alignment: center; }
+                HorizontalLayout {
+                    spacing: 6px;
+                    for dir in UsersState.suggestions: Button {
+                        text: dir;
+                        clicked => { UsersState.use-suggestion(dir); }
+                    }
+                }
+            }
+            HorizontalLayout {
+                spacing: 8px;
+                Button { text: "创建目录"; enabled: UsersState.connected && !UsersState.busy; clicked => { UsersState.create-dir(); } }
+                Button { text: "设置目录权限"; enabled: UsersState.connected && !UsersState.busy; clicked => { UsersState.setup-perms(); } }
+                Button { text: "初始化用户目录"; enabled: UsersState.connected && !UsersState.busy; clicked => { UsersState.ensure-dirs(); } }
+            }
+            if UsersState.editing == "" : FormRow {
+                label: "口令";
+                LineEdit { text <=> UsersState.password; placeholder-text: "新用户口令"; min-width: 280px; input-type: password; }
+            }
+            HorizontalLayout {
+                spacing: 24px;
+                VerticalLayout {
+                    spacing: 6px;
+                    CheckBox { text: "启用"; checked <=> UsersState.enabled; }
+                    CheckBox { text: "管理员"; checked <=> UsersState.is-admin; }
+                }
+                VerticalLayout {
+                    spacing: 6px;
+                    FormRow {
+                        label: "配额（MB）";
+                        LineEdit { text <=> UsersState.quota; placeholder-text: "不限"; min-width: 120px; }
+                    }
+                    FormRow {
+                        label: "限速（KB/s）";
+                        LineEdit { text <=> UsersState.speed; placeholder-text: "不限"; min-width: 120px; }
+                    }
+                }
+                VerticalLayout {
+                    spacing: 4px;
+                    Text { text: "权限"; font-size: 13px; }
+                    CheckBox { text: "读取"; checked <=> UsersState.perm-read; }
+                    CheckBox { text: "写入"; checked <=> UsersState.perm-write; }
+                    CheckBox { text: "删除文件"; checked <=> UsersState.perm-delete; }
+                    CheckBox { text: "列出目录"; checked <=> UsersState.perm-list; }
+                    CheckBox { text: "创建目录"; checked <=> UsersState.perm-mkdir; }
+                    CheckBox { text: "删除目录"; checked <=> UsersState.perm-rmdir; }
+                    CheckBox { text: "重命名"; checked <=> UsersState.perm-rename; }
+                    CheckBox { text: "追加写入"; checked <=> UsersState.perm-append; }
+                }
+            }
+            if UsersState.form-error != "" : Text { text: UsersState.form-error; font-size: 13px; color: Theme.error; }
+            HorizontalLayout {
+                spacing: 8px;
+                Button { text: "保存"; enabled: UsersState.connected && !UsersState.busy; clicked => { UsersState.submit(); } }
+                Button { text: "取消"; enabled: !UsersState.busy; clicked => { UsersState.close-dialog(); } }
+            }
+        }
+    }
+
+    if UsersState.dialog-kind == 2 : Rectangle {
+        background: Theme.card;
+        border-width: 1px;
+        border-color: Theme.border;
+        border-radius: 8px;
+        VerticalLayout {
+            padding: 12px;
+            spacing: 8px;
+            Text { text: "修改口令：" + UsersState.pwd-username; font-size: 18px; }
+            FormRow {
+                label: "新口令";
+                LineEdit { text <=> UsersState.pwd-new; placeholder-text: "新口令"; min-width: 280px; input-type: password; }
+            }
+            FormRow {
+                label: "确认口令";
+                LineEdit { text <=> UsersState.pwd-confirm; placeholder-text: "再输入一次"; min-width: 280px; input-type: password; }
+            }
+            if UsersState.pwd-error != "" : Text { text: UsersState.pwd-error; font-size: 13px; color: Theme.error; }
+            HorizontalLayout {
+                spacing: 8px;
+                Button { text: "保存"; enabled: UsersState.connected && !UsersState.busy; clicked => { UsersState.submit(); } }
+                Button { text: "取消"; enabled: !UsersState.busy; clicked => { UsersState.close-dialog(); } }
+            }
+        }
+    }
+
+    if UsersState.dialog-kind == 3 : Rectangle {
+        background: Theme.card;
+        border-width: 1px;
+        border-color: Theme.border;
+        border-radius: 8px;
+        VerticalLayout {
+            padding: 12px;
+            spacing: 8px;
+            Text { text: "确认删除用户 “" + UsersState.del-username + "”？"; font-size: 18px; }
+            Text { text: "删除后需保存才会写入 users.json，此操作不可撤销。"; font-size: 13px; }
+            HorizontalLayout {
+                spacing: 8px;
+                Button { text: "确认删除"; enabled: UsersState.connected && !UsersState.busy; clicked => { UsersState.confirm-delete(); } }
+                Button { text: "取消"; enabled: !UsersState.busy; clicked => { UsersState.close-dialog(); } }
+            }
+        }
+    }
+
+    ScrollView {
+        vertical-stretch: 1;
+        VerticalLayout {
+            spacing: 6px;
+            HorizontalLayout {
+                spacing: 10px;
+                Text { text: "用户名"; font-size: 13px; min-width: 130px; }
+                Text { text: "状态"; font-size: 13px; min-width: 70px; }
+                Text { text: "角色"; font-size: 13px; min-width: 70px; }
+                Text { text: "主目录"; font-size: 13px; horizontal-stretch: 1; }
+                Text { text: "配额"; font-size: 13px; min-width: 100px; }
+                Text { text: "限速"; font-size: 13px; min-width: 100px; }
+                Text { text: "操作"; font-size: 13px; min-width: 210px; }
+            }
+            for user in UsersState.users: HorizontalLayout {
+                spacing: 10px;
+                Text { text: user.username; font-size: 13px; min-width: 130px; vertical-alignment: center; }
+                Text { text: user.enabled ? "启用" : "禁用"; font-size: 13px; color: user.enabled ? Theme.info : Theme.error; min-width: 70px; vertical-alignment: center; }
+                Text { text: user.admin ? "管理员" : "普通"; font-size: 13px; min-width: 70px; vertical-alignment: center; }
+                Text { text: user.home; font-size: 13px; horizontal-stretch: 1; overflow: TextOverflow.elide; vertical-alignment: center; }
+                Text { text: user.quota; font-size: 13px; min-width: 100px; vertical-alignment: center; }
+                Text { text: user.limit; font-size: 13px; min-width: 100px; vertical-alignment: center; }
+                HorizontalLayout {
+                    spacing: 4px;
+                    Button { text: "编辑"; enabled: !UsersState.busy; clicked => { UsersState.edit-user(user.username); } }
+                    Button { text: "改密"; enabled: !UsersState.busy; clicked => { UsersState.change-password(user.username); } }
+                    Button { text: "删除"; enabled: !UsersState.busy; clicked => { UsersState.delete-user(user.username); } }
+                }
+            }
+        }
+    }
+}
