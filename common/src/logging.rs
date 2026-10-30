@@ -3,9 +3,9 @@
 //! - tracing 初始化：控制台 / 程序日志文件 / file-ops 审计文件三层；
 //!   程序日志支持 JSON 与文本两种格式（[`LoggingConfig::enable_json`]），审计日志恒为 JSON 行；
 //!   两类文件均按天轮转（tracing-appender），保留 [`LoggingConfig::max_log_files`] 份；
-//! - 内存环形缓冲（[`RingBuffer`]）：程序日志通过 tracing Layer 捕获，审计条目由
+//! - 内存环形缓冲（[`RingBuffer`]）：程序日志经常驻的 [`MemoryLogLayer`] 捕获
+//!   （逐条按 `enable_gui_logging` 判断，运行期切换即时生效），审计条目由
 //!   [`Logging::write_file_op`] 直接写入，供 IPC 拉取（`recent`）与订阅（`subscribe`）；
-//!   [`LoggingConfig::enable_gui_logging`] 关闭时只写文件、不进缓冲；
 //! - 日志文件管理：[`Logging::list_log_files`] / [`Logging::read_log_file`]（程序日志）与
 //!   [`Logging::list_file_op_log_files`] / [`Logging::read_file_op_log`]（审计）。
 //!
@@ -211,9 +211,20 @@ impl Visit for LogFieldCollector {
     }
 }
 
-/// 程序日志捕获层：非 `file_ops` 的事件进入环形缓冲（字段取自 Windows `log_layers.rs`）
-impl<S: Subscriber> Layer<S> for RingBuffer<LogEntry> {
+/// 实时日志内存层：`enable_gui_logging` 开启时把非审计事件写入环形缓冲
+///
+/// 常驻挂载（而非按初始配置条件挂载）：关闭时条目不进缓冲，运行期切换
+/// `enable_gui_logging` 无需重启进程即可生效（修正日志通道热开关）。
+struct MemoryLogLayer {
+    buffer: LogBuffer,
+    live_config: Arc<StdMutex<LoggingConfig>>,
+}
+
+impl<S: Subscriber> Layer<S> for MemoryLogLayer {
     fn on_event(&self, event: &Event<'_>, _ctx: LayerContext<'_, S>) {
+        if !self.live_config.lock().unwrap().enable_gui_logging {
+            return;
+        }
         let metadata = event.metadata();
         if metadata.target().starts_with(AUDIT_TARGET) {
             return;
@@ -222,7 +233,7 @@ impl<S: Subscriber> Layer<S> for RingBuffer<LogEntry> {
         let mut collector = LogFieldCollector::default();
         event.record(&mut collector);
 
-        self.push(LogEntry {
+        self.buffer.push(LogEntry {
             timestamp: chrono::Local::now().to_rfc3339(),
             level: metadata.level().to_string(),
             source: metadata.target().to_string(),
@@ -244,8 +255,9 @@ static RELOAD_HANDLE: OnceLock<Handle<Targets, Registry>> = OnceLock::new();
 pub struct Logging {
     config: LoggingConfig,
     /// 运行期可热更新的参数副本（IPC `SaveLogConfig` 后经 [`Logging::update_config`] 替换）；
+    /// Arc 共享给 [`MemoryLogLayer`]，使 `enable_gui_logging` 运行期切换即时生效；
     /// 文件管理与审计写入按此副本生效，初始值与 [`Self::config`] 相同
-    live_config: StdMutex<LoggingConfig>,
+    live_config: Arc<StdMutex<LoggingConfig>>,
     log_buffer: LogBuffer,
     file_op_buffer: FileOpBuffer,
 }
@@ -258,7 +270,7 @@ impl Logging {
     pub fn new(config: &LoggingConfig) -> Self {
         Self {
             config: config.clone(),
-            live_config: StdMutex::new(config.clone()),
+            live_config: Arc::new(StdMutex::new(config.clone())),
             log_buffer: LogBuffer::new(2000),
             file_op_buffer: FileOpBuffer::new(2000),
         }
@@ -267,13 +279,13 @@ impl Logging {
     /// 创建日志设施并安装全局 tracing subscriber：
     /// 控制台 + 程序日志文件 + file-ops 审计文件 + 内存缓冲层。
     ///
-    /// `enable_gui_logging` 为 `false` 时不挂载内存缓冲层（只记文件不进缓冲）。
+    /// 内存缓冲层常驻，逐条按 `enable_gui_logging` 判断（运行期切换即时生效）。
     ///
     /// # Errors
     /// 日志目录创建失败、滚动 appender 构建失败，或全局 subscriber 已被初始化时返回错误
     pub fn init(config: &LoggingConfig) -> Result<Self> {
         let logging = Self::new(config);
-        install_subscriber(config, &logging.log_buffer)?;
+        install_subscriber(config, &logging.log_buffer, Arc::clone(&logging.live_config))?;
         Ok(logging)
     }
 
@@ -291,6 +303,7 @@ impl Logging {
     /// 热更新日志参数（新增钩子，供守护进程 `SaveLogConfig` 后调用）
     ///
     /// 只影响运行期可变的部分：文件管理/审计写入按新参数执行，
+    /// `enable_gui_logging` 由内存层逐条判断、即时生效，
     /// 日志级别另经 [`set_log_level`] 动态调整；
     /// 文件 appender 的目录/格式在 `init` 时确定，变更需重启进程完整生效。
     pub fn update_config(&self, config: LoggingConfig) {
@@ -397,7 +410,11 @@ impl Logging {
     }
 }
 
-fn install_subscriber(config: &LoggingConfig, log_buffer: &LogBuffer) -> Result<()> {
+fn install_subscriber(
+    config: &LoggingConfig,
+    log_buffer: &LogBuffer,
+    live_config: Arc<StdMutex<LoggingConfig>>,
+) -> Result<()> {
     let log_dir = config.resolved_log_dir();
     std::fs::create_dir_all(&log_dir).context("Failed to create log directory")?;
 
@@ -468,19 +485,20 @@ fn install_subscriber(config: &LoggingConfig, log_buffer: &LogBuffer) -> Result<
         .with_timer(ChronoLocal::rfc_3339())
         .with_filter(filter.clone().with_target(AUDIT_TARGET, LevelFilter::OFF));
 
+    // 内存缓冲层常驻：enable_gui_logging 的开关在层内逐条判断（运行期热生效）
     let subscriber = Registry::default()
         .with(reload_filter)
         .with(console_layer)
         .with(program_layer)
-        .with(audit_layer);
-    let subscriber = if config.enable_gui_logging {
-        let memory_layer = log_buffer
-            .clone()
-            .with_filter(filter.clone().with_target(FILE_OP_LOG_PREFIX, LevelFilter::OFF));
-        Box::new(subscriber.with(memory_layer)) as Box<dyn Subscriber + Send + Sync>
-    } else {
-        Box::new(subscriber) as Box<dyn Subscriber + Send + Sync>
-    };
+        .with(audit_layer)
+        .with(
+            MemoryLogLayer {
+                buffer: log_buffer.clone(),
+                live_config,
+            }
+            .with_filter(filter.with_target(FILE_OP_LOG_PREFIX, LevelFilter::OFF)),
+        );
+    let subscriber = Box::new(subscriber) as Box<dyn Subscriber + Send + Sync>;
 
     tracing::subscriber::set_global_default(subscriber)?;
     let _ = RELOAD_HANDLE.set(reload_handle);

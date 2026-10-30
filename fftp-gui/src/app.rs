@@ -442,6 +442,9 @@ pub fn start_log_stream(weak: UiWeak, core: &SharedCore) {
                     let _ = w
                         .upgrade_in_event_loop(move |ui| logs::on_log_entry(&ui, &c2, &entry));
                 }
+                Ok(Event::FileOp { .. }) => {
+                    // 审计实时流暂不在 GUI 展示（Web 端「文件日志」页消费）
+                }
                 Err(RecvError::Lagged(count)) => {
                     if core.lock().unwrap().ipc.generation() != stream_gen {
                         return;

@@ -1,0 +1,1258 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>fftps 配置 · ~/.config/fftpd/config.toml</title>
+<style>
+  :root{
+    --bg:#f5f7fa;
+    --panel:#ffffff;
+    --border:#e3e8ef;
+    --text:#1c2430;
+    --muted:#6b7785;
+    --accent:#2563eb;
+    --accent-soft:#eff4ff;
+    --warn-bg:#fffbeb;
+    --warn-border:#fde68a;
+    --warn-text:#92400e;
+    --radius:12px;
+    --mono:ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,monospace;
+  }
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{
+    margin:0;background:var(--bg);color:var(--text);font-size:14px;line-height:1.55;
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Hiragino Sans GB","Microsoft YaHei",sans-serif;
+    -webkit-font-smoothing:antialiased;
+  }
+  code{font-family:var(--mono)}
+
+  /* ---------- 布局 ---------- */
+  .app{display:grid;grid-template-columns:266px minmax(0,1fr);min-height:100vh}
+  .sidebar{
+    position:sticky;top:0;height:100vh;overflow-y:auto;
+    background:var(--panel);border-right:1px solid var(--border);
+    padding:20px 14px;display:flex;flex-direction:column;gap:20px;
+  }
+  .brand{display:flex;align-items:center;gap:10px;padding:0 6px}
+  .logo{
+    width:36px;height:36px;flex:none;border-radius:10px;display:grid;place-items:center;
+    background:linear-gradient(135deg,#2563eb,#3b82f6);color:#fff;font-weight:700;
+    font-family:var(--mono);font-size:13px;letter-spacing:-.5px;
+  }
+  .brand h1{font-size:14px;margin:0;font-weight:650}
+  .brand p{margin:1px 0 0;font-size:11.5px;color:var(--muted);font-family:var(--mono)}
+
+  .sidebar nav{display:flex;flex-direction:column;gap:2px}
+  .sidebar nav a{
+    display:flex;align-items:center;justify-content:space-between;gap:8px;
+    padding:9px 12px;border-radius:9px;text-decoration:none;
+    color:var(--muted);font-weight:500;font-size:13.5px;transition:.15s;
+  }
+  .sidebar nav a code{font-size:10.5px;opacity:.75}
+  .sidebar nav a:hover{background:#f4f7fb;color:#334155}
+  .sidebar nav a.active{background:var(--accent-soft);color:var(--accent)}
+  .sidebar-foot{
+    margin-top:auto;font-size:11.5px;color:var(--muted);line-height:1.65;
+    border-top:1px solid var(--border);padding:14px 6px 0;
+  }
+
+  main{min-width:0;padding-bottom:90px}
+  .topbar{
+    position:sticky;top:0;z-index:20;
+    display:flex;align-items:center;justify-content:space-between;gap:16px;flex-wrap:wrap;
+    padding:16px 34px;background:rgba(245,247,250,.86);
+    backdrop-filter:blur(10px);border-bottom:1px solid var(--border);
+  }
+  .topbar h2{margin:0;font-size:15px;font-weight:650}
+  .topbar p{margin:2px 0 0;font-size:12.5px;color:var(--muted)}
+  .actions{display:flex;gap:8px}
+
+  .content{padding:26px 34px 0;max-width:1040px}
+
+  /* ---------- 按钮 ---------- */
+  .btn{
+    font:inherit;font-size:13.5px;font-weight:500;padding:8px 15px;border-radius:9px;
+    border:1px solid var(--border);background:var(--panel);color:var(--text);
+    cursor:pointer;transition:.15s;white-space:nowrap;
+  }
+  .btn:hover{background:#f8fafc;border-color:#d3dbe6}
+  .btn.primary{background:var(--accent);border-color:var(--accent);color:#fff}
+  .btn.primary:hover{background:#1d4ed8;border-color:#1d4ed8}
+
+  /* ---------- 区块 ---------- */
+  .section{margin-bottom:30px;scroll-margin-top:88px}
+  .section-head{display:flex;align-items:baseline;gap:10px;flex-wrap:wrap;margin:0 0 11px 2px}
+  .section-head h2{margin:0;font-size:15.5px;font-weight:650}
+  .section-head code{
+    font-size:11.5px;background:#eaf0f9;color:#4a5b73;
+    padding:2px 7px;border-radius:6px;
+  }
+  .section-head p{margin:0;font-size:12.5px;color:var(--muted)}
+
+  .card{background:var(--panel);border:1px solid var(--border);border-radius:var(--radius);overflow:hidden}
+
+  /* ---------- 字段行 ---------- */
+  .field{
+    display:grid;grid-template-columns:minmax(0,1fr) minmax(230px,340px);
+    gap:26px;padding:16px 20px;border-top:1px solid var(--border);align-items:start;
+  }
+  .field:first-child{border-top:none}
+  .meta label{
+    display:inline-flex;align-items:center;gap:8px;flex-wrap:wrap;
+    font-size:13.5px;font-weight:600;cursor:pointer;
+  }
+  .meta label code{
+    font-size:11px;font-weight:500;background:#f1f4f9;color:#5b6b82;
+    padding:1.5px 6px;border-radius:5px;
+  }
+  .meta p{margin:5px 0 0;font-size:12.5px;color:var(--muted);line-height:1.6}
+  .ctl{display:flex;flex-direction:column;gap:7px;min-width:0}
+  .hint{font-size:11.5px;color:var(--muted)}
+  .hint code{background:#f1f4f9;padding:0 4px;border-radius:4px}
+
+  /* ---------- 控件 ---------- */
+  input[type=text],input[type=number],select{
+    width:100%;font:inherit;font-size:13.5px;color:inherit;
+    padding:8px 11px;border:1px solid var(--border);border-radius:9px;
+    background:var(--panel);transition:.15s;
+  }
+  input::placeholder{color:#a8b3c2}
+  input[type=text]:focus,input[type=number]:focus,select:focus{
+    outline:none;border-color:var(--accent);box-shadow:0 0 0 3px rgba(37,99,235,.13);
+  }
+  select{appearance:none;cursor:pointer;
+    background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath fill='%236b7785' d='M2.5 4.5 6 8l3.5-3.5z'/%3E%3C/svg%3E");
+    background-repeat:no-repeat;background-position:right 10px center;padding-right:30px;
+  }
+
+  .range-row{display:flex;align-items:center;gap:8px}
+  .range-row .sep{color:var(--muted);flex:none}
+
+  /* ---------- 开关 ---------- */
+  .switch{position:relative;display:inline-block;width:44px;height:24px;flex:none}
+  .switch input{position:absolute;opacity:0;width:100%;height:100%;margin:0;cursor:pointer;z-index:2}
+  .switch .track{
+    position:absolute;inset:0;border-radius:999px;background:#cbd5e1;transition:.2s;
+  }
+  .switch .track::before{
+    content:'';position:absolute;top:3px;left:3px;width:18px;height:18px;border-radius:50%;
+    background:#fff;box-shadow:0 1px 3px rgba(15,23,42,.28);transition:.2s;
+  }
+  .switch input:checked + .track{background:var(--accent)}
+  .switch input:checked + .track::before{transform:translateX(20px)}
+  .switch input:focus-visible + .track{box-shadow:0 0 0 3px rgba(37,99,235,.25)}
+
+  /* ---------- 标签输入 ---------- */
+  .tags{
+    display:flex;flex-wrap:wrap;align-items:center;gap:6px;
+    min-height:42px;padding:6px 8px;border:1px solid var(--border);
+    border-radius:9px;background:var(--panel);transition:.15s;
+  }
+  .tags:focus-within{border-color:var(--accent);box-shadow:0 0 0 3px rgba(37,99,235,.13)}
+  .tag{
+    display:inline-flex;align-items:center;gap:2px;font-family:var(--mono);font-size:12px;
+    background:var(--accent-soft);color:#1d4ed8;border-radius:6px;padding:3px 3px 3px 8px;
+  }
+  .tag .tag-x{
+    border:none;background:none;color:inherit;cursor:pointer;font-size:14px;line-height:1;
+    padding:1px 4px;border-radius:4px;opacity:.65;font-family:inherit;
+  }
+  .tag .tag-x:hover{opacity:1;background:rgba(37,99,235,.16)}
+  .tags input.tag-entry{
+    flex:1 1 130px;min-width:110px;border:none;background:transparent;padding:4px 2px;
+    font-size:13px;border-radius:0;
+  }
+  .tags input.tag-entry:focus{outline:none;box-shadow:none}
+
+  /* ---------- 提示条 ---------- */
+  .note-warn{
+    display:flex;gap:8px;font-size:12px;line-height:1.6;
+    background:var(--warn-bg);border:1px solid var(--warn-border);
+    color:var(--warn-text);padding:8px 11px;border-radius:9px;
+  }
+  .note-warn b{font-weight:650}
+
+  /* ---------- 弹窗 ---------- */
+  .modal{position:fixed;inset:0;z-index:60;display:flex;align-items:center;justify-content:center;padding:24px}
+  .modal[hidden]{display:none}
+  .modal-backdrop{position:absolute;inset:0;background:rgba(15,23,42,.45);backdrop-filter:blur(2px)}
+  .modal-body{
+    position:relative;width:min(820px,100%);max-height:82vh;display:flex;flex-direction:column;
+    background:var(--panel);border-radius:14px;overflow:hidden;
+    box-shadow:0 24px 70px rgba(15,23,42,.35);
+  }
+  .modal-head{
+    display:flex;align-items:center;justify-content:space-between;gap:12px;
+    padding:13px 18px;border-bottom:1px solid var(--border);
+  }
+  .modal-head h3{margin:0;font-size:14px;font-weight:650}
+  .modal-head h3 code{font-weight:500;color:var(--muted);font-size:12px;margin-left:6px}
+  .modal-body pre{
+    margin:0;flex:1;overflow:auto;padding:18px;
+    background:#0f172a;color:#e2e8f0;
+    font-family:var(--mono);font-size:12.5px;line-height:1.75;tab-size:2;
+  }
+
+  /* ---------- 响应式 ---------- */
+  @media (max-width:900px){
+    .app{grid-template-columns:1fr}
+    .sidebar{position:static;height:auto;flex-direction:column;gap:14px;border-right:none;border-bottom:1px solid var(--border)}
+    .sidebar nav{flex-direction:row;overflow-x:auto;gap:6px;padding-bottom:2px}
+    .sidebar nav a{white-space:nowrap}
+    .sidebar-foot{display:none}
+    .topbar{padding:14px 18px}
+    .content{padding:20px 18px 0}
+    .field{grid-template-columns:1fr;gap:11px;padding:15px 16px}
+  }
+</style>
+</head>
+<body>
+
+<div class="app">
+  <!-- ============ 侧边栏 ============ -->
+  <aside class="sidebar">
+    <div class="brand">
+      <div class="logo">ff</div>
+      <div>
+        <h1>fftps 配置</h1>
+        <p>config.toml</p>
+      </div>
+    </div>
+
+    <nav id="nav">
+      <a href="#ftp" class="active">FTP 服务 <code>[ftp]</code></a>
+      <a href="#ftps">FTPS 加密 <code>[ftp.ftps]</code></a>
+      <a href="#sftp">SFTP 服务 <code>[sftp]</code></a>
+      <a href="#security">安全策略 <code>[security]</code></a>
+      <a href="#logging">日志记录 <code>[logging]</code></a>
+    </nav>
+
+    <div class="sidebar-foot">
+      缺失字段按默认值补齐；文件缺失时 fftpd 首次启动自动生成默认配置。<br>
+      可写路径语义：空串 = 未设置（使用默认值）。
+    </div>
+  </aside>
+
+  <!-- ============ 主区域 ============ -->
+  <main>
+    <header class="topbar">
+      <div>
+        <h2>配置项</h2>
+        <p>每项可单独设置，留空或保持默认即使用内置默认值</p>
+      </div>
+      <div class="actions">
+        <button type="button" class="btn" id="resetBtn">恢复默认</button>
+        <button type="button" class="btn primary" id="exportBtn">生成 TOML</button>
+      </div>
+    </header>
+
+    <form class="content" id="form" novalidate>
+
+      <!-- ==================== [ftp] ==================== -->
+      <section class="section" id="ftp">
+        <div class="section-head">
+          <h2>FTP 服务</h2>
+          <code>[ftp]</code>
+          <p>传统 FTP 协议的监听地址与传输行为</p>
+        </div>
+        <div class="card">
+
+          <div class="field">
+            <div class="meta">
+              <label for="ftp-enabled">启用 FTP <code>enabled</code></label>
+              <p>关闭后不启动 FTP 监听，SFTP 不受影响。</p>
+            </div>
+            <div class="ctl">
+              <label class="switch"><input type="checkbox" id="ftp-enabled"><span class="track"></span></label>
+              <span class="hint">默认开启</span>
+            </div>
+          </div>
+
+          <div class="field">
+            <div class="meta">
+              <label for="ftp-bind_ip">绑定地址 <code>bind_ip</code></label>
+              <p>监听所用的 IPv4/IPv6 地址。0.0.0.0 表示监听全部网卡。</p>
+            </div>
+            <div class="ctl">
+              <input type="text" id="ftp-bind_ip" placeholder="0.0.0.0" spellcheck="false">
+              <span class="hint">默认 <code>0.0.0.0</code></span>
+            </div>
+          </div>
+
+          <div class="field">
+            <div class="meta">
+              <label for="ftp-port">监听端口 <code>port</code></label>
+              <p>FTP 控制连接端口。标准端口为 21，使用非特权端口可免 root 运行。</p>
+            </div>
+            <div class="ctl">
+              <input type="number" id="ftp-port" min="1" max="65535" step="1" placeholder="21">
+              <span class="hint">范围 1–65535，默认 <code>21</code></span>
+            </div>
+          </div>
+
+          <div class="field">
+            <div class="meta">
+              <label for="ftp-welcome_message">欢迎信息 <code>welcome_message</code></label>
+              <p>客户端登录成功后显示在 220 响应中的文本。</p>
+            </div>
+            <div class="ctl">
+              <input type="text" id="ftp-welcome_message" placeholder="Welcome to fftpd">
+              <span class="hint">默认 <code>Welcome to fftpd</code></span>
+            </div>
+          </div>
+
+          <div class="field">
+            <div class="meta">
+              <label for="ftp-encoding">文件名编码 <code>encoding</code></label>
+              <p>控制通道与文件名使用的字符集，需与客户端协商一致。</p>
+            </div>
+            <div class="ctl">
+              <input type="text" id="ftp-encoding" list="encoding-list" placeholder="UTF-8" spellcheck="false">
+              <datalist id="encoding-list">
+                <option value="UTF-8"></option>
+                <option value="GBK"></option>
+                <option value="GB18030"></option>
+                <option value="ISO-8859-1"></option>
+              </datalist>
+              <span class="hint">默认 <code>UTF-8</code></span>
+            </div>
+          </div>
+
+          <div class="field">
+            <div class="meta">
+              <label for="ftp-default_transfer_mode">默认传输模式 <code>default_transfer_mode</code></label>
+              <p>客户端未指定 TYPE 时使用的传输模式。</p>
+            </div>
+            <div class="ctl">
+              <select id="ftp-default_transfer_mode">
+                <option value="binary">binary（二进制）</option>
+                <option value="ascii">ascii（文本）</option>
+              </select>
+              <span class="hint">默认 <code>binary</code></span>
+            </div>
+          </div>
+
+          <div class="field">
+            <div class="meta">
+              <label for="ftp-connection_mode">连接模式 <code>connection_mode</code></label>
+              <p>允许的数据连接建立方式。仅内网环境可考虑开放主动模式。</p>
+            </div>
+            <div class="ctl">
+              <select id="ftp-connection_mode">
+                <option value="passive_only">passive_only（仅被动）</option>
+                <option value="active_only">active_only（仅主动）</option>
+                <option value="active_and_passive">active_and_passive（主动 + 被动）</option>
+              </select>
+              <span class="hint">默认 <code>passive_only</code></span>
+            </div>
+          </div>
+
+          <div class="field">
+            <div class="meta">
+              <label for="ftp-allow_anonymous">允许匿名登录 <code>allow_anonymous</code></label>
+              <p>开启后允许 anonymous / ftp 用户免密码登录。</p>
+            </div>
+            <div class="ctl">
+              <label class="switch"><input type="checkbox" id="ftp-allow_anonymous"><span class="track"></span></label>
+              <span class="hint">默认关闭</span>
+            </div>
+          </div>
+
+          <div class="field">
+            <div class="meta">
+              <label for="ftp-anonymous_home">匿名用户主目录 <code>anonymous_home</code></label>
+              <p>匿名登录后的根目录。留空 = 未设置（使用默认值）。</p>
+            </div>
+            <div class="ctl">
+              <input type="text" id="ftp-anonymous_home" placeholder="留空 = 未设置" spellcheck="false">
+              <span class="hint">空串 = 未设置</span>
+            </div>
+          </div>
+
+          <div class="field">
+            <div class="meta">
+              <label>被动模式端口区间 <code>passive_ports</code></label>
+              <p>PASV 数据连接可用的端口范围（含端点），需在防火墙放行。</p>
+            </div>
+            <div class="ctl">
+              <div class="range-row">
+                <input type="number" id="ftp-passive_ports-min" min="1" max="65535" step="1" placeholder="50000">
+                <span class="sep">–</span>
+                <input type="number" id="ftp-passive_ports-max" min="1" max="65535" step="1" placeholder="51000">
+              </div>
+              <span class="hint">默认 <code>50000 – 51000</code></span>
+            </div>
+          </div>
+
+          <div class="field">
+            <div class="meta">
+              <label for="ftp-max_speed_kbps">单连接限速 <code>max_speed_kbps</code></label>
+              <p>单个连接的最大传输速率，单位 KB/s。</p>
+            </div>
+            <div class="ctl">
+              <input type="number" id="ftp-max_speed_kbps" min="0" step="1" placeholder="0">
+              <span class="hint"><code>0</code> = 不限速（默认）</span>
+            </div>
+          </div>
+
+          <div class="field">
+            <div class="meta">
+              <label for="ftp-masquerade_address">被动模式通告地址 <code>masquerade_address</code></label>
+              <p>NAT / 端口映射环境下，PASV 响应中回给客户端的外网地址。</p>
+            </div>
+            <div class="ctl">
+              <input type="text" id="ftp-masquerade_address" placeholder="留空 = 使用实际连接地址" spellcheck="false">
+              <span class="hint">空串 = 使用实际连接地址</span>
+            </div>
+          </div>
+
+          <div class="field">
+            <div class="meta">
+              <label for="ftp-connection_timeout">连接超时 <code>connection_timeout</code></label>
+              <p>建立连接后等待客户端响应的超时时间（秒）。</p>
+            </div>
+            <div class="ctl">
+              <input type="number" id="ftp-connection_timeout" min="1" step="1" placeholder="15">
+              <span class="hint">单位：秒，默认 <code>15</code></span>
+            </div>
+          </div>
+
+          <div class="field">
+            <div class="meta">
+              <label for="ftp-idle_timeout">空闲超时 <code>idle_timeout</code></label>
+              <p>连接无任何操作多久后自动断开（秒）。</p>
+            </div>
+            <div class="ctl">
+              <input type="number" id="ftp-idle_timeout" min="1" step="1" placeholder="15">
+              <span class="hint">单位：秒，默认 <code>15</code></span>
+            </div>
+          </div>
+
+          <div class="field">
+            <div class="meta">
+              <label for="ftp-hide_version_info">隐藏版本信息 <code>hide_version_info</code></label>
+              <p>不在欢迎信息中暴露 fftpd 的版本号，降低信息泄露风险。</p>
+            </div>
+            <div class="ctl">
+              <label class="switch"><input type="checkbox" id="ftp-hide_version_info"><span class="track"></span></label>
+              <span class="hint">默认关闭（显示版本）</span>
+            </div>
+          </div>
+
+          <div class="field">
+            <div class="meta">
+              <label for="ftp-pooled_listener_mode">池化被动监听 <code>pooled_listener_mode</code></label>
+              <p>预绑定并复用被动端口池，可降低高频短连接的开销。</p>
+            </div>
+            <div class="ctl">
+              <label class="switch"><input type="checkbox" id="ftp-pooled_listener_mode"><span class="track"></span></label>
+              <div class="note-warn">
+                <span>⚠</span>
+                <span><b>已知限制：</b>libunftp 0.23.1 停止后不释放预绑定的被动端口，运行期 restart 会失败（需重启 fftpd 进程），故默认关闭。</span>
+              </div>
+            </div>
+          </div>
+
+          <div class="field">
+            <div class="meta">
+              <label for="ftp-allow_nat_clients">允许 NAT 客户端 <code>allow_nat_clients</code></label>
+              <p>放宽对 NAT 后客户端地址不一致的校验。</p>
+            </div>
+            <div class="ctl">
+              <label class="switch"><input type="checkbox" id="ftp-allow_nat_clients"><span class="track"></span></label>
+              <span class="hint">默认开启</span>
+            </div>
+          </div>
+
+          <div class="field">
+            <div class="meta">
+              <label for="ftp-ftp_root">FTP 根目录 <code>ftp_root</code></label>
+              <p>全局根目录，所有用户被限制在其下。留空 = 各用户 home。</p>
+            </div>
+            <div class="ctl">
+              <input type="text" id="ftp-ftp_root" placeholder="留空 = 各用户 home" spellcheck="false">
+              <span class="hint">空串 = 各用户 home</span>
+            </div>
+          </div>
+
+        </div>
+      </section>
+
+      <!-- ==================== [ftp.ftps] ==================== -->
+      <section class="section" id="ftps">
+        <div class="section-head">
+          <h2>FTPS 加密</h2>
+          <code>[ftp.ftps]</code>
+          <p>在 FTP 之上叠加 TLS 加密</p>
+        </div>
+        <div class="card">
+
+          <div class="field">
+            <div class="meta">
+              <label for="ftps-enabled">启用 FTPS <code>enabled</code></label>
+              <p>开启后 FTP 服务支持 AUTH TLS 显式加密。</p>
+            </div>
+            <div class="ctl">
+              <label class="switch"><input type="checkbox" id="ftps-enabled"><span class="track"></span></label>
+              <span class="hint">默认关闭</span>
+            </div>
+          </div>
+
+          <div class="field">
+            <div class="meta">
+              <label for="ftps-require_ssl">强制 SSL <code>require_ssl</code></label>
+              <p>拒绝未加密的明文连接，必须先完成 TLS 握手。</p>
+            </div>
+            <div class="ctl">
+              <label class="switch"><input type="checkbox" id="ftps-require_ssl"><span class="track"></span></label>
+              <span class="hint">默认关闭</span>
+            </div>
+          </div>
+
+          <div class="field">
+            <div class="meta">
+              <label for="ftps-cert_path">证书路径 <code>cert_path</code></label>
+              <p>X.509 证书文件（PEM）。留空 = 自动生成（rcgen 自签名）。</p>
+            </div>
+            <div class="ctl">
+              <input type="text" id="ftps-cert_path" placeholder="留空 = 自动生成" spellcheck="false">
+              <span class="hint">空串 = 自动生成</span>
+            </div>
+          </div>
+
+          <div class="field">
+            <div class="meta">
+              <label for="ftps-key_path">私钥路径 <code>key_path</code></label>
+              <p>与证书匹配的私钥文件（PEM）。留空 = 自动生成。</p>
+            </div>
+            <div class="ctl">
+              <input type="text" id="ftps-key_path" placeholder="留空 = 自动生成" spellcheck="false">
+              <span class="hint">空串 = 自动生成</span>
+            </div>
+          </div>
+
+        </div>
+      </section>
+
+      <!-- ==================== [sftp] ==================== -->
+      <section class="section" id="sftp">
+        <div class="section-head">
+          <h2>SFTP 服务</h2>
+          <code>[sftp]</code>
+          <p>基于 SSH 的安全文件传输</p>
+        </div>
+        <div class="card">
+
+          <div class="field">
+            <div class="meta">
+              <label for="sftp-enabled">启用 SFTP <code>enabled</code></label>
+              <p>开启后监听 SSH 端口并提供 SFTP 子系统。</p>
+            </div>
+            <div class="ctl">
+              <label class="switch"><input type="checkbox" id="sftp-enabled"><span class="track"></span></label>
+              <span class="hint">默认开启</span>
+            </div>
+          </div>
+
+          <div class="field">
+            <div class="meta">
+              <label for="sftp-bind_ip">绑定地址 <code>bind_ip</code></label>
+              <p>SSH 监听所用的地址。</p>
+            </div>
+            <div class="ctl">
+              <input type="text" id="sftp-bind_ip" placeholder="0.0.0.0" spellcheck="false">
+              <span class="hint">默认 <code>0.0.0.0</code></span>
+            </div>
+          </div>
+
+          <div class="field">
+            <div class="meta">
+              <label for="sftp-port">监听端口 <code>port</code></label>
+              <p>SSH 服务端口，默认使用非 22 端口以避免与系统 sshd 冲突。</p>
+            </div>
+            <div class="ctl">
+              <input type="number" id="sftp-port" min="1" max="65535" step="1" placeholder="2222">
+              <span class="hint">默认 <code>2222</code></span>
+            </div>
+          </div>
+
+          <div class="field">
+            <div class="meta">
+              <label for="sftp-host_key_path">主机密钥路径 <code>host_key_path</code></label>
+              <p>ed25519 主机私钥文件。留空 = 首次启动自动生成到默认位置。</p>
+            </div>
+            <div class="ctl">
+              <input type="text" id="sftp-host_key_path" placeholder="留空 = 自动生成" spellcheck="false">
+              <span class="hint">空串 = <code>~/.local/state/fftpd/ssh_host_ed25519_key</code></span>
+            </div>
+          </div>
+
+          <div class="field">
+            <div class="meta">
+              <label for="sftp-max_auth_attempts">最大认证次数 <code>max_auth_attempts</code></label>
+              <p>单次连接允许的密码 / 公钥认证失败次数，超出即断开。</p>
+            </div>
+            <div class="ctl">
+              <input type="number" id="sftp-max_auth_attempts" min="1" step="1" placeholder="3">
+              <span class="hint">默认 <code>3</code></span>
+            </div>
+          </div>
+
+          <div class="field">
+            <div class="meta">
+              <label for="sftp-auth_timeout">认证超时 <code>auth_timeout</code></label>
+              <p>等待客户端完成认证的最长时间（秒）。</p>
+            </div>
+            <div class="ctl">
+              <input type="number" id="sftp-auth_timeout" min="1" step="1" placeholder="60">
+              <span class="hint">单位：秒，默认 <code>60</code></span>
+            </div>
+          </div>
+
+          <div class="field">
+            <div class="meta">
+              <label for="sftp-log_level">日志级别 <code>log_level</code></label>
+              <p>SFTP 子系统自身的日志详细程度。</p>
+            </div>
+            <div class="ctl">
+              <select id="sftp-log_level">
+                <option value="trace">trace</option>
+                <option value="debug">debug</option>
+                <option value="info">info</option>
+                <option value="warn">warn</option>
+                <option value="error">error</option>
+              </select>
+              <span class="hint">默认 <code>info</code></span>
+            </div>
+          </div>
+
+          <div class="field">
+            <div class="meta">
+              <label for="sftp-max_sessions_per_user">单用户最大会话数 <code>max_sessions_per_user</code></label>
+              <p>限制同一账号同时建立的 SFTP 会话数量。</p>
+            </div>
+            <div class="ctl">
+              <input type="number" id="sftp-max_sessions_per_user" min="1" step="1" placeholder="5">
+              <span class="hint">默认 <code>5</code></span>
+            </div>
+          </div>
+
+          <div class="field">
+            <div class="meta">
+              <label for="sftp-host_key_rotation_days">主机密钥轮换周期 <code>host_key_rotation_days</code></label>
+              <p>定期重新生成 SSH 主机密钥，单位为天。</p>
+            </div>
+            <div class="ctl">
+              <input type="number" id="sftp-host_key_rotation_days" min="0" step="1" placeholder="0">
+              <span class="hint"><code>0</code> = 不轮换（默认）</span>
+            </div>
+          </div>
+
+        </div>
+      </section>
+
+      <!-- ==================== [security] ==================== -->
+      <section class="section" id="security">
+        <div class="section-head">
+          <h2>安全策略</h2>
+          <code>[security]</code>
+          <p>连接限制、IP 黑白名单与暴力破解防护</p>
+        </div>
+        <div class="card">
+
+          <div class="field">
+            <div class="meta">
+              <label for="security-max_connections">最大连接总数 <code>max_connections</code></label>
+              <p>所有协议合计的同时在线连接上限。</p>
+            </div>
+            <div class="ctl">
+              <input type="number" id="security-max_connections" min="1" step="1" placeholder="100">
+              <span class="hint">默认 <code>100</code></span>
+            </div>
+          </div>
+
+          <div class="field">
+            <div class="meta">
+              <label for="security-max_connections_per_ip">单 IP 最大连接数 <code>max_connections_per_ip</code></label>
+              <p>限制单个来源 IP 的并发连接，防止单点占满连接池。</p>
+            </div>
+            <div class="ctl">
+              <input type="number" id="security-max_connections_per_ip" min="1" step="1" placeholder="10">
+              <span class="hint">默认 <code>10</code></span>
+            </div>
+          </div>
+
+          <div class="field">
+            <div class="meta">
+              <label for="security-allowed_ips">IP 白名单 <code>allowed_ips</code></label>
+              <p>仅允许列表内的 IP / CIDR 连接。输入后按回车添加。</p>
+            </div>
+            <div class="ctl">
+              <div class="tags" id="security-allowed_ips">
+                <input type="text" class="tag-entry" placeholder="如 192.168.1.0/24，回车添加" spellcheck="false">
+              </div>
+              <span class="hint">默认 <code>0.0.0.0/0</code>（允许所有 IPv4）</span>
+            </div>
+          </div>
+
+          <div class="field">
+            <div class="meta">
+              <label for="security-denied_ips">IP 黑名单 <code>denied_ips</code></label>
+              <p>拒绝列表内的 IP / CIDR 连接，优先级高于白名单。</p>
+            </div>
+            <div class="ctl">
+              <div class="tags" id="security-denied_ips">
+                <input type="text" class="tag-entry" placeholder="如 10.0.0.5，回车添加" spellcheck="false">
+              </div>
+              <span class="hint">默认空列表</span>
+            </div>
+          </div>
+
+          <div class="field">
+            <div class="meta">
+              <label for="security-fail2ban_enabled">启用 fail2ban 联动 <code>fail2ban_enabled</code></label>
+              <p>内置的失败计数封禁机制，达到阈值后临时拉黑来源 IP。</p>
+            </div>
+            <div class="ctl">
+              <label class="switch"><input type="checkbox" id="security-fail2ban_enabled"><span class="track"></span></label>
+              <span class="hint">默认关闭</span>
+            </div>
+          </div>
+
+          <div class="field">
+            <div class="meta">
+              <label for="security-fail2ban_threshold">封禁阈值 <code>fail2ban_threshold</code></label>
+              <p>同一 IP 在统计窗口内允许的失败次数，超出即封禁。</p>
+            </div>
+            <div class="ctl">
+              <input type="number" id="security-fail2ban_threshold" min="1" step="1" placeholder="5">
+              <span class="hint">默认 <code>5</code> 次</span>
+            </div>
+          </div>
+
+          <div class="field">
+            <div class="meta">
+              <label for="security-fail2ban_ban_time">封禁时长 <code>fail2ban_ban_time</code></label>
+              <p>命中阈值后拉黑该 IP 的持续时间。</p>
+            </div>
+            <div class="ctl">
+              <input type="number" id="security-fail2ban_ban_time" min="1" step="1" placeholder="3600">
+              <span class="hint">单位：秒，默认 <code>3600</code>（1 小时）</span>
+            </div>
+          </div>
+
+          <div class="field">
+            <div class="meta">
+              <label for="security-allow_symlinks">允许符号链接 <code>allow_symlinks</code></label>
+              <p>是否允许跟随符号链接。开启后可能突破根目录限制，请谨慎。</p>
+            </div>
+            <div class="ctl">
+              <label class="switch"><input type="checkbox" id="security-allow_symlinks"><span class="track"></span></label>
+              <span class="hint">默认关闭</span>
+            </div>
+          </div>
+
+          <div class="field">
+            <div class="meta">
+              <label for="security-max_login_attempts">最大登录尝试次数 <code>max_login_attempts</code></label>
+              <p>单连接允许的登录失败次数上限。</p>
+            </div>
+            <div class="ctl">
+              <input type="number" id="security-max_login_attempts" min="1" step="1" placeholder="5">
+              <span class="hint">默认 <code>5</code></span>
+            </div>
+          </div>
+
+        </div>
+      </section>
+
+      <!-- ==================== [logging] ==================== -->
+      <section class="section" id="logging">
+        <div class="section-head">
+          <h2>日志记录</h2>
+          <code>[logging]</code>
+          <p>日志输出位置、级别与滚动策略</p>
+        </div>
+        <div class="card">
+
+          <div class="field">
+            <div class="meta">
+              <label for="logging-log_dir">日志目录 <code>log_dir</code></label>
+              <p>日志文件存放目录。留空 = 使用默认状态目录。</p>
+            </div>
+            <div class="ctl">
+              <input type="text" id="logging-log_dir" placeholder="留空 = ~/.local/state/fftpd/logs" spellcheck="false">
+              <span class="hint">空串 = <code>~/.local/state/fftpd/logs</code></span>
+            </div>
+          </div>
+
+          <div class="field">
+            <div class="meta">
+              <label for="logging-log_level">日志级别 <code>log_level</code></label>
+              <p>全局日志详细程度，级别越高输出越少。</p>
+            </div>
+            <div class="ctl">
+              <select id="logging-log_level">
+                <option value="trace">trace</option>
+                <option value="debug">debug</option>
+                <option value="info">info</option>
+                <option value="warn">warn</option>
+                <option value="error">error</option>
+              </select>
+              <span class="hint">默认 <code>info</code></span>
+            </div>
+          </div>
+
+          <div class="field">
+            <div class="meta">
+              <label for="logging-max_log_files">保留日志文件数 <code>max_log_files</code></label>
+              <p>滚动归档保留的最大文件数量，超出后删除最旧的。</p>
+            </div>
+            <div class="ctl">
+              <input type="number" id="logging-max_log_files" min="1" step="1" placeholder="10">
+              <span class="hint">默认 <code>10</code> 个</span>
+            </div>
+          </div>
+
+          <div class="field">
+            <div class="meta">
+              <label for="logging-max_log_size">单个日志大小上限 <code>max_log_size</code></label>
+              <p>单个日志文件达到该字节数后触发滚动。</p>
+            </div>
+            <div class="ctl">
+              <input type="number" id="logging-max_log_size" min="1024" step="1024" placeholder="10485760">
+              <span class="hint">单位：字节，默认 <code>10485760</code> ≈ 10 MiB</span>
+            </div>
+          </div>
+
+          <div class="field">
+            <div class="meta">
+              <label for="logging-enable_json">JSON 格式日志 <code>enable_json</code></label>
+              <p>以结构化 JSON 行输出，便于日志采集系统解析。</p>
+            </div>
+            <div class="ctl">
+              <label class="switch"><input type="checkbox" id="logging-enable_json"><span class="track"></span></label>
+              <span class="hint">默认关闭（纯文本）</span>
+            </div>
+          </div>
+
+          <div class="field">
+            <div class="meta">
+              <label for="logging-enable_gui_logging">GUI 日志输出 <code>enable_gui_logging</code></label>
+              <p>将日志同时推送到图形界面的日志面板。</p>
+            </div>
+            <div class="ctl">
+              <label class="switch"><input type="checkbox" id="logging-enable_gui_logging"><span class="track"></span></label>
+              <span class="hint">默认开启</span>
+            </div>
+          </div>
+
+        </div>
+      </section>
+
+    </form>
+  </main>
+</div>
+
+<!-- ============ 导出弹窗 ============ -->
+<div class="modal" id="modal" hidden>
+  <div class="modal-backdrop" data-close></div>
+  <div class="modal-body">
+    <div class="modal-head">
+      <h3>生成的配置 <code>~/.config/fftpd/config.toml</code></h3>
+      <div style="display:flex;gap:8px">
+        <button type="button" class="btn" id="copyBtn">复制</button>
+        <button type="button" class="btn" data-close>关闭</button>
+      </div>
+    </div>
+    <pre><code id="tomlOut"></code></pre>
+  </div>
+</div>
+
+<script>
+(function () {
+  'use strict';
+
+  /* =========================================================
+   *  1. 默认值
+   * ========================================================= */
+  const DEFAULTS = {
+    ftp: {
+      enabled: true,
+      bind_ip: '0.0.0.0',
+      port: 21,
+      welcome_message: 'Welcome to fftpd',
+      encoding: 'UTF-8',
+      default_transfer_mode: 'binary',
+      connection_mode: 'passive_only',
+      allow_anonymous: false,
+      anonymous_home: '',
+      passive_ports: [50000, 51000],
+      max_speed_kbps: 0,
+      masquerade_address: '',
+      connection_timeout: 15,
+      idle_timeout: 15,
+      hide_version_info: false,
+      pooled_listener_mode: false,
+      allow_nat_clients: true,
+      ftp_root: ''
+    },
+    ftps: {
+      enabled: false,
+      require_ssl: false,
+      cert_path: '',
+      key_path: ''
+    },
+    sftp: {
+      enabled: true,
+      bind_ip: '0.0.0.0',
+      port: 2222,
+      host_key_path: '',
+      max_auth_attempts: 3,
+      auth_timeout: 60,
+      log_level: 'info',
+      max_sessions_per_user: 5,
+      host_key_rotation_days: 0
+    },
+    security: {
+      max_connections: 100,
+      max_connections_per_ip: 10,
+      allowed_ips: ['0.0.0.0/0'],
+      denied_ips: [],
+      fail2ban_enabled: false,
+      fail2ban_threshold: 5,
+      fail2ban_ban_time: 3600,
+      allow_symlinks: false,
+      max_login_attempts: 5
+    },
+    logging: {
+      log_dir: '',
+      log_level: 'info',
+      max_log_files: 10,
+      max_log_size: 10485760,
+      enable_json: false,
+      enable_gui_logging: true
+    }
+  };
+
+  /* =========================================================
+   *  2. 工具函数
+   * ========================================================= */
+  const $ = (id) => document.getElementById(id);
+  const chk = (id) => $(id).checked;
+  const txt = (id) => $(id).value.trim();
+  const numOf = (id) => {
+    const raw = $(id).value.trim();
+    if (raw === '') return 0;
+    const n = Number(raw);
+    return Number.isFinite(n) ? n : 0;
+  };
+
+  /* -------- 标签输入 -------- */
+  function addTag(box, value) {
+    value = String(value).trim().replace(/[,，]+$/, '');
+    if (!value) return;
+    const dup = Array.from(box.querySelectorAll('.tag'))
+      .some((t) => t.dataset.val === value);
+    if (dup) return;
+
+    const span = document.createElement('span');
+    span.className = 'tag';
+    span.dataset.val = value;
+    span.appendChild(document.createTextNode(value));
+
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'tag-x';
+    btn.setAttribute('aria-label', '移除');
+    btn.textContent = '×';
+    span.appendChild(btn);
+
+    box.insertBefore(span, box.querySelector('.tag-entry'));
+  }
+
+  function setTags(box, values) {
+    box.querySelectorAll('.tag').forEach((t) => t.remove());
+    (values || []).forEach((v) => addTag(box, v));
+  }
+
+  function getTags(box) {
+    return Array.from(box.querySelectorAll('.tag')).map((t) => t.dataset.val);
+  }
+
+  document.querySelectorAll('.tags').forEach((box) => {
+    const entry = box.querySelector('.tag-entry');
+    entry.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        addTag(box, entry.value);
+        entry.value = '';
+      } else if (e.key === 'Backspace' && entry.value === '') {
+        const tags = box.querySelectorAll('.tag');
+        if (tags.length) tags[tags.length - 1].remove();
+      }
+    });
+    entry.addEventListener('blur', () => {
+      if (entry.value.trim()) {
+        addTag(box, entry.value);
+        entry.value = '';
+      }
+    });
+  });
+
+  document.addEventListener('click', (e) => {
+    if (e.target.classList.contains('tag-x')) {
+      const tag = e.target.closest('.tag');
+      if (tag) tag.remove();
+    }
+  });
+
+  /* =========================================================
+   *  3. 默认值填充
+   * ========================================================= */
+  function fillSection(prefix, obj) {
+    Object.keys(obj).forEach((key) => {
+      const el = $(prefix + '-' + key);
+      if (!el) return;
+      const v = obj[key];
+      if (el.classList.contains('tags')) {
+        setTags(el, v);
+      } else if (el.type === 'checkbox') {
+        el.checked = !!v;
+      } else {
+        el.value = v;
+      }
+    });
+  }
+
+  function applyDefaults() {
+    fillSection('ftp', DEFAULTS.ftp);
+    $('ftp-passive_ports-min').value = DEFAULTS.ftp.passive_ports[0];
+    $('ftp-passive_ports-max').value = DEFAULTS.ftp.passive_ports[1];
+
+    fillSection('ftps', DEFAULTS.ftps);
+    fillSection('sftp', DEFAULTS.sftp);
+    fillSection('security', DEFAULTS.security);
+    fillSection('logging', DEFAULTS.logging);
+  }
+
+  /* =========================================================
+   *  4. 读取当前表单 -> 配置对象
+   * ========================================================= */
+  function collect() {
+    return {
+      ftp: {
+        enabled: chk('ftp-enabled'),
+        bind_ip: txt('ftp-bind_ip'),
+        port: numOf('ftp-port'),
+        welcome_message: txt('ftp-welcome_message'),
+        encoding: txt('ftp-encoding'),
+        default_transfer_mode: $('ftp-default_transfer_mode').value,
+        connection_mode: $('ftp-connection_mode').value,
+        allow_anonymous: chk('ftp-allow_anonymous'),
+        anonymous_home: txt('ftp-anonymous_home'),
+        passive_ports: [
+          numOf('ftp-passive_ports-min'),
+          numOf('ftp-passive_ports-max')
+        ],
+        max_speed_kbps: numOf('ftp-max_speed_kbps'),
+        masquerade_address: txt('ftp-masquerade_address'),
+        connection_timeout: numOf('ftp-connection_timeout'),
+        idle_timeout: numOf('ftp-idle_timeout'),
+        hide_version_info: chk('ftp-hide_version_info'),
+        pooled_listener_mode: chk('ftp-pooled_listener_mode'),
+        allow_nat_clients: chk('ftp-allow_nat_clients'),
+        ftp_root: txt('ftp-ftp_root')
+      },
+      ftps: {
+        enabled: chk('ftps-enabled'),
+        require_ssl: chk('ftps-require_ssl'),
+        cert_path: txt('ftps-cert_path'),
+        key_path: txt('ftps-key_path')
+      },
+      sftp: {
+        enabled: chk('sftp-enabled'),
+        bind_ip: txt('sftp-bind_ip'),
+        port: numOf('sftp-port'),
+        host_key_path: txt('sftp-host_key_path'),
+        max_auth_attempts: numOf('sftp-max_auth_attempts'),
+        auth_timeout: numOf('sftp-auth_timeout'),
+        log_level: $('sftp-log_level').value,
+        max_sessions_per_user: numOf('sftp-max_sessions_per_user'),
+        host_key_rotation_days: numOf('sftp-host_key_rotation_days')
+      },
+      security: {
+        max_connections: numOf('security-max_connections'),
+        max_connections_per_ip: numOf('security-max_connections_per_ip'),
+        allowed_ips: getTags($('security-allowed_ips')),
+        denied_ips: getTags($('security-denied_ips')),
+        fail2ban_enabled: chk('security-fail2ban_enabled'),
+        fail2ban_threshold: numOf('security-fail2ban_threshold'),
+        fail2ban_ban_time: numOf('security-fail2ban_ban_time'),
+        allow_symlinks: chk('security-allow_symlinks'),
+        max_login_attempts: numOf('security-max_login_attempts')
+      },
+      logging: {
+        log_dir: txt('logging-log_dir'),
+        log_level: $('logging-log_level').value,
+        max_log_files: numOf('logging-max_log_files'),
+        max_log_size: numOf('logging-max_log_size'),
+        enable_json: chk('logging-enable_json'),
+        enable_gui_logging: chk('logging-enable_gui_logging')
+      }
+    };
+  }
+
+  /* =========================================================
+   *  5. 生成 TOML
+   * ========================================================= */
+  const Q = (s) => '"' + String(s).replace(/\\/g, '\\\\').replace(/"/g, '\\"') + '"';
+  const B = (v) => (v ? 'true' : 'false');
+  const N = (v) => (Number.isFinite(Number(v)) ? String(Number(v)) : '0');
+  const A = (arr) => '[' + arr.map((x) => (typeof x === 'number' ? N(x) : Q(x))).join(', ') + ']';
+
+  function toTOML(c) {
+    const L = [];
+    L.push('# fftps 配置（由配置页面生成）');
+    L.push('#');
+    L.push('# 安装位置：/usr/share/fftps/config.toml（由 postinst 预置到 ~/.config/fftpd/config.toml）');
+    L.push('# 实际配置：~/.config/fftpd/config.toml（env 覆盖：FFTPD_CONFIG_DIR）');
+    L.push('# 缺失字段按默认值补齐；文件缺失时 fftpd 首次启动自动生成默认配置。');
+    L.push('# 可写路径语义：空串 = 未设置（使用默认值）。');
+    L.push('');
+
+    L.push('[ftp]');
+    L.push('enabled = ' + B(c.ftp.enabled));
+    L.push('bind_ip = ' + Q(c.ftp.bind_ip));
+    L.push('port = ' + N(c.ftp.port));
+    L.push('welcome_message = ' + Q(c.ftp.welcome_message));
+    L.push('encoding = ' + Q(c.ftp.encoding));
+    L.push('default_transfer_mode = ' + Q(c.ftp.default_transfer_mode));
+    L.push('connection_mode = ' + Q(c.ftp.connection_mode));
+    L.push('allow_anonymous = ' + B(c.ftp.allow_anonymous));
+    L.push('anonymous_home = ' + Q(c.ftp.anonymous_home));
+    L.push('passive_ports = ' + A(c.ftp.passive_ports));
+    L.push('max_speed_kbps = ' + N(c.ftp.max_speed_kbps));
+    L.push('masquerade_address = ' + Q(c.ftp.masquerade_address));
+    L.push('connection_timeout = ' + N(c.ftp.connection_timeout));
+    L.push('idle_timeout = ' + N(c.ftp.idle_timeout));
+    L.push('hide_version_info = ' + B(c.ftp.hide_version_info));
+    L.push('pooled_listener_mode = ' + B(c.ftp.pooled_listener_mode));
+    L.push('allow_nat_clients = ' + B(c.ftp.allow_nat_clients));
+    L.push('ftp_root = ' + Q(c.ftp.ftp_root));
+    L.push('');
+
+    L.push('[ftp.ftps]');
+    L.push('enabled = ' + B(c.ftps.enabled));
+    L.push('require_ssl = ' + B(c.ftps.require_ssl));
+    L.push('cert_path = ' + Q(c.ftps.cert_path));
+    L.push('key_path = ' + Q(c.ftps.key_path));
+    L.push('');
+
+    L.push('[sftp]');
+    L.push('enabled = ' + B(c.sftp.enabled));
+    L.push('bind_ip = ' + Q(c.sftp.bind_ip));
+    L.push('port = ' + N(c.sftp.port));
+    L.push('host_key_path = ' + Q(c.sftp.host_key_path));
+    L.push('max_auth_attempts = ' + N(c.sftp.max_auth_attempts));
+    L.push('auth_timeout = ' + N(c.sftp.auth_timeout));
+    L.push('log_level = ' + Q(c.sftp.log_level));
+    L.push('max_sessions_per_user = ' + N(c.sftp.max_sessions_per_user));
+    L.push('host_key_rotation_days = ' + N(c.sftp.host_key_rotation_days));
+    L.push('');
+
+    L.push('[security]');
+    L.push('max_connections = ' + N(c.security.max_connections));
+    L.push('max_connections_per_ip = ' + N(c.security.max_connections_per_ip));
+    L.push('allowed_ips = ' + A(c.security.allowed_ips));
+    L.push('denied_ips = ' + A(c.security.denied_ips));
+    L.push('fail2ban_enabled = ' + B(c.security.fail2ban_enabled));
+    L.push('fail2ban_threshold = ' + N(c.security.fail2ban_threshold));
+    L.push('fail2ban_ban_time = ' + N(c.security.fail2ban_ban_time));
+    L.push('allow_symlinks = ' + B(c.security.allow_symlinks));
+    L.push('max_login_attempts = ' + N(c.security.max_login_attempts));
+    L.push('');
+
+    L.push('[logging]');
+    L.push('log_dir = ' + Q(c.logging.log_dir));
+    L.push('log_level = ' + Q(c.logging.log_level));
+    L.push('max_log_files = ' + N(c.logging.max_log_files));
+    L.push('max_log_size = ' + N(c.logging.max_log_size));
+    L.push('enable_json = ' + B(c.logging.enable_json));
+    L.push('enable_gui_logging = ' + B(c.logging.enable_gui_logging));
+    L.push('');
+
+    return L.join('\n');
+  }
+
+  /* =========================================================
+   *  6. 交互事件
+   * ========================================================= */
+  const modal = $('modal');
+  const tomlOut = $('tomlOut');
+
+  $('exportBtn').addEventListener('click', () => {
+    tomlOut.textContent = toTOML(collect());
+    modal.hidden = false;
+  });
+
+  $('resetBtn').addEventListener('click', () => {
+    applyDefaults();
+  });
+
+  $('copyBtn').addEventListener('click', async () => {
+    const btn = $('copyBtn');
+    try {
+      await navigator.clipboard.writeText(tomlOut.textContent);
+      btn.textContent = '已复制';
+    } catch (err) {
+      const range = document.createRange();
+      range.selectNodeContents(tomlOut);
+      const sel = window.getSelection();
+      sel.removeAllRanges();
+      sel.addRange(range);
+      btn.textContent = '请按 Ctrl+C';
+    }
+    setTimeout(() => { btn.textContent = '复制'; }, 1600);
+  });
+
+  modal.addEventListener('click', (e) => {
+    if (e.target.hasAttribute('data-close')) modal.hidden = true;
+  });
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') modal.hidden = true;
+  });
+
+  /* =========================================================
+   *  7. 侧栏导航高亮
+   * ========================================================= */
+  const navLinks = Array.from(document.querySelectorAll('#nav a'));
+  const sections = navLinks
+    .map((a) => document.querySelector(a.getAttribute('href')))
+    .filter(Boolean);
+
+  if ('IntersectionObserver' in window) {
+    const observer = new IntersectionObserver(
+      (entries) => {
+        entries.forEach((entry) => {
+          if (!entry.isIntersecting) return;
+          navLinks.forEach((a) =>
+            a.classList.toggle('active', a.getAttribute('href') === '#' + entry.target.id)
+          );
+        });
+      },
+      { rootMargin: '-80px 0px -65% 0px', threshold: 0 }
+    );
+    sections.forEach((s) => observer.observe(s));
+  }
+
+  /* =========================================================
+   *  8. 初始化
+   * ========================================================= */
+  applyDefaults();
+})();
+</script>
+</body>
+</html>

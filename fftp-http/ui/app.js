@@ -146,7 +146,8 @@ $("login-form").addEventListener("submit", async (ev) => {
 
 $("btn-logout").addEventListener("click", async () => {
   stopConnPoll();
-  stopStream();
+  stopLogStream();
+  stopFopStream();
   try { await fetch("/api/logout", { method: "POST", credentials: "same-origin" }); } catch (_) { /* 忽略 */ }
   state.user = null;
   $("main").classList.add("hidden");
@@ -157,7 +158,7 @@ $("btn-logout").addEventListener("click", async () => {
 
 // ---------- Tab 切换 ----------
 
-const TABS = ["service", "config", "users", "logs", "logfiles", "fileop", "about"];
+const TABS = ["service", "config", "users", "proglog", "filelog", "about"];
 
 function switchTab(name) {
   for (const t of TABS) {
@@ -166,13 +167,13 @@ function switchTab(name) {
   document.querySelectorAll("#tabs button").forEach((b) => {
     b.classList.toggle("active", b.dataset.tab === name);
   });
-  if (name === "service") { refreshStatus(); loadLogConfig(); }
-  if (name === "config") loadConfig();
+  if (name === "service") refreshStatus();
+  if (name === "config") loadConfigPage();
   if (name === "users") loadUsers();
-  if (name === "logs") startStream();
-  else stopStream();
-  if (name === "logfiles") loadLogFileList();
-  if (name === "fileop") loadFileOpList();
+  if (name === "proglog") { startLogStream(); loadLogFileList(); }
+  else stopLogStream();
+  if (name === "filelog") { startFopStream(); loadFileOpList(); }
+  else stopFopStream();
   if (name === "about") refreshStatus();
 }
 
@@ -199,8 +200,6 @@ function stopConnPoll() { clearInterval(connTimer); connTimer = null; }
 
 // ---------- 服务状态与操作 ----------
 
-let statusTimer = null;
-
 async function refreshStatus() {
   try {
     const st = await api("/api/status");
@@ -213,13 +212,9 @@ async function refreshStatus() {
   } catch (_) { /* 离线横幅已处理 */ }
 }
 
-function armStatusPoll() {
-  clearInterval(statusTimer);
-  statusTimer = setInterval(() => {
-    if ($("tab-service").classList.contains("hidden")) return;
-    refreshStatus();
-  }, 5000);
-}
+setInterval(() => {
+  if (!$("tab-service").classList.contains("hidden")) refreshStatus();
+}, 5000);
 
 document.querySelectorAll("[data-svc]").forEach((btn) => {
   btn.addEventListener("click", async () => {
@@ -242,44 +237,347 @@ $("btn-shutdown").addEventListener("click", async () => {
   } catch (e) { toast(errMsg(e), true); }
 });
 
-// ---------- 日志设置（[logging] 段） ----------
+// ---------- SSE 实时流（程序日志 / 文件操作共用骨架） ----------
 
-// 轻量解析 config.toml 的 [logging] 段（值均为标量）
-function parseLoggingSection(toml) {
-  const out = {};
-  let inSec = false;
-  for (const rawLine of toml.split(/\r?\n/)) {
-    const line = rawLine.trim();
-    if (line.startsWith("[") && line.endsWith("]")) {
-      inSec = line === "[logging]";
-      continue;
-    }
-    if (!inSec || !line || line.startsWith("#")) continue;
-    const m = /^([A-Za-z0-9_]+)\s*=\s*(.+?)(\s+#.*)?$/.exec(line);
-    if (!m) continue;
-    let v = m[2].trim();
-    if ((v.startsWith('"') && v.endsWith('"')) || (v.startsWith("'") && v.endsWith("'"))) v = v.slice(1, -1);
-    else if (v === "true") v = true;
-    else if (v === "false") v = false;
-    else if (/^-?\d+$/.test(v)) v = parseInt(v, 10);
-    out[m[1]] = v;
+function createStream(cfg) {
+  // cfg: { url, eventName, tabId, stateEl, pauseBtn, clearBtn,
+  //        onEntry(entry), onNotice(text), onReset() }
+  const st = { es: null, paused: false, timer: null };
+  const active = () => !$("tab-" + cfg.tabId).classList.contains("hidden");
+
+  function connect() {
+    const es = new EventSource(cfg.url);
+    st.es = es;
+    es.addEventListener(cfg.eventName, (ev) => {
+      try { cfg.onEntry(JSON.parse(ev.data)); } catch (_) { /* 忽略坏帧 */ }
+    });
+    es.addEventListener("notice", (ev) => cfg.onNotice(String(ev.data)));
+    es.onopen = () => { cfg.stateEl.textContent = "已连接"; };
+    es.onerror = () => {
+      es.close();
+      st.es = null;
+      if (st.paused || !active()) {
+        cfg.stateEl.textContent = "已断开";
+        return;
+      }
+      cfg.stateEl.textContent = "连接断开，2 秒后重连…";
+      st.timer = setTimeout(connect, 2000);
+    };
   }
-  return out;
+
+  function start() {
+    if (st.es || !state.user) return;
+    st.paused = false;
+    cfg.pauseBtn.textContent = "暂停";
+    cfg.stateEl.textContent = "连接中…";
+    cfg.onReset();
+    connect();
+  }
+
+  function stop() {
+    clearTimeout(st.timer);
+    if (st.es) { st.es.close(); st.es = null; }
+    st.paused = false;
+    cfg.stateEl.textContent = "";
+  }
+
+  cfg.pauseBtn.addEventListener("click", () => {
+    if (st.paused) {
+      cfg.onReset();
+      connect();
+      st.paused = false;
+      cfg.pauseBtn.textContent = "暂停";
+    } else {
+      st.paused = true;
+      clearTimeout(st.timer);
+      if (st.es) { st.es.close(); st.es = null; }
+      cfg.pauseBtn.textContent = "继续";
+      cfg.stateEl.textContent = "已暂停";
+    }
+  });
+  cfg.clearBtn.addEventListener("click", cfg.onReset);
+
+  return { start, stop };
 }
 
-async function loadLogConfig() {
+// ---------- 程序日志：实时流（左） ----------
+
+function logLine(entry) {
+  const div = document.createElement("div");
+  div.className = "line";
+  const extra = [entry.client_ip, entry.username, entry.action].filter(Boolean).join(" ");
+  div.innerHTML =
+    `<span class="t-dim">${escapeHtml(fmtTime(entry.timestamp))}</span> ` +
+    `<span class="lvl-${escapeHtml(entry.level)}">${escapeHtml(entry.level)}</span> ` +
+    `<span class="t-dim">[${escapeHtml(entry.source)}]</span> ` +
+    escapeHtml(entry.message) +
+    (extra ? ` <span class="t-dim">(${escapeHtml(extra)})</span>` : "");
+  return div;
+}
+
+function appendLog(entry) {
+  const view = $("log-view");
+  view.appendChild(logLine(entry));
+  while (view.childElementCount > 5000) view.removeChild(view.firstChild);
+  if ($("log-autoscroll").checked) view.scrollTop = view.scrollHeight;
+}
+
+function appendSysLine(text) {
+  const view = $("log-view");
+  const div = document.createElement("div");
+  div.className = "sysline";
+  div.textContent = "— " + text + " —";
+  view.appendChild(div);
+  if ($("log-autoscroll").checked) view.scrollTop = view.scrollHeight;
+}
+
+const logStream = createStream({
+  url: "/api/logs/stream?tail=200",
+  eventName: "log",
+  tabId: "proglog",
+  stateEl: $("log-state"),
+  pauseBtn: $("log-pause"),
+  clearBtn: $("log-clear"),
+  onEntry: appendLog,
+  onNotice: appendSysLine,
+  onReset: () => { $("log-view").textContent = ""; },
+});
+const startLogStream = logStream.start;
+const stopLogStream = logStream.stop;
+
+// ---------- 程序日志：历史文件（右，下拉选择） ----------
+
+async function loadLogFileList() {
+  const sel = $("logfile-select");
+  const view = $("logfile-view");
   try {
-    const { content } = await api("/api/config");
-    const lg = parseLoggingSection(content);
-    $("lc-dir").value = lg.log_dir || "";
-    $("lc-level").value = ["error", "warn", "info", "debug", "trace"].includes(lg.log_level) ? lg.log_level : "info";
-    $("lc-size").value = lg.max_log_size ? Math.max(1, Math.round(lg.max_log_size / 1048576)) : "";
-    $("lc-files").value = lg.max_log_files || "";
-    $("lc-gui").checked = !!lg.enable_gui_logging;
+    const { files } = await api("/api/logs/files");
+    sel.textContent = "";
+    if (!files.length) {
+      sel.innerHTML = '<option value="">（暂无日志文件）</option>';
+      view.textContent = "（暂无日志文件）";
+      return;
+    }
+    for (const f of files) {
+      const opt = document.createElement("option");
+      opt.value = f.path;
+      opt.textContent = f.name;
+      opt.title = f.path;
+      sel.appendChild(opt);
+    }
+    loadLogFileContent();
+  } catch (e) {
+    sel.innerHTML = '<option value="">加载失败</option>';
+    view.textContent = "加载失败：" + errMsg(e);
+  }
+}
+
+async function loadLogFileContent() {
+  const sel = $("logfile-select");
+  const path = sel.value;
+  if (!path) return;
+  const view = $("logfile-view");
+  view.textContent = "加载中…";
+  try {
+    const { entries } = await api("/api/logs/content", {
+      method: "POST",
+      body: { path, count: parseInt($("logfile-count").value, 10) },
+    });
+    view.textContent = "";
+    for (const e of entries) view.appendChild(logLine(e));
+    if (!entries.length) view.textContent = "（无记录）";
+    view.scrollTop = view.scrollHeight;
+  } catch (e) {
+    view.textContent = "加载失败：" + errMsg(e);
+  }
+}
+
+$("logfile-refresh").addEventListener("click", loadLogFileContent);
+$("logfile-count").addEventListener("change", loadLogFileContent);
+$("logfile-select").addEventListener("change", loadLogFileContent);
+
+// ---------- 文件日志：实时流（左） ----------
+
+const FOP_LIVE_MAX = 500;
+
+function buildOpTable() {
+  const table = document.createElement("table");
+  table.className = "optable";
+  table.innerHTML =
+    "<thead><tr><th>时间</th><th>用户</th><th>客户端</th><th>操作</th><th>路径</th>" +
+    "<th>大小</th><th>协议</th><th>结果</th><th>消息</th></tr></thead><tbody></tbody>";
+  return table;
+}
+
+function opRow(e) {
+  const tr = document.createElement("tr");
+  tr.innerHTML =
+    `<td>${escapeHtml(fmtTime(e.timestamp))}</td>` +
+    `<td>${escapeHtml(e.username)}</td>` +
+    `<td>${escapeHtml(e.client_ip)}</td>` +
+    `<td>${escapeHtml(e.operation)}</td>` +
+    `<td class="path">${escapeHtml(e.file_path)}</td>` +
+    `<td>${escapeHtml(fmtSize(e.file_size))}</td>` +
+    `<td>${escapeHtml(e.protocol)}</td>` +
+    `<td class="${e.success ? "op-ok" : "op-fail"}">${e.success ? "成功" : "失败"}</td>` +
+    `<td class="path">${escapeHtml(e.message)}</td>`;
+  return tr;
+}
+
+function appendFopEntry(entry) {
+  const wrap = $("fop-live");
+  let table = wrap.querySelector("table");
+  if (!table) {
+    wrap.textContent = "";
+    table = buildOpTable();
+    wrap.appendChild(table);
+  }
+  const tbody = table.tBodies[0];
+  tbody.appendChild(opRow(entry));
+  while (tbody.rows.length > FOP_LIVE_MAX) tbody.deleteRow(0);
+  if ($("fop-autoscroll").checked) wrap.scrollTop = wrap.scrollHeight;
+}
+
+function appendFopNotice(text) {
+  const wrap = $("fop-live");
+  const p = document.createElement("p");
+  p.className = "hint";
+  p.textContent = "— " + text + " —";
+  wrap.appendChild(p);
+  wrap.scrollTop = wrap.scrollHeight;
+}
+
+const fopStream = createStream({
+  url: "/api/fileop/stream?tail=100",
+  eventName: "fileop",
+  tabId: "filelog",
+  stateEl: $("fop-state"),
+  pauseBtn: $("fop-pause"),
+  clearBtn: $("fop-clear"),
+  onEntry: appendFopEntry,
+  onNotice: appendFopNotice,
+  onReset: () => { $("fop-live").textContent = ""; },
+});
+const startFopStream = fopStream.start;
+const stopFopStream = fopStream.stop;
+
+// ---------- 文件日志：历史文件（右，下拉选择） ----------
+
+async function loadFileOpList() {
+  const sel = $("fileop-select");
+  const view = $("fileop-view");
+  try {
+    const { files } = await api("/api/fileop/files");
+    sel.textContent = "";
+    if (!files.length) {
+      sel.innerHTML = '<option value="">（暂无文件操作日志）</option>';
+      view.textContent = "（暂无文件操作日志）";
+      return;
+    }
+    for (const f of files) {
+      const opt = document.createElement("option");
+      opt.value = f.path;
+      opt.textContent = f.name;
+      opt.title = f.path;
+      sel.appendChild(opt);
+    }
+    loadFileOpContent();
+  } catch (e) {
+    sel.innerHTML = '<option value="">加载失败</option>';
+    view.textContent = "加载失败：" + errMsg(e);
+  }
+}
+
+async function loadFileOpContent() {
+  const sel = $("fileop-select");
+  const path = sel.value;
+  if (!path) return;
+  const view = $("fileop-view");
+  view.textContent = "加载中…";
+  try {
+    const { entries } = await api("/api/fileop/content", {
+      method: "POST",
+      body: { path, count: parseInt($("fileop-count").value, 10) },
+    });
+    view.textContent = "";
+    if (!entries.length) { view.textContent = "（无记录）"; return; }
+    const table = buildOpTable();
+    const tbody = table.tBodies[0];
+    for (const e of entries) tbody.appendChild(opRow(e));
+    view.appendChild(table);
+    view.scrollTop = view.scrollHeight;
+  } catch (e) {
+    view.textContent = "加载失败：" + errMsg(e);
+  }
+}
+
+$("fileop-refresh").addEventListener("click", loadFileOpContent);
+$("fileop-count").addEventListener("change", loadFileOpContent);
+$("fileop-select").addEventListener("change", loadFileOpContent);
+
+// ---------- 配置页（日志设置卡片 + config.toml 表单化） ----------
+
+const LOG_LEVELS = ["error", "warn", "info", "debug", "trace"];
+let cfgToml = ""; // 最近一次拉取的 config.toml 原文（保存时补齐表单外字段）
+
+// 轻量解析 config.toml：段名（如 "ftp"、"ftp.ftps"）→ { 键: 值 }（值均为标量/数组）
+function parseTomlSections(toml) {
+  const secs = { "": {} };
+  let cur = "";
+  for (const rawLine of String(toml).split(/\r?\n/)) {
+    const line = rawLine.trim();
+    if (!line || line.startsWith("#")) continue;
+    const head = /^\[([A-Za-z0-9_.]+)\]$/.exec(line);
+    if (head) { cur = head[1]; if (!secs[cur]) secs[cur] = {}; continue; }
+    const m = /^([A-Za-z0-9_]+)\s*=\s*(.+?)(\s+#.*)?$/.exec(line);
+    if (!m) continue;
+    if (!secs[cur]) secs[cur] = {};
+    secs[cur][m[1]] = parseTomlValue(m[2].trim());
+  }
+  return secs;
+}
+
+function parseTomlValue(v) {
+  if ((v.startsWith('"') && v.endsWith('"')) || (v.startsWith("'") && v.endsWith("'"))) {
+    return v.slice(1, -1);
+  }
+  if (v === "true") return true;
+  if (v === "false") return false;
+  if (/^-?\d+$/.test(v)) return parseInt(v, 10);
+  if (v.startsWith("[") && v.endsWith("]")) {
+    const inner = v.slice(1, -1).trim();
+    if (!inner) return [];
+    const strs = [...inner.matchAll(/"((?:[^"\\]|\\.)*)"/g)].map((m) => m[1]);
+    if (strs.length) return strs;
+    return inner.split(",").map((s) => s.trim()).filter(Boolean).map(Number);
+  }
+  return v;
+}
+
+async function loadConfigPage() {
+  try {
+    const content = (await api("/api/config")).content;
+    fillConfigForm(content);
+    fillLogForm(content);
   } catch (_) { /* 离线横幅已处理 */ }
 }
 
-$("lc-reload").addEventListener("click", loadLogConfig);
+async function refreshCfgToml() {
+  try { cfgToml = (await api("/api/config")).content; } catch (_) { /* 忽略 */ }
+}
+
+// 日志设置卡片（[logging]；独立保存走 /api/log-config，热生效不重启服务）
+function fillLogForm(content) {
+  cfgToml = content;
+  const lg = parseTomlSections(content)["logging"] || {};
+  $("lc-dir").value = typeof lg.log_dir === "string" ? lg.log_dir : "";
+  $("lc-level").value = LOG_LEVELS.includes(lg.log_level) ? lg.log_level : "info";
+  $("lc-size").value = lg.max_log_size ? Math.max(1, Math.round(lg.max_log_size / 1048576)) : "";
+  $("lc-files").value = Number.isFinite(lg.max_log_files) ? lg.max_log_files : "";
+  $("lc-gui").checked = lg.enable_gui_logging !== false;
+}
+
+$("lc-reload").addEventListener("click", loadConfigPage);
 
 $("logcfg-form").addEventListener("submit", async (ev) => {
   ev.preventDefault();
@@ -298,26 +596,173 @@ $("logcfg-form").addEventListener("submit", async (ev) => {
         enable_gui_logging: $("lc-gui").checked,
       },
     });
+    refreshCfgToml();
     toast("日志设置已保存");
   } catch (e) { toast(errMsg(e), true); }
 });
 
-// ---------- 配置 / 用户编辑 ----------
+// FTP / FTPS / SFTP / 安全：表单 → TOML → SaveConfig（fftpd 校验并热重载）
+function fillConfigForm(content) {
+  const s = parseTomlSections(content);
+  const ftp = s["ftp"] || {}, ftps = s["ftp.ftps"] || {}, sftp = s["sftp"] || {}, sec = s["security"] || {};
+  const num = (v, d) => (Number.isFinite(v) ? v : d);
+  const txt = (v, d = "") => (typeof v === "string" ? v : d);
+  const bool = (v, d = false) => (typeof v === "boolean" ? v : d);
+  const arr = (v) => (Array.isArray(v) ? v : []);
 
-async function loadConfig() {
-  try {
-    const { content } = await api("/api/config");
-    $("config-text").value = content;
-  } catch (_) { /* 离线横幅已处理 */ }
+  $("cf-enabled").checked = bool(ftp.enabled, true);
+  $("cf-bind-ip").value = txt(ftp.bind_ip, "0.0.0.0");
+  $("cf-port").value = num(ftp.port, 21);
+  $("cf-welcome").value = txt(ftp.welcome_message, "Welcome to fftpd");
+  $("cf-encoding").value = txt(ftp.encoding, "UTF-8");
+  $("cf-transfer-mode").value = txt(ftp.default_transfer_mode, "binary");
+  $("cf-conn-mode").value = txt(ftp.connection_mode, "passive_only");
+  $("cf-anonymous").checked = bool(ftp.allow_anonymous);
+  $("cf-anon-home").value = txt(ftp.anonymous_home);
+  $("cf-passive-lo").value = num(arr(ftp.passive_ports)[0], 50000);
+  $("cf-passive-hi").value = num(arr(ftp.passive_ports)[1], 51000);
+  $("cf-speed").value = num(ftp.max_speed_kbps, 0);
+  $("cf-masquerade").value = txt(ftp.masquerade_address);
+  $("cf-conn-timeout").value = num(ftp.connection_timeout, 15);
+  $("cf-idle-timeout").value = num(ftp.idle_timeout, 15);
+  $("cf-hide-version").checked = bool(ftp.hide_version_info);
+  $("cf-pooled").checked = bool(ftp.pooled_listener_mode);
+  $("cf-nat").checked = bool(ftp.allow_nat_clients, true);
+  $("cf-root").value = txt(ftp.ftp_root);
+
+  $("cf-ftps-enabled").checked = bool(ftps.enabled);
+  $("cf-ftps-require").checked = bool(ftps.require_ssl);
+  $("cf-ftps-cert").value = txt(ftps.cert_path);
+  $("cf-ftps-key").value = txt(ftps.key_path);
+
+  $("cf-sftp-enabled").checked = bool(sftp.enabled, true);
+  $("cf-sftp-bind-ip").value = txt(sftp.bind_ip, "0.0.0.0");
+  $("cf-sftp-port").value = num(sftp.port, 2222);
+  $("cf-sftp-host-key").value = txt(sftp.host_key_path);
+  $("cf-sftp-max-auth").value = num(sftp.max_auth_attempts, 3);
+  $("cf-sftp-auth-timeout").value = num(sftp.auth_timeout, 60);
+  $("cf-sftp-log-level").value = LOG_LEVELS.includes(sftp.log_level) ? sftp.log_level : "info";
+  $("cf-sftp-sessions").value = num(sftp.max_sessions_per_user, 5);
+  $("cf-sftp-rotation").value = num(sftp.host_key_rotation_days, 0);
+
+  $("cf-sec-max-conn").value = num(sec.max_connections, 100);
+  $("cf-sec-max-conn-ip").value = num(sec.max_connections_per_ip, 10);
+  $("cf-sec-allowed").value = arr(sec.allowed_ips).join(", ");
+  $("cf-sec-denied").value = arr(sec.denied_ips).join(", ");
+  $("cf-sec-f2b").checked = bool(sec.fail2ban_enabled);
+  $("cf-sec-f2b-threshold").value = num(sec.fail2ban_threshold, 5);
+  $("cf-sec-f2b-time").value = num(sec.fail2ban_ban_time, 3600);
+  $("cf-symlinks").checked = bool(sec.allow_symlinks);
+  $("cf-sec-max-login").value = num(sec.max_login_attempts, 5);
 }
 
-$("config-reload").addEventListener("click", loadConfig);
-$("config-save").addEventListener("click", async () => {
+function buildConfigToml() {
+  const errs = [];
+  const str = (id) => $(id).value.trim();
+  const q = (s) => '"' + String(s).replace(/\\/g, "\\\\").replace(/"/g, '\\"') + '"';
+  const cidrs = (id) => str(id).split(/[\s,、]+/).filter(Boolean);
+  const reqInt = (id, label, min, max) => {
+    const v = parseInt($(id).value, 10);
+    if (!Number.isFinite(v) || v < min || (max !== undefined && v > max)) {
+      errs.push(label);
+      return min;
+    }
+    return v;
+  };
+  const port = (id, label) => reqInt(id, label, 1, 65535);
+  const sel = (id) => $(id).value;
+
+  const lo = port("cf-passive-lo", "被动端口下限");
+  const hi = port("cf-passive-hi", "被动端口上限");
+  if (!errs.includes("被动端口下限") && !errs.includes("被动端口上限") && lo > hi) {
+    errs.push("被动端口区间（下限 ≤ 上限）");
+  }
+
+  // [logging] 不在表单覆盖范围内：沿用最近拉取的原文，避免整体保存时被默认值覆盖
+  const lg = parseTomlSections(cfgToml)["logging"] || {};
+  const lgDefault = {
+    log_dir: "", log_level: "info", max_log_files: 10,
+    max_log_size: 10485760, enable_json: false, enable_gui_logging: true,
+  };
+
+  const lines = [];
+  lines.push("[ftp]");
+  lines.push(`enabled = ${$("cf-enabled").checked}`);
+  lines.push(`bind_ip = ${q(str("cf-bind-ip") || "0.0.0.0")}`);
+  lines.push(`port = ${port("cf-port", "FTP 端口")}`);
+  lines.push(`welcome_message = ${q(str("cf-welcome"))}`);
+  lines.push(`encoding = ${q(str("cf-encoding") || "UTF-8")}`);
+  lines.push(`default_transfer_mode = ${q(sel("cf-transfer-mode"))}`);
+  lines.push(`connection_mode = ${q(sel("cf-conn-mode"))}`);
+  lines.push(`allow_anonymous = ${$("cf-anonymous").checked}`);
+  lines.push(`anonymous_home = ${q(str("cf-anon-home"))}`);
+  lines.push(`passive_ports = [${lo}, ${hi}]`);
+  lines.push(`max_speed_kbps = ${reqInt("cf-speed", "单连接限速", 0)}`);
+  lines.push(`masquerade_address = ${q(str("cf-masquerade"))}`);
+  lines.push(`connection_timeout = ${reqInt("cf-conn-timeout", "连接超时", 1)}`);
+  lines.push(`idle_timeout = ${reqInt("cf-idle-timeout", "空闲超时", 1)}`);
+  lines.push(`hide_version_info = ${$("cf-hide-version").checked}`);
+  lines.push(`pooled_listener_mode = ${$("cf-pooled").checked}`);
+  lines.push(`allow_nat_clients = ${$("cf-nat").checked}`);
+  lines.push(`ftp_root = ${q(str("cf-root"))}`);
+  lines.push("");
+  lines.push("[ftp.ftps]");
+  lines.push(`enabled = ${$("cf-ftps-enabled").checked}`);
+  lines.push(`require_ssl = ${$("cf-ftps-require").checked}`);
+  lines.push(`cert_path = ${q(str("cf-ftps-cert"))}`);
+  lines.push(`key_path = ${q(str("cf-ftps-key"))}`);
+  lines.push("");
+  lines.push("[sftp]");
+  lines.push(`enabled = ${$("cf-sftp-enabled").checked}`);
+  lines.push(`bind_ip = ${q(str("cf-sftp-bind-ip") || "0.0.0.0")}`);
+  lines.push(`port = ${port("cf-sftp-port", "SFTP 端口")}`);
+  lines.push(`host_key_path = ${q(str("cf-sftp-host-key"))}`);
+  lines.push(`max_auth_attempts = ${reqInt("cf-sftp-max-auth", "最大认证尝试", 1)}`);
+  lines.push(`auth_timeout = ${reqInt("cf-sftp-auth-timeout", "认证超时", 1)}`);
+  lines.push(`log_level = ${q(sel("cf-sftp-log-level"))}`);
+  lines.push(`max_sessions_per_user = ${reqInt("cf-sftp-sessions", "单用户最大会话", 1)}`);
+  lines.push(`host_key_rotation_days = ${reqInt("cf-sftp-rotation", "主机密钥轮换天数", 0)}`);
+  lines.push("");
+  lines.push("[security]");
+  lines.push(`max_connections = ${reqInt("cf-sec-max-conn", "全局最大并发连接", 1)}`);
+  lines.push(`max_connections_per_ip = ${reqInt("cf-sec-max-conn-ip", "单 IP 最大并发连接", 1)}`);
+  lines.push(`allowed_ips = [${cidrs("cf-sec-allowed").map(q).join(", ")}]`);
+  lines.push(`denied_ips = [${cidrs("cf-sec-denied").map(q).join(", ")}]`);
+  lines.push(`fail2ban_enabled = ${$("cf-sec-f2b").checked}`);
+  lines.push(`fail2ban_threshold = ${reqInt("cf-sec-f2b-threshold", "触发封禁失败次数", 1)}`);
+  lines.push(`fail2ban_ban_time = ${reqInt("cf-sec-f2b-time", "封禁时长", 1)}`);
+  lines.push(`allow_symlinks = ${$("cf-symlinks").checked}`);
+  lines.push(`max_login_attempts = ${reqInt("cf-sec-max-login", "最大登录尝试次数", 1)}`);
+  lines.push("");
+  lines.push("[logging]");
+  for (const key of Object.keys(lgDefault)) {
+    const v = lg[key] !== undefined ? lg[key] : lgDefault[key];
+    lines.push(typeof v === "string" ? `${key} = ${q(v)}` : `${key} = ${v}`);
+  }
+
+  return { toml: lines.join("\n") + "\n", errs };
+}
+
+$("config-reload").addEventListener("click", loadConfigPage);
+
+$("config-form").addEventListener("submit", async (ev) => {
+  ev.preventDefault();
+  const { toml, errs } = buildConfigToml();
+  if (errs.length) { toast("请修正后再保存：" + errs.join("、"), true); return; }
   try {
-    await api("/api/config", { method: "PUT", body: { content: $("config-text").value } });
+    const res = await api("/api/config", { method: "PUT", body: { content: toml } });
+    // fftpd 返回规范化后的配置：回填表单与原文缓存
+    if (res && typeof res.content === "string") {
+      fillConfigForm(res.content);
+      fillLogForm(res.content);
+    } else {
+      refreshCfgToml();
+    }
     toast("配置已保存");
   } catch (e) { toast("保存失败：" + errMsg(e), true); }
 });
+
+// ---------- 用户 ----------
 
 async function loadUsers() {
   try {
@@ -362,206 +807,6 @@ $("dirs-perms").addEventListener("click", async () => {
   } catch (e) { toast(errMsg(e), true); }
 });
 
-// ---------- 实时日志（SSE） ----------
-
-const logState = { es: null, paused: false, reconnect: null };
-
-function appendLog(entry) {
-  const view = $("log-view");
-  const div = document.createElement("div");
-  div.className = "line";
-  const extra = [entry.client_ip, entry.username, entry.action].filter(Boolean).join(" ");
-  div.innerHTML =
-    `<span class="t-dim">${escapeHtml(fmtTime(entry.timestamp))}</span> ` +
-    `<span class="lvl-${escapeHtml(entry.level)}">${escapeHtml(entry.level)}</span> ` +
-    `<span class="t-dim">[${escapeHtml(entry.source)}]</span> ` +
-    escapeHtml(entry.message) +
-    (extra ? ` <span class="t-dim">(${escapeHtml(extra)})</span>` : "");
-  view.appendChild(div);
-  while (view.childElementCount > 5000) view.removeChild(view.firstChild);
-  if ($("log-autoscroll").checked) view.scrollTop = view.scrollHeight;
-}
-
-function appendSysLine(text) {
-  const view = $("log-view");
-  const div = document.createElement("div");
-  div.className = "sysline";
-  div.textContent = "— " + text + " —";
-  view.appendChild(div);
-  if ($("log-autoscroll").checked) view.scrollTop = view.scrollHeight;
-}
-
-function startStream() {
-  if (logState.es || !state.user) return;
-  logState.paused = false;
-  $("log-pause").textContent = "暂停";
-  $("log-state").textContent = "连接中…";
-  $("log-view").textContent = "";
-  connectStream();
-}
-
-function connectStream() {
-  const es = new EventSource("/api/logs/stream?tail=200");
-  logState.es = es;
-  es.addEventListener("log", (ev) => {
-    try { appendLog(JSON.parse(ev.data)); } catch (_) { /* 忽略坏帧 */ }
-  });
-  es.addEventListener("notice", (ev) => appendSysLine(ev.data));
-  es.onopen = () => { $("log-state").textContent = "已连接"; };
-  es.onerror = () => {
-    es.close();
-    logState.es = null;
-    if (logState.paused || $("tab-logs").classList.contains("hidden")) {
-      $("log-state").textContent = "已断开";
-      return;
-    }
-    $("log-state").textContent = "连接断开，2 秒后重连…";
-    logState.reconnect = setTimeout(connectStream, 2000);
-  };
-}
-
-function stopStream() {
-  clearTimeout(logState.reconnect);
-  if (logState.es) { logState.es.close(); logState.es = null; }
-  logState.paused = false;
-  $("log-state").textContent = "";
-}
-
-$("log-pause").addEventListener("click", () => {
-  if (logState.paused) {
-    $("log-view").textContent = "";
-    connectStream();
-    logState.paused = false;
-    $("log-pause").textContent = "暂停";
-  } else {
-    logState.paused = true;
-    clearTimeout(logState.reconnect);
-    if (logState.es) { logState.es.close(); logState.es = null; }
-    $("log-pause").textContent = "继续";
-    $("log-state").textContent = "已暂停";
-  }
-});
-
-$("log-clear").addEventListener("click", () => { $("log-view").textContent = ""; });
-
-// ---------- 日志文件 ----------
-
-let logfileSel = null;
-
-async function loadLogFileList() {
-  const ul = $("logfile-list");
-  try {
-    const { files } = await api("/api/logs/files");
-    ul.textContent = "";
-    if (!files.length) { ul.innerHTML = '<li class="hint">暂无日志文件</li>'; return; }
-    for (const f of files) {
-      const li = document.createElement("li");
-      li.textContent = f.name;
-      li.title = f.path;
-      li.addEventListener("click", () => {
-        logfileSel = f;
-        ul.querySelectorAll("li").forEach((x) => x.classList.remove("active"));
-        li.classList.add("active");
-        $("logfile-name").textContent = f.name;
-        loadLogFileContent();
-      });
-      ul.appendChild(li);
-    }
-  } catch (e) {
-    ul.innerHTML = '<li class="hint">加载失败：' + escapeHtml(errMsg(e)) + "</li>";
-  }
-}
-
-async function loadLogFileContent() {
-  if (!logfileSel) return;
-  const view = $("logfile-view");
-  view.textContent = "加载中…";
-  try {
-    const { entries } = await api("/api/logs/content", {
-      method: "POST",
-      body: { path: logfileSel.path, count: parseInt($("logfile-count").value, 10) },
-    });
-    view.textContent = "";
-    for (const e of entries) appendLog(e);
-    if (!entries.length) view.textContent = "（无记录）";
-  } catch (e) {
-    view.textContent = "加载失败：" + errMsg(e);
-  }
-}
-
-$("logfile-refresh").addEventListener("click", loadLogFileContent);
-$("logfile-count").addEventListener("change", loadLogFileContent);
-
-// ---------- 文件操作日志 ----------
-
-let fileopSel = null;
-
-async function loadFileOpList() {
-  const ul = $("fileop-list");
-  try {
-    const { files } = await api("/api/fileop/files");
-    ul.textContent = "";
-    if (!files.length) { ul.innerHTML = '<li class="hint">暂无文件操作日志</li>'; return; }
-    for (const f of files) {
-      const li = document.createElement("li");
-      li.textContent = f.name;
-      li.title = f.path;
-      li.addEventListener("click", () => {
-        fileopSel = f;
-        ul.querySelectorAll("li").forEach((x) => x.classList.remove("active"));
-        li.classList.add("active");
-        $("fileop-name").textContent = f.name;
-        loadFileOpContent();
-      });
-      ul.appendChild(li);
-    }
-  } catch (e) {
-    ul.innerHTML = '<li class="hint">加载失败：' + escapeHtml(errMsg(e)) + "</li>";
-  }
-}
-
-async function loadFileOpContent() {
-  if (!fileopSel) return;
-  const view = $("fileop-view");
-  view.textContent = "加载中…";
-  try {
-    const { entries } = await api("/api/fileop/content", {
-      method: "POST",
-      body: { path: fileopSel.path, count: parseInt($("fileop-count").value, 10) },
-    });
-    view.textContent = "";
-    if (!entries.length) { view.textContent = "（无记录）"; return; }
-    const table = document.createElement("table");
-    table.className = "optable";
-    table.innerHTML =
-      "<thead><tr><th>时间</th><th>用户</th><th>客户端</th><th>操作</th><th>路径</th>" +
-      "<th>大小</th><th>协议</th><th>结果</th><th>消息</th></tr></thead>";
-    const tbody = document.createElement("tbody");
-    for (const e of entries) {
-      const tr = document.createElement("tr");
-      tr.innerHTML =
-        `<td>${escapeHtml(fmtTime(e.timestamp))}</td>` +
-        `<td>${escapeHtml(e.username)}</td>` +
-        `<td>${escapeHtml(e.client_ip)}</td>` +
-        `<td>${escapeHtml(e.operation)}</td>` +
-        `<td class="path">${escapeHtml(e.file_path)}</td>` +
-        `<td>${escapeHtml(fmtSize(e.file_size))}</td>` +
-        `<td>${escapeHtml(e.protocol)}</td>` +
-        `<td class="${e.success ? "op-ok" : "op-fail"}">${e.success ? "成功" : "失败"}</td>` +
-        `<td class="path">${escapeHtml(e.message)}</td>`;
-      tbody.appendChild(tr);
-    }
-    table.appendChild(tbody);
-    view.appendChild(table);
-  } catch (e) {
-    view.textContent = "加载失败：" + errMsg(e);
-  }
-}
-
-$("fileop-refresh").addEventListener("click", loadFileOpContent);
-$("fileop-count").addEventListener("change", loadFileOpContent);
-
 // ---------- 启动 ----------
 
-armStatusPoll();
 showLogin();

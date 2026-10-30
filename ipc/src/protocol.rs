@@ -90,6 +90,8 @@ pub struct Notification {
 #[serde(tag = "event", rename_all = "snake_case")]
 pub enum Event {
     Log { entry: LogEntry },
+    /// 文件操作审计实时推送
+    FileOp { entry: FileOpLogEntry },
 }
 
 /// 控制命令面：wftpd.proto 全量操作 ∪ Windows reload 通道
@@ -115,6 +117,11 @@ pub enum Command {
     SetupDirectoryPermissions { path: String },
     // ---- 日志 ----
     GetRecentLogs {
+        #[serde(default)]
+        count: u32,
+    },
+    /// 最近文件操作审计条目（内存缓冲尾部），形状 `{"entries": [FileOpLogEntry, ...]}`
+    GetRecentFileOps {
         #[serde(default)]
         count: u32,
     },

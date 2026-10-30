@@ -261,6 +261,7 @@ mod tests {
             .unwrap()
         {
             Event::Log { entry } => assert_eq!(entry.message, "pushed"),
+            Event::FileOp { .. } => panic!("意外的审计推送"),
         }
     }
 }

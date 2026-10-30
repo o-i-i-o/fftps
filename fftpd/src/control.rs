@@ -57,6 +57,7 @@ impl Handler for ControlHandler {
             Command::SetupDirectoryPermissions { path } => dirs::setup_directory_permissions(&path),
             // ---- 日志 ----
             Command::GetRecentLogs { count } => Ok(logs::recent_logs(&self.state, count)),
+            Command::GetRecentFileOps { count } => Ok(logs::recent_file_ops(&self.state, count)),
             Command::SubscribeLogs { .. } | Command::UnsubscribeLogs => {
                 // 由 fftp_ipc::server 在连接层处理，不会派发到这里
                 Err(HandlerError::internal("订阅命令应由 IPC 服务层处理"))

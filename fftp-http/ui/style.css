@@ -177,15 +177,12 @@ main { padding: 16px; max-width: 1200px; margin: 0 auto; }
 .console .lvl-TRACE { color: #6b7280; }
 .console .sysline { color: #f0b429; font-style: italic; }
 
-.filelist { list-style: none; margin: 0; padding: 0; max-height: 460px; overflow-y: auto; }
-.filelist li {
-  padding: 7px 10px; border-radius: 6px; cursor: pointer; font-size: 13px;
-  border-bottom: 1px solid var(--surface-muted); word-break: break-all;
-}
-.filelist li:hover { background: var(--surface-muted); }
-.filelist li.active { background: var(--primary); color: var(--primary-text); }
+/* 历史日志文件下拉 */
+.file-select { max-width: 260px; }
+.wide-input { min-width: 320px !important; }
 
 .table-wrap { max-height: 460px; overflow: auto; }
+.table-wrap.small { height: 420px; }
 table.optable { width: 100%; border-collapse: collapse; font-size: 12px; }
 table.optable th, table.optable td {
   border-bottom: 1px solid var(--border); padding: 5px 8px; text-align: left; white-space: nowrap;

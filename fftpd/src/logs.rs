@@ -1,8 +1,9 @@
 //! 日志命令面：环形缓冲拉取、日志文件读取（防逃逸）、日志参数热更新与审计写入
 //!
-//! 另提供 [`spawn_log_forwarder`]：把 [`fftp_common::logging::LogBuffer`] 的
-//! 新条目转发进 IPC 的 `broadcast::Sender<Event>`，供 `SubscribeLogs` 订阅者
-//! 收到 `Event::Log` 实时推送。
+//! 另提供 [`spawn_log_forwarder`]：把 [`fftp_common::logging::LogBuffer`] 与
+//! [`fftp_common::logging::FileOpBuffer`] 的新条目转发进 IPC 的
+//! `broadcast::Sender<Event>`，供 `SubscribeLogs` 订阅者收到 `Event::Log`
+//! （程序日志）与 `Event::FileOp`（文件操作审计）实时推送。
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -40,6 +41,22 @@ pub fn recent_logs(state: &AppState, count: u32) -> Value {
         .recent(recent_limit(count))
         .into_iter()
         .map(to_ipc_entry)
+        .collect();
+    json!({ "entries": entries })
+}
+
+/// 最近文件操作审计：从环形缓冲取，形状 `{"entries": [FileOpLogEntry, ...]}`
+#[must_use]
+pub fn recent_file_ops(state: &AppState, count: u32) -> Value {
+    if !state.logging.live_config().enable_gui_logging {
+        return json!({ "entries": [] });
+    }
+    let entries: Vec<fftp_ipc::protocol::FileOpLogEntry> = state
+        .logging
+        .file_op_buffer()
+        .recent(recent_limit(count))
+        .into_iter()
+        .map(to_ipc_file_op)
         .collect();
     json!({ "entries": entries })
 }
@@ -221,7 +238,11 @@ pub fn write_audit_log(
     json!({ "recorded": true })
 }
 
-/// 日志实时推送：环形缓冲新条目 → IPC 事件广播（`SubscribeLogs` 订阅者收 `Event::Log`）
+/// 日志实时推送：两类环形缓冲的新条目 → IPC 事件广播
+///
+/// 程序日志（[`fftp_common::logging::LogBuffer`]）→ `Event::Log`，
+/// 文件操作审计（[`fftp_common::logging::FileOpBuffer`]）→ `Event::FileOp`，
+/// 供 `SubscribeLogs` 订阅者接收。
 ///
 /// `enable_gui_logging` 关闭期间不推送（与缓冲语义一致）。
 #[must_use]
@@ -230,22 +251,39 @@ pub fn spawn_log_forwarder(
     events: broadcast::Sender<Event>,
 ) -> JoinHandle<()> {
     tokio::spawn(async move {
-        let mut rx = logging.log_buffer().subscribe();
+        let mut log_rx = logging.log_buffer().subscribe();
+        let mut op_rx = logging.file_op_buffer().subscribe();
         loop {
-            match rx.recv().await {
-                Ok(entry) => {
-                    if !logging.live_config().enable_gui_logging {
-                        continue;
+            tokio::select! {
+                res = log_rx.recv() => match res {
+                    Ok(entry) => {
+                        if !logging.live_config().enable_gui_logging {
+                            continue;
+                        }
+                        // 无订阅者时 send 返回 Err，属常态（订阅者随时上下线），继续转发
+                        let _ = events.send(Event::Log {
+                            entry: to_ipc_entry(entry),
+                        });
                     }
-                    // 无订阅者时 send 返回 Err，属常态（订阅者随时上下线），继续转发
-                    let _ = events.send(Event::Log {
-                        entry: to_ipc_entry(entry),
-                    });
-                }
-                Err(broadcast::error::RecvError::Lagged(n)) => {
-                    tracing::warn!("日志转发落后，丢弃 {n} 条");
-                }
-                Err(broadcast::error::RecvError::Closed) => break,
+                    Err(broadcast::error::RecvError::Lagged(n)) => {
+                        tracing::warn!("日志转发落后，丢弃 {n} 条");
+                    }
+                    Err(broadcast::error::RecvError::Closed) => break,
+                },
+                res = op_rx.recv() => match res {
+                    Ok(entry) => {
+                        if !logging.live_config().enable_gui_logging {
+                            continue;
+                        }
+                        let _ = events.send(Event::FileOp {
+                            entry: to_ipc_file_op(entry),
+                        });
+                    }
+                    Err(broadcast::error::RecvError::Lagged(n)) => {
+                        tracing::warn!("审计日志转发落后，丢弃 {n} 条");
+                    }
+                    Err(broadcast::error::RecvError::Closed) => break,
+                },
             }
         }
     })

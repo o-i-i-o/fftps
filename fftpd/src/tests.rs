@@ -515,6 +515,33 @@ async fn log_forwarder_pushes_events_to_subscribers() {
         .expect("广播通道未关闭");
     match event {
         Event::Log { entry } => assert_eq!(entry.message, "hello-forward"),
+        Event::FileOp { .. } => panic!("意外的审计推送"),
+    }
+    forward.abort();
+}
+
+#[tokio::test]
+async fn log_forwarder_pushes_file_op_events_to_subscribers() {
+    let env = TestEnv::new();
+    let (events, mut rx) = broadcast::channel::<Event>(16);
+    let forward = logs::spawn_log_forwarder(Arc::clone(&env.state.logging), events);
+
+    // 等待转发器完成订阅后再写入审计条目
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    env.state
+        .logging
+        .write_audit("admin", "save_config", "config.toml", "修改端口");
+
+    let event = tokio::time::timeout(Duration::from_secs(2), rx.recv())
+        .await
+        .expect("应在超时前收到审计推送")
+        .expect("广播通道未关闭");
+    match event {
+        Event::FileOp { entry } => {
+            assert_eq!(entry.username, "admin");
+            assert_eq!(entry.operation, "save_config");
+        }
+        Event::Log { .. } => panic!("意外的程序日志推送"),
     }
     forward.abort();
 }

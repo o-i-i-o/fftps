@@ -16,9 +16,8 @@
     <button data-tab="service" class="active">服务</button>
     <button data-tab="config">配置</button>
     <button data-tab="users">用户</button>
-    <button data-tab="logs">实时日志</button>
-    <button data-tab="logfiles">日志文件</button>
-    <button data-tab="fileop">文件操作</button>
+    <button data-tab="proglog">程序日志</button>
+    <button data-tab="filelog">文件日志</button>
     <button data-tab="about">关于</button>
   </nav>
   <div class="userbox">
@@ -58,9 +57,13 @@
         <button id="btn-shutdown" class="btn danger">关停 fftpd 守护进程</button>
       </div>
     </div>
+  </section>
 
+  <!-- 配置 -->
+  <section id="tab-config" class="hidden">
     <div class="card">
       <h3>日志设置</h3>
+      <p class="hint">热生效，不影响在跑服务；日志文件位置变更需重启 fftpd 进程后完全生效。</p>
       <form id="logcfg-form" class="form-grid">
         <label>日志目录 <input id="lc-dir" type="text" placeholder="（空 = 默认目录）"></label>
         <label>日志级别
@@ -74,26 +77,104 @@
         </label>
         <label>单文件上限（MB） <input id="lc-size" type="number" min="1" step="1"></label>
         <label>保留文件数 <input id="lc-files" type="number" min="1" step="1"></label>
-        <label class="check"><input id="lc-gui" type="checkbox"> 同时写入控制台</label>
+        <label class="check"><input id="lc-gui" type="checkbox"> 启用实时日志推送</label>
         <div class="form-actions">
           <button type="button" id="lc-reload" class="btn ghost">重新加载</button>
           <button type="submit" class="btn primary">保存日志设置</button>
         </div>
       </form>
     </div>
-  </section>
 
-  <!-- 配置 -->
-  <section id="tab-config" class="hidden">
-    <div class="card">
-      <h3>config.toml</h3>
-      <p class="hint">直接编辑 TOML 原文，保存后由 fftpd 校验；校验失败会回显错误且不生效。</p>
-      <textarea id="config-text" class="editor" spellcheck="false"></textarea>
-      <div class="form-actions">
-        <button id="config-reload" class="btn ghost">重新加载</button>
-        <button id="config-save" class="btn primary">保存配置</button>
+    <form id="config-form">
+      <div class="card">
+        <h3>FTP 服务</h3>
+        <div class="form-grid">
+          <label class="check"><input id="cf-enabled" type="checkbox"> 启用 FTP 服务</label>
+          <label>监听地址 <input id="cf-bind-ip" type="text" placeholder="0.0.0.0"></label>
+          <label>端口 <input id="cf-port" type="number" min="1" max="65535"></label>
+          <label>欢迎消息 <input id="cf-welcome" type="text"></label>
+          <label>编码 <input id="cf-encoding" type="text" placeholder="UTF-8"></label>
+          <label>默认传输模式
+            <select id="cf-transfer-mode">
+              <option value="binary">binary</option>
+              <option value="ascii">ascii</option>
+            </select>
+          </label>
+          <label>连接模式
+            <select id="cf-conn-mode">
+              <option value="passive_only">passive_only（仅被动）</option>
+              <option value="active_only">active_only（仅主动）</option>
+              <option value="active_and_passive">active_and_passive</option>
+            </select>
+          </label>
+          <label class="check"><input id="cf-anonymous" type="checkbox"> 允许匿名登录</label>
+          <label>匿名主目录 <input id="cf-anon-home" type="text" placeholder="（空 = 未设置）"></label>
+          <label>被动端口下限 <input id="cf-passive-lo" type="number" min="1" max="65535"></label>
+          <label>被动端口上限 <input id="cf-passive-hi" type="number" min="1" max="65535"></label>
+          <label>单连接限速（KB/s） <input id="cf-speed" type="number" min="0" step="1" placeholder="0 = 不限速"></label>
+          <label>对外通告地址 <input id="cf-masquerade" type="text" placeholder="（空 = 使用实际连接地址）"></label>
+          <label>连接超时（秒） <input id="cf-conn-timeout" type="number" min="1" step="1"></label>
+          <label>空闲超时（秒） <input id="cf-idle-timeout" type="number" min="1" step="1"></label>
+          <label class="check"><input id="cf-hide-version" type="checkbox"> 隐藏版本信息</label>
+          <label class="check"><input id="cf-pooled" type="checkbox"> 池化被动监听（开启后运行期重启会失败）</label>
+          <label class="check"><input id="cf-nat" type="checkbox"> 允许 NAT 客户端</label>
+          <label>FTP 根目录 <input id="cf-root" type="text" placeholder="（空 = 各用户 home）"></label>
+        </div>
       </div>
-    </div>
+
+      <div class="card">
+        <h3>FTPS（显式 TLS）</h3>
+        <div class="form-grid">
+          <label class="check"><input id="cf-ftps-enabled" type="checkbox"> 启用 FTPS</label>
+          <label class="check"><input id="cf-ftps-require" type="checkbox"> 拒绝未升级 TLS 的客户端</label>
+          <label>证书路径 <input id="cf-ftps-cert" type="text" placeholder="（空 = 自动生成）"></label>
+          <label>私钥路径 <input id="cf-ftps-key" type="text" placeholder="（空 = 自动生成）"></label>
+        </div>
+      </div>
+
+      <div class="card">
+        <h3>SFTP 服务</h3>
+        <div class="form-grid">
+          <label class="check"><input id="cf-sftp-enabled" type="checkbox"> 启用 SFTP 服务</label>
+          <label>监听地址 <input id="cf-sftp-bind-ip" type="text" placeholder="0.0.0.0"></label>
+          <label>端口 <input id="cf-sftp-port" type="number" min="1" max="65535"></label>
+          <label>主机密钥路径 <input id="cf-sftp-host-key" type="text" placeholder="（空 = 默认路径）"></label>
+          <label>最大认证尝试 <input id="cf-sftp-max-auth" type="number" min="1" step="1"></label>
+          <label>认证超时（秒） <input id="cf-sftp-auth-timeout" type="number" min="1" step="1"></label>
+          <label>SFTP 日志级别
+            <select id="cf-sftp-log-level">
+              <option value="error">error</option>
+              <option value="warn">warn</option>
+              <option value="info" selected>info</option>
+              <option value="debug">debug</option>
+              <option value="trace">trace</option>
+            </select>
+          </label>
+          <label>单用户最大会话 <input id="cf-sftp-sessions" type="number" min="1" step="1"></label>
+          <label>主机密钥轮换（天） <input id="cf-sftp-rotation" type="number" min="0" step="1" placeholder="0 = 不轮换"></label>
+        </div>
+      </div>
+
+      <div class="card">
+        <h3>安全</h3>
+        <div class="form-grid">
+          <label>全局最大并发连接 <input id="cf-sec-max-conn" type="number" min="1" step="1"></label>
+          <label>单 IP 最大并发连接 <input id="cf-sec-max-conn-ip" type="number" min="1" step="1"></label>
+          <label>IP 白名单 <input id="cf-sec-allowed" type="text" class="wide-input" placeholder="CIDR，逗号分隔；空 = 全部放行"></label>
+          <label>IP 黑名单 <input id="cf-sec-denied" type="text" class="wide-input" placeholder="CIDR，逗号分隔；优先于白名单"></label>
+          <label class="check"><input id="cf-sec-f2b" type="checkbox"> 启用 fail2ban 封禁</label>
+          <label>触发封禁失败次数 <input id="cf-sec-f2b-threshold" type="number" min="1" step="1"></label>
+          <label>封禁时长（秒） <input id="cf-sec-f2b-time" type="number" min="1" step="1"></label>
+          <label class="check"><input id="cf-symlinks" type="checkbox"> 允许跟随符号链接</label>
+          <label>最大登录尝试次数 <input id="cf-sec-max-login" type="number" min="1" step="1"></label>
+        </div>
+        <p class="hint">保存后由 fftpd 校验并应用；在跑的 FTP/SFTP 服务会按新配置自动重启。</p>
+        <div class="form-actions">
+          <button type="button" id="config-reload" class="btn ghost">重新加载</button>
+          <button type="submit" id="config-save" class="btn primary">保存配置</button>
+        </div>
+      </div>
+    </form>
   </section>
 
   <!-- 用户 -->
@@ -122,29 +203,23 @@
     </div>
   </section>
 
-  <!-- 实时日志 -->
-  <section id="tab-logs" class="hidden">
-    <div class="card full">
-      <div class="toolbar">
-        <button id="log-pause" class="btn">暂停</button>
-        <button id="log-clear" class="btn ghost">清屏</button>
-        <label class="check"><input id="log-autoscroll" type="checkbox" checked> 自动滚动</label>
-        <span id="log-state" class="hint"></span>
-      </div>
-      <div id="log-view" class="console"></div>
-    </div>
-  </section>
-
-  <!-- 日志文件 -->
-  <section id="tab-logfiles" class="hidden">
+  <!-- 程序日志 -->
+  <section id="tab-proglog" class="hidden">
     <div class="grid-2">
       <div class="card">
-        <h3>日志文件</h3>
-        <ul id="logfile-list" class="filelist"><li class="hint">加载中…</li></ul>
+        <h3>实时日志</h3>
+        <div class="toolbar">
+          <button id="log-pause" class="btn">暂停</button>
+          <button id="log-clear" class="btn ghost">清屏</button>
+          <label class="check"><input id="log-autoscroll" type="checkbox" checked> 自动滚动</label>
+          <span id="log-state" class="hint"></span>
+        </div>
+        <div id="log-view" class="console"></div>
       </div>
       <div class="card">
-        <h3>文件内容 <span id="logfile-name" class="mono"></span></h3>
+        <h3>历史日志文件</h3>
         <div class="toolbar">
+          <select id="logfile-select" class="file-select"><option value="">加载中…</option></select>
           <label>末尾条数
             <select id="logfile-count">
               <option>200</option><option>1000</option><option selected>5000</option>
@@ -152,21 +227,28 @@
           </label>
           <button id="logfile-refresh" class="btn ghost">刷新</button>
         </div>
-        <div id="logfile-view" class="console small">选择左侧文件查看</div>
+        <div id="logfile-view" class="console small">选择历史文件查看</div>
       </div>
     </div>
   </section>
 
-  <!-- 文件操作 -->
-  <section id="tab-fileop" class="hidden">
+  <!-- 文件日志 -->
+  <section id="tab-filelog" class="hidden">
     <div class="grid-2">
       <div class="card">
-        <h3>文件操作日志</h3>
-        <ul id="fileop-list" class="filelist"><li class="hint">加载中…</li></ul>
+        <h3>实时文件操作</h3>
+        <div class="toolbar">
+          <button id="fop-pause" class="btn">暂停</button>
+          <button id="fop-clear" class="btn ghost">清屏</button>
+          <label class="check"><input id="fop-autoscroll" type="checkbox" checked> 自动滚动</label>
+          <span id="fop-state" class="hint"></span>
+        </div>
+        <div id="fop-live" class="table-wrap small">连接中…</div>
       </div>
       <div class="card">
-        <h3>操作记录 <span id="fileop-name" class="mono"></span></h3>
+        <h3>历史操作记录</h3>
         <div class="toolbar">
+          <select id="fileop-select" class="file-select"><option value="">加载中…</option></select>
           <label>末尾条数
             <select id="fileop-count">
               <option>200</option><option>1000</option><option selected>5000</option>
@@ -174,7 +256,7 @@
           </label>
           <button id="fileop-refresh" class="btn ghost">刷新</button>
         </div>
-        <div id="fileop-view" class="table-wrap small">选择左侧文件查看</div>
+        <div id="fileop-view" class="table-wrap small">选择历史文件查看</div>
       </div>
     </div>
   </section>
