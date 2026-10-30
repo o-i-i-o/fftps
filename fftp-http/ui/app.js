@@ -26,6 +26,12 @@ function fmtTime(ts) {
   return m ? m[1] : (ts || "");
 }
 
+function fmtDateTime(ts) {
+  // RFC3339 → "2026-10-21 23:20"；空值（如 last_login=null）→ "—"
+  const m = /^(\d{4}-\d{2}-\d{2})T(\d{2}:\d{2})/.exec(ts || "");
+  return m ? `${m[1]} ${m[2]}` : "—";
+}
+
 let toastTimer = null;
 function toast(msg, isErr) {
   const el = $("toast");
@@ -579,8 +585,7 @@ function fillLogForm(content) {
 
 $("lc-reload").addEventListener("click", loadConfigPage);
 
-$("logcfg-form").addEventListener("submit", async (ev) => {
-  ev.preventDefault();
+$("lc-save").addEventListener("click", async () => {
   const mb = parseInt($("lc-size").value, 10);
   const files = parseInt($("lc-files").value, 10);
   if (!Number.isFinite(mb) || mb < 1) { toast("单文件上限（MB）必须为正整数", true); return; }
@@ -745,8 +750,7 @@ function buildConfigToml() {
 
 $("config-reload").addEventListener("click", loadConfigPage);
 
-$("config-form").addEventListener("submit", async (ev) => {
-  ev.preventDefault();
+$("config-save").addEventListener("click", async () => {
   const { toml, errs } = buildConfigToml();
   if (errs.length) { toast("请修正后再保存：" + errs.join("、"), true); return; }
   try {
@@ -762,20 +766,186 @@ $("config-form").addEventListener("submit", async (ev) => {
   } catch (e) { toast("保存失败：" + errMsg(e), true); }
 });
 
-// ---------- 用户 ----------
+// ---------- 用户（列表 + 弹窗编辑） ----------
+
+let usersCache = null;   // 解析后的 users.json 对象 { users: { 用户名: User } }
+let editingUser = null;  // 弹窗正在编辑的用户名；null = 新增
+
+const PERM_KEYS = ["can_read", "can_list", "can_write", "can_append",
+  "can_mkdir", "can_rmdir", "can_delete", "can_rename"];
+const PERM_LABELS = {
+  can_read: "读取", can_list: "列目录", can_write: "写入", can_append: "续传",
+  can_mkdir: "建目录", can_rmdir: "删目录", can_delete: "删除", can_rename: "重命名",
+};
 
 async function loadUsers() {
   try {
     const { content } = await api("/api/users");
+    usersCache = JSON.parse(content);
+    if (!usersCache || typeof usersCache !== "object" || !usersCache.users) {
+      usersCache = { users: {} };
+    }
+    renderUsers();
     $("users-text").value = content;
-  } catch (_) { /* 离线横幅已处理 */ }
+  } catch (e) { toast("加载用户库失败：" + errMsg(e), true); }
 }
 
+function renderUsers() {
+  const wrap = $("users-table");
+  const users = usersCache.users;
+  const names = Object.keys(users).sort((a, b) => a.localeCompare(b));
+  if (!names.length) {
+    wrap.innerHTML = '<p class="hint">（暂无用户，点击右上角「添加用户」创建）</p>';
+    return;
+  }
+  const table = document.createElement("table");
+  table.className = "optable";
+  table.innerHTML =
+    "<thead><tr><th>用户名</th><th>主目录</th><th>权限</th><th>配额</th><th>限速</th>" +
+    "<th>状态</th><th>最后登录</th><th>操作</th></tr></thead>";
+  const tbody = document.createElement("tbody");
+  for (const name of names) {
+    const u = users[name];
+    const p = u.permissions || {};
+    const perms = PERM_KEYS.filter((k) => p[k]).map((k) => PERM_LABELS[k]).join("、") || "—";
+    const quota = p.quota_mb != null ? escapeHtml(String(p.quota_mb)) + " MB" : "不限";
+    const speed = p.speed_limit_kbps != null ? escapeHtml(String(p.speed_limit_kbps)) + " KB/s" : "不限";
+    const status = u.enabled
+      ? '<span class="badge on">启用</span>'
+      : '<span class="badge off">禁用</span>';
+    const admin = u.is_admin ? '<span class="badge role">管理员</span>' : "";
+    const tr = document.createElement("tr");
+    tr.innerHTML =
+      `<td class="uname">${escapeHtml(name)}${admin}</td>` +
+      `<td class="path">${escapeHtml(u.home_dir || "")}</td>` +
+      `<td class="perm">${escapeHtml(perms)}</td>` +
+      `<td>${quota}</td><td>${speed}</td>` +
+      `<td>${status}</td>` +
+      `<td>${escapeHtml(fmtDateTime(u.last_login))}</td>` +
+      `<td class="row-actions">` +
+      `<button type="button" class="btn" data-edit="${escapeHtml(name)}">编辑</button>` +
+      `<button type="button" class="btn ghost danger-link" data-del="${escapeHtml(name)}">删除</button></td>`;
+    tbody.appendChild(tr);
+  }
+  table.appendChild(tbody);
+  wrap.textContent = "";
+  wrap.appendChild(table);
+  wrap.querySelectorAll("[data-edit]").forEach((b) =>
+    b.addEventListener("click", () => openUserDialog(b.dataset.edit)));
+  wrap.querySelectorAll("[data-del]").forEach((b) =>
+    b.addEventListener("click", () => deleteUser(b.dataset.del)));
+}
+
+// users.json → 服务端校验落盘 + 热重载；成功返回 true
+async function saveUsersCache() {
+  const content = JSON.stringify(usersCache, null, 2) + "\n";
+  const res = await api("/api/users", { method: "PUT", body: { content } });
+  $("users-text").value = res && typeof res.content === "string" ? res.content : content;
+}
+
+function openUserDialog(name) {
+  editingUser = name || null;
+  const u = name && usersCache ? usersCache.users[name] : null;
+  $("user-dlg-title").textContent = name ? "编辑用户：" + name : "添加用户";
+  $("user-dlg-err").classList.add("hidden");
+  $("ud-name").value = name || "";
+  $("ud-name").disabled = !!name;
+  $("ud-pass").value = "";
+  $("ud-pass").placeholder = name ? "留空则不修改口令" : "登录口令";
+  $("ud-home").value = u ? u.home_dir : "";
+  $("ud-enabled").checked = u ? u.enabled !== false : true;
+  $("ud-admin").checked = u ? !!u.is_admin : false;
+  const p = (u && u.permissions) || {};
+  for (const k of PERM_KEYS) $("ud-" + k).checked = p[k] !== false;
+  $("ud-quota").value = p.quota_mb != null ? p.quota_mb : "";
+  $("ud-speed").value = p.speed_limit_kbps != null ? p.speed_limit_kbps : "";
+  $("user-dialog").classList.remove("hidden");
+  $("ud-name").focus();
+}
+
+function closeUserDialog() {
+  $("user-dialog").classList.add("hidden");
+  editingUser = null;
+}
+
+function showDlgErr(msg) {
+  const el = $("user-dlg-err");
+  el.textContent = msg;
+  el.classList.remove("hidden");
+}
+
+$("user-add").addEventListener("click", () => openUserDialog(null));
+$("ud-cancel").addEventListener("click", closeUserDialog);
+
+$("user-form").addEventListener("submit", async (ev) => {
+  ev.preventDefault();
+  if (!usersCache) usersCache = { users: {} };
+  const name = $("ud-name").value.trim();
+  const pass = $("ud-pass").value;
+  const home = $("ud-home").value.trim();
+  if (!name || /[\s/\\]/.test(name)) { showDlgErr("用户名不能为空，且不能包含空白或路径分隔符"); return; }
+  if (!home) { showDlgErr("主目录不能为空"); return; }
+  if (!editingUser && !pass) { showDlgErr("请输入登录口令"); return; }
+  try {
+    const prev = editingUser ? usersCache.users[editingUser] : null;
+    let password_hash;
+    if (pass) {
+      password_hash = (await api("/api/user-hash", { method: "POST", body: { password: pass } })).hash;
+    } else {
+      password_hash = prev.password_hash; // 编辑且未填口令：沿用原哈希
+    }
+    const perms = {};
+    for (const k of PERM_KEYS) perms[k] = $("ud-" + k).checked;
+    const quota = parseInt($("ud-quota").value, 10);
+    const speed = parseInt($("ud-speed").value, 10);
+    perms.quota_mb = Number.isFinite(quota) ? quota : null;
+    perms.speed_limit_kbps = Number.isFinite(speed) ? speed : null;
+    const user = {
+      username: name,
+      password_hash,
+      home_dir: home,
+      permissions: perms,
+      created_at: prev ? prev.created_at : new Date().toISOString(),
+      last_login: prev ? prev.last_login : null,
+      enabled: $("ud-enabled").checked,
+      is_admin: $("ud-admin").checked,
+    };
+    const backup = JSON.stringify(usersCache);
+    if (editingUser) delete usersCache.users[editingUser];
+    usersCache.users[name] = user;
+    try {
+      await saveUsersCache();
+      toast(editingUser ? "用户已更新：" + name : "用户已添加：" + name);
+      closeUserDialog();
+      renderUsers();
+    } catch (e) {
+      usersCache = JSON.parse(backup); // 保存失败：回滚前端缓存
+      showDlgErr(errMsg(e));
+    }
+  } catch (e) { showDlgErr(errMsg(e)); }
+});
+
+async function deleteUser(name) {
+  if (!confirm(`确认删除用户 ${name}？将立即写入用户库并热生效。`)) return;
+  const backup = JSON.stringify(usersCache);
+  delete usersCache.users[name];
+  try {
+    await saveUsersCache();
+    toast("用户已删除：" + name);
+    renderUsers();
+  } catch (e) {
+    usersCache = JSON.parse(backup);
+    toast("删除失败：" + errMsg(e), true);
+  }
+}
+
+// 高级模式：JSON 原文
 $("users-reload").addEventListener("click", loadUsers);
 $("users-save").addEventListener("click", async () => {
   try {
     await api("/api/users", { method: "PUT", body: { content: $("users-text").value } });
     toast("用户库已保存");
+    await loadUsers();
   } catch (e) { toast("保存失败：" + errMsg(e), true); }
 });
 
@@ -788,8 +958,7 @@ $("dirs-ensure").addEventListener("click", async () => {
   } catch (e) { toast(errMsg(e), true); }
 });
 
-$("dirs-form").addEventListener("submit", async (ev) => {
-  ev.preventDefault();
+$("dirs-create").addEventListener("click", async () => {
   const path = $("dirs-path").value.trim();
   if (!path) { toast("请输入目录路径", true); return; }
   try {

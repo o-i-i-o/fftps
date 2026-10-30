@@ -82,6 +82,14 @@ main { padding: 16px; max-width: 1200px; margin: 0 auto; }
 .card h3 { margin: 0 0 12px; font-size: 14px; }
 .card.full { max-width: 100%; }
 
+.card-head {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 12px; margin-bottom: 8px;
+}
+.card-head h3 { margin: 0; }
+
+.badge.role { background: #e5edff; color: var(--primary); }
+
 .meta-list div { display: flex; gap: 10px; padding: 3px 0; font-size: 13px; }
 .meta-list label { color: var(--text-muted); width: 84px; flex-shrink: 0; }
 .meta-list span { word-break: break-all; }
@@ -126,12 +134,55 @@ main { padding: 16px; max-width: 1200px; margin: 0 auto; }
 .form-grid { display: flex; flex-wrap: wrap; gap: 12px 16px; align-items: end; }
 .form-grid label { display: flex; flex-direction: column; gap: 4px; font-size: 13px; color: var(--text-muted); }
 .form-grid label.check { flex-direction: row; align-items: center; color: var(--text); }
+.form-grid label.wide input { min-width: 340px; }
 .form-grid input[type="text"], .form-grid input[type="number"], .form-grid select {
   border: 1px solid var(--border); border-radius: 6px; padding: 6px 8px; font-size: 13px;
   min-width: 160px; background: var(--surface); color: var(--text);
 }
 .form-actions { display: flex; gap: 8px; margin-top: 12px; }
 .form-actions.left { margin-top: 0; }
+
+/* 配置页底部吸附保存条 */
+.save-bar {
+  position: sticky; bottom: 12px; z-index: 5;
+  display: flex; align-items: center; gap: 8px;
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: var(--radius); padding: 10px 16px;
+  box-shadow: 0 -6px 18px rgba(30, 37, 48, 0.08);
+}
+.save-bar .hint { margin: 0; }
+.save-bar .spacer { flex: 1; }
+
+/* 用户编辑弹窗 */
+.dialog-box {
+  background: var(--surface); border-radius: 10px; padding: 24px;
+  width: 640px; max-width: 94vw; max-height: 88vh; overflow-y: auto;
+  display: flex; flex-direction: column; gap: 12px;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.25);
+}
+.dialog-box h3 { margin: 0; font-size: 16px; }
+.dialog-box .form-grid label.wide { width: 100%; }
+.dialog-box .form-grid label.wide input { min-width: 100%; }
+.perm-grid {
+  display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px 12px;
+  padding: 12px; border: 1px solid var(--border); border-radius: 6px;
+  background: var(--surface-muted);
+}
+.perm-grid label { display: flex; align-items: center; gap: 6px; font-size: 13px; color: var(--text); }
+@media (max-width: 640px) { .perm-grid { grid-template-columns: repeat(2, 1fr); } }
+
+/* 用户列表 */
+#users-table td.uname { font-weight: 600; white-space: nowrap; }
+#users-table td.uname .badge { margin-left: 6px; }
+#users-table td.perm { font-size: 12px; color: var(--text-muted); white-space: normal; }
+.row-actions { white-space: nowrap; }
+.row-actions .btn + .btn { margin-left: 6px; }
+.danger-link { color: var(--danger); }
+.danger-link:hover { border-color: var(--danger); color: var(--danger); }
+
+/* 高级 JSON 原文折叠卡 */
+details.json-card summary { cursor: pointer; font-weight: 600; font-size: 14px; }
+details.json-card[open] summary { margin-bottom: 12px; }
 
 .editor {
   width: 100%;
@@ -179,7 +230,6 @@ main { padding: 16px; max-width: 1200px; margin: 0 auto; }
 
 /* 历史日志文件下拉 */
 .file-select { max-width: 260px; }
-.wide-input { min-width: 320px !important; }
 
 .table-wrap { max-height: 460px; overflow: auto; }
 .table-wrap.small { height: 420px; }

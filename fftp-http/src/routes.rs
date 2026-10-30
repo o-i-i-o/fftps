@@ -86,6 +86,12 @@ pub struct LogConfigBody {
     pub enable_gui_logging: bool,
 }
 
+/// 口令哈希请求体（`UserManager::hash_password` 本地计算，不经 IPC）
+#[derive(Debug, Deserialize)]
+pub struct UserHashBody {
+    pub password: String,
+}
+
 /// 近期日志条数查询参数
 #[derive(Debug, Deserialize)]
 pub struct CountQuery {
@@ -116,6 +122,7 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         .route("/api/shutdown", post(shutdown))
         .route("/api/config", get(get_config).put(put_config))
         .route("/api/users", get(get_users).put(put_users))
+        .route("/api/user-hash", post(user_hash))
         .route("/api/initial", get(get_initial))
         .route("/api/user-directories/ensure", post(ensure_user_dirs))
         .route("/api/user-directory", post(create_user_dir))
@@ -264,6 +271,24 @@ async fn put_users(
         Err(e) => state.audit(&user.0, "save_users_failed", "users.json", &e.to_string()).await,
     }
     Ok(Json(result?))
+}
+
+/// POST /api/user-hash，body `{"password": "..."}` → Argon2id PHC 哈希
+/// （新增用户时前端本地调用，与 fftpd 口令校验同策略参数）
+async fn user_hash(
+    _user: AuthedUser,
+    Json(body): Json<UserHashBody>,
+) -> ApiResult<Json<Value>> {
+    if body.password.is_empty() {
+        return Err(ApiError::new(
+            axum::http::StatusCode::BAD_REQUEST,
+            "validation",
+            "口令不能为空",
+        ));
+    }
+    let hash = fftp_common::users::UserManager::hash_password(&body.password)
+        .map_err(|e| ApiError::internal(format!("口令哈希失败: {e:#}")))?;
+    Ok(Json(serde_json::json!({ "hash": hash })))
 }
 
 /// GET /api/initial → GetInitialState（config + users 原文）
