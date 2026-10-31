@@ -1,7 +1,8 @@
 # fftps CI：静态检查、测试、交叉编译矩阵与打包
 # 单平台产出 2 个变体包（都自带 fftpd 后端）：
 #   fftp-gui   后端 fftpd + 图形前端
-#   fftp-http  后端 fftpd + Web 前端，额外带 fftp-http 自己的 systemd 用户服务
+#   fftp-http  后端 fftpd + Web 前端，额外带 fftp-http 自己的服务：
+#              Linux 为 systemd --user 单元，Windows 为 install-http.cmd 注册脚本
 # 推送 v* 标签时自动构建 deb / tarball / windows zip 并创建 GitHub Release
 # 注：cargo fmt 检查暂未纳入——common/ipc/ftp/sftp 在当前 stable rustfmt
 # 下存在全量格式漂移（迁移前遗留，另行列清理项）；clippy 同样不加 -D warnings，
@@ -161,7 +162,9 @@ jobs:
       - name: 按变体打包 tarball（Linux 各目标）与 Windows zip
         # 每个平台 2 个变体：fftp-gui 与 fftp-http，均含 fftpd 后端；
         # Linux 包附 systemd --user 单元（fftp-http 变体再附自己的服务单元），
-        # Windows 包只给二进制与配置模板（install.cmd 仅随 GUI 变体，它依赖 fftp-gui.exe）。
+        # Windows 包只给二进制与配置模板，附服务注册/卸载脚本：
+        # GUI 变体带 install.cmd/uninstall.cmd（注册 fftpd 后端服务），
+        # fftp-http 变体带 install-http.cmd/uninstall-http.cmd（注册 fftpd + fftp-http 两个服务）。
         run: |
           TAG_VERSION="${GITHUB_REF_NAME#v}"
           for t in x86_64-unknown-linux-gnu aarch64-unknown-linux-gnu x86_64-unknown-linux-musl x86_64-pc-windows-gnu; do
@@ -187,6 +190,8 @@ jobs:
               else
                 if [ "$flavor" = fftp-gui ]; then
                   cp scripts/windows/install.cmd scripts/windows/uninstall.cmd "dist/${NAME}/"
+                else
+                  cp scripts/windows/install-http.cmd scripts/windows/uninstall-http.cmd "dist/${NAME}/"
                 fi
                 (cd dist && zip -qr "${NAME}.zip" "${NAME}")
               fi

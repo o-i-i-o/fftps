@@ -5,6 +5,7 @@
 //! 静态 Web UI；实时日志经 SSE 推送。
 //!
 //! 用法：`fftp-http`（前台服务） | `fftp-http hash <口令>`（生成口令哈希）
+//!       Windows 下另支持 `fftp-http --service`（SCM 服务方式，见 [`service_windows`]）
 
 mod auth;
 mod config;
@@ -12,6 +13,8 @@ mod daemon;
 mod error;
 mod ip_filter;
 mod routes;
+#[cfg(windows)]
+mod service_windows;
 mod sse;
 mod state;
 mod tls;
@@ -23,10 +26,19 @@ use anyhow::{Context, Result};
 use axum::body::Body;
 use axum::extract::ConnectInfo;
 use hyper_util::rt::{TokioExecutor, TokioIo};
+use tokio::sync::watch;
 use tokio_rustls::TlsAcceptor;
 use tower::ServiceExt;
 
 fn main() -> Result<()> {
+    // Windows 下先尝试服务方式（`--service` 或 SCM 自动检测），
+    // 未由 SCM 接管则回退前台运行（Linux 无平台分支）
+    #[cfg(windows)]
+    {
+        if service_windows::try_run_as_service()? {
+            return Ok(());
+        }
+    }
     let mut args = std::env::args().skip(1);
     match args.next().as_deref() {
         Some("hash") => {
@@ -40,8 +52,18 @@ fn main() -> Result<()> {
     Ok(())
 }
 
-/// 前台服务主体
+/// 前台服务入口（Windows 服务线程走 [`run_async`]，带 SCM 停止信号）
 fn run() -> Result<()> {
+    tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()?
+        .block_on(run_async(None))
+}
+
+/// 服务主体（前台入口与 Windows 服务线程共用）
+///
+/// `service_stop` 为 Windows 服务停止信号（`None` = 前台运行，仅响应 Ctrl-C）
+async fn run_async(service_stop: Option<watch::Receiver<bool>>) -> Result<()> {
     init_logging();
 
     let path = fftp_common::paths::http_config_path();
@@ -54,14 +76,15 @@ fn run() -> Result<()> {
         path.display()
     );
 
-    tokio::runtime::Builder::new_multi_thread()
-        .enable_all()
-        .build()?
-        .block_on(serve(cfg, path))
+    serve(cfg, path, service_stop).await
 }
 
 /// 启动 HTTP/HTTPS 服务：统一 accept loop，TLS 按配置决定 IO 层
-async fn serve(cfg: config::HttpConfig, http_config_path: std::path::PathBuf) -> Result<()> {
+async fn serve(
+    cfg: config::HttpConfig,
+    http_config_path: std::path::PathBuf,
+    service_stop: Option<watch::Receiver<bool>>,
+) -> Result<()> {
     let daemon = daemon::Daemon::spawn();
     let state = state::AppState::new(cfg, daemon, http_config_path);
     let app = routes::build_router(Arc::clone(&state));
@@ -82,6 +105,7 @@ async fn serve(cfg: config::HttpConfig, http_config_path: std::path::PathBuf) ->
         .with_context(|| format!("绑定 {addr} 失败"))?;
     tracing::info!("Web 管理界面监听 {scheme}://{addr}");
 
+    let mut service_stop = service_stop;
     loop {
         tokio::select! {
             accepted = listener.accept() => {
@@ -98,7 +122,25 @@ async fn serve(cfg: config::HttpConfig, http_config_path: std::path::PathBuf) ->
                 tracing::info!("收到中断信号，退出");
                 return Ok(());
             }
+            () = wait_service_stop(&mut service_stop) => {
+                tracing::info!("收到服务停止信号，退出");
+                return Ok(());
+            }
         }
+    }
+}
+
+/// Windows 服务停止信号；无信号源（前台运行）时永不触发
+async fn wait_service_stop(stop: &mut Option<watch::Receiver<bool>>) {
+    match stop {
+        Some(rx) => {
+            while !*rx.borrow() {
+                if rx.changed().await.is_err() {
+                    std::future::pending::<()>().await;
+                }
+            }
+        }
+        None => std::future::pending::<()>().await,
     }
 }
 

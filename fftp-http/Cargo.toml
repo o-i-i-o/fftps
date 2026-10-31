@@ -26,6 +26,10 @@ tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 anyhow = { workspace = true }
 
+[target.'cfg(windows)'.dependencies]
+# Windows 服务集成（service_windows：SCM 调度 + 服务控制处理）
+windows-service = "0.8"
+
 [[bin]]
 name = "fftp-http"
 path = "src/main.rs"
