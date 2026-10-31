@@ -1,0 +1,27 @@
+[Unit]
+Description=FFTP-HTTP Web Management Frontend (per-user service)
+Documentation=https://github.com/fftps/fftps
+After=network.target network-online.target fftpd.service
+Wants=network-online.target
+# 前端依赖 fftpd 后端提供数据；fftp-http 自带退避重连，
+# fftpd 重启不会拖垮本服务，故用 Wants 而非 Requires，允许单独停用后端。
+Wants=fftpd.service
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/fftp-http
+Restart=on-failure
+RestartSec=3
+TimeoutStopSec=10
+
+# 用户态运行模型：无 User=/Group=，以启动服务的桌面用户身份运行。
+# 自身配置 ~/.config/fftpd/fftp-http.toml（包内模板 /usr/share/fftpd/fftp-http.toml），
+# 管理员口令哈希需自行生成：fftp-http hash '你的口令'。
+
+NoNewPrivileges=true
+PrivateTmp=yes
+
+LimitNOFILE=65536
+
+[Install]
+WantedBy=default.target

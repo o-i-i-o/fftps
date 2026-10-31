@@ -1,15 +1,22 @@
 #!/bin/bash
-# fftps 安装后脚本（用户态服务模型）
+# fftps 安装后脚本（用户态服务模型，fftp-gui / fftp-http 两个变体共用）
 #
-# fftpd 以 systemd 用户服务运行，无需 root 权限、无需专用用户。
+# fftpd 与 fftp-http 均以 systemd 用户服务运行，无需 root 权限、无需专用用户。
+# 变体差异在运行时探测：/usr/bin/fftp-http 存在即 Web 前端变体，
+# 连带处理 fftp-http 用户服务与它的配置模板。
 # 本脚本职责：
-#   1. 把包内初始配置（/usr/share/fftps/config.toml，打包时由示例配置重命名）
-#      预置到活跃用户的 ~/.config/fftpd/config.toml；
+#   1. 把包内配置模板（/usr/share/fftpd/，打包时由示例配置重命名）
+#      预置到活跃用户的 ~/.config/fftpd/ 下；
 #   2. 为每个活跃桌面会话执行 systemctl --user daemon-reload，
 #      让用户管理器载入（升级后的）单元文件；
 #   3. 已启用且正在运行的用户服务重启一次，加载升级后的二进制。
 
 set -e
+
+SERVICES="fftpd"
+if [ -x /usr/bin/fftp-http ]; then
+    SERVICES="$SERVICES fftp-http"
+fi
 
 # 以指定用户身份执行 systemctl --user（$3 起为子命令参数）
 user_systemctl() {
@@ -19,13 +26,12 @@ user_systemctl() {
         -c "systemctl --user $*" 2> /dev/null
 }
 
-# 全新安装：把包内初始配置放入用户配置目录（~ 替换为用户主目录）。
-# 已有配置一律不覆盖；失败不阻塞安装，首次启动 fftpd 时会自动生成默认配置。
-seed_default_config() {
-    local uid="$1" home="$2"
-    local src="/usr/share/fftps/config.toml"
+# 把包内模板预置为用户配置（~ 替换为用户主目录）。
+# 已有配置一律不覆盖；失败不阻塞安装，首次启动对应程序时会自动生成默认配置。
+seed_config() {
+    local uid="$1" home="$2" src="$3" dest_name="$4"
     local dest_dir="${home}/.config/fftpd"
-    local dest="${dest_dir}/config.toml"
+    local dest="${dest_dir}/${dest_name}"
 
     [ -f "$src" ] || return 0
     [ -e "$dest" ] && return 0
@@ -40,7 +46,7 @@ seed_default_config() {
         echo "已预置初始配置: $dest"
     else
         rm -f "$dest"
-        echo "警告: 预置初始配置失败，首次启动 fftpd 时会自动生成默认配置" >&2
+        echo "警告: 预置初始配置失败（$dest_name），首次启动时会自动生成默认配置" >&2
     fi
 }
 
@@ -64,26 +70,40 @@ case "$1" in
                 continue
             fi
 
-            seed_default_config "$uid" "$home_dir"
+            seed_config "$uid" "$home_dir" /usr/share/fftpd/config.toml config.toml
+            if [ -f /usr/share/fftpd/fftp-http.toml ]; then
+                seed_config "$uid" "$home_dir" /usr/share/fftpd/fftp-http.toml fftp-http.toml
+            fi
 
             # 载入（升级后的）单元文件；用户管理器不会自动重读
             user_systemctl "$uid" "$user_name" daemon-reload || true
 
             # 已启用且在运行：重启以加载新二进制（未启用/未运行则不打扰用户）
-            if user_systemctl "$uid" "$user_name" is-enabled fftpd 2> /dev/null | grep -q '^enabled'; then
-                if user_systemctl "$uid" "$user_name" is-active --quiet fftpd 2> /dev/null; then
-                    if user_systemctl "$uid" "$user_name" restart fftpd; then
-                        echo "已为用户 ${user_name} 重启 fftpd 用户服务"
+            for service in $SERVICES; do
+                if user_systemctl "$uid" "$user_name" is-enabled "$service" 2> /dev/null | grep -q '^enabled'; then
+                    if user_systemctl "$uid" "$user_name" is-active --quiet "$service" 2> /dev/null; then
+                        if user_systemctl "$uid" "$user_name" restart "$service"; then
+                            echo "已为用户 ${user_name} 重启 ${service} 用户服务"
+                        fi
                     fi
                 fi
-            fi
+            done
         done
 
         echo "FFTPS 安装完成。"
-        echo "启用后台服务（以桌面用户运行，无需 root）："
-        echo "  systemctl --user enable --now fftpd"
-        echo "启动图形管理界面："
-        echo "  fftp-gui"
+        if [ -x /usr/bin/fftp-http ]; then
+            echo "启用后台服务（以桌面用户运行，无需 root）："
+            echo "  systemctl --user enable --now fftpd"
+            echo "启用 Web 管理前端（默认监听 http://127.0.0.1:8080）："
+            echo "  1. 生成口令哈希：fftp-http hash '你的口令'"
+            echo "  2. 填入 ~/.config/fftpd/fftp-http.toml 的 [[admin_users]]（无管理员账户将拒绝启动）"
+            echo "  3. systemctl --user enable --now fftp-http"
+        else
+            echo "启用后台服务（以桌面用户运行，无需 root）："
+            echo "  systemctl --user enable --now fftpd"
+            echo "启动图形管理界面："
+            echo "  fftp-gui"
+        fi
         ;;
 esac
 

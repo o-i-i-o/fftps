@@ -1,7 +1,11 @@
 #!/bin/bash
 # fftps DEB 打包脚本（从 wftpd-linux/debian/build-deb.sh 改名适配）
 #
-# cargo build 编译 fftpd / fftp-gui，拷贝到 /usr/bin，
+# 单平台产出 2 个变体包，两者都自带 fftpd 后端：
+#   fftp-gui    fftpd + fftp-gui（Slint 图形前端）、桌面文件、图标、fftpd.service
+#   fftp-http   fftpd + fftp-http（Web 管理前端）、fftpd.service 与 fftp-http.service
+#
+# cargo build 编译 fftpd / fftp-gui / fftp-http，拷贝到 /usr/bin，
 # 附 systemd --user 单元、桌面文件、图标、changelog/copyright 与初始配置。
 
 set -e
@@ -41,14 +45,16 @@ show_help() {
     -h, --help            显示此帮助信息
     -n, --no-lintian      跳过lintian检查
     -o, --output DIR      指定输出目录 [默认: debian/]
+    -p, --package FLAVOR  只构建指定变体 (fftp-gui, fftp-http, all) [默认: all]
     -r, --release         使用release模式编译 [默认]
     -t, --target TARGET   Rust编译目标三元组 (如: aarch64-unknown-linux-gnu)
     -v, --version VERSION 指定包版本 [默认: 从Cargo.toml读取]
     --cross               启用交叉编译模式（经 scripts/build.sh / cargo-zigbuild）
 
 示例:
-    $0                          # 默认构建当前架构
+    $0                          # 默认构建当前架构的 2 个变体包
     $0 -a arm64                 # 构建arm64包
+    $0 -p fftp-http             # 只构建 Web 前端变体
     $0 -a amd64 --cross         # 交叉编译amd64包
     $0 -c -n                    # 清理构建并跳过lintian检查
 EOF
@@ -139,6 +145,7 @@ TARGET_ARCH=""
 RUST_TARGET=""
 OUTPUT_DIR=""
 CUSTOM_VERSION=""
+PACKAGE_FLAVOR="all"
 
 while [[ $# -gt 0 ]]; do
     case $1 in
@@ -164,6 +171,10 @@ while [[ $# -gt 0 ]]; do
             ;;
         -o|--output)
             OUTPUT_DIR="$2"
+            shift 2
+            ;;
+        -p|--package)
+            PACKAGE_FLAVOR="$2"
             shift 2
             ;;
         -r|--release)
@@ -210,7 +221,24 @@ fi
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
 BUILD_DIR="${SCRIPT_DIR}/build"
-PACKAGE_NAME="fftps"
+
+# 变体包：每个变体的包名与其前端二进制同名，后端 fftpd 为两个变体共有
+FLAVORS=("fftp-gui" "fftp-http")
+case "$PACKAGE_FLAVOR" in
+    all)
+        SELECTED_FLAVORS=("${FLAVORS[@]}")
+        ;;
+    fftp-gui|fftp-http)
+        SELECTED_FLAVORS=("$PACKAGE_FLAVOR")
+        ;;
+    *)
+        log_error "未知变体: ${PACKAGE_FLAVOR}（可选: fftp-gui, fftp-http, all）"
+        exit 1
+        ;;
+esac
+
+# 配置模板在包内的安装位置：两个变体共用同一路径，postinst 按此预置到 ~/.config/fftpd/
+SHARE_DIR="usr/share/fftpd"
 
 if [ -n "$CUSTOM_VERSION" ]; then
     VERSION="$CUSTOM_VERSION"
@@ -238,7 +266,7 @@ check_dependencies
 echo "========================================"
 echo "  FFTPS DEB包构建脚本"
 echo "========================================"
-echo "包名称: ${PACKAGE_NAME}"
+echo "包变体: ${SELECTED_FLAVORS[*]}"
 echo "版本: ${VERSION}"
 echo "架构: ${TARGET_ARCH}"
 echo "Rust目标: ${RUST_TARGET:-默认}"
@@ -252,14 +280,14 @@ echo "========================================"
 cd "${PROJECT_DIR}"
 
 if [ "$CLEAN_BUILD" = true ]; then
-    log_info "[1/9] 清理旧的构建文件..."
+    log_info "[1/5] 清理旧的构建文件..."
     rm -rf "${BUILD_DIR}"
     rm -rf "${PROJECT_DIR}/target"
 fi
 
 mkdir -p "${BUILD_DIR}"
 
-log_info "[2/9] 编译项目..."
+log_info "[2/5] 编译项目..."
 BUILD_MODE=$([ "$DEBUG_MODE" = true ] && echo "" || echo "--release")
 
 if [ "$ENABLE_CROSS" = true ]; then
@@ -281,64 +309,77 @@ else
     fi
 fi
 
-if [ ! -f "${TARGET_DIR}/fftp-gui" ]; then
-    log_error "编译失败: 未找到可执行文件 ${TARGET_DIR}/fftp-gui"
+log_info "[3/5] 校验编译产物..."
+MISSING=()
+for flavor in "${SELECTED_FLAVORS[@]}"; do
+    for bin in fftpd "$flavor"; do
+        if [ ! -f "${TARGET_DIR}/${bin}" ]; then
+            MISSING+=("${TARGET_DIR}/${bin}")
+        fi
+    done
+done
+if [ ${#MISSING[@]} -gt 0 ]; then
+    log_error "编译失败: 缺少可执行文件 ${MISSING[*]}"
     exit 1
 fi
+log_success "产物齐备: ${TARGET_DIR}"
 
-log_success "找到已编译的可执行文件: ${TARGET_DIR}/fftp-gui"
+# ---------------------------------------------------------------------------
+# 变体打包：一次编译，逐变体暂存并构建 deb
+# ---------------------------------------------------------------------------
 
-log_info "[3/9] 创建 DEB 包目录结构..."
-DEB_DIR="${BUILD_DIR}/${PACKAGE_NAME}_${VERSION}_${TARGET_ARCH}"
-mkdir -p "${DEB_DIR}/DEBIAN"
-mkdir -p "${DEB_DIR}/usr/bin"
-mkdir -p "${DEB_DIR}/usr/share/applications"
-mkdir -p "${DEB_DIR}/usr/share/icons/hicolor/256x256/apps"
-mkdir -p "${DEB_DIR}/usr/share/icons/hicolor/scalable/apps"
-mkdir -p "${DEB_DIR}/usr/share/icons/hicolor/48x48/apps"
-mkdir -p "${DEB_DIR}/usr/lib/systemd/user"
-mkdir -p "${DEB_DIR}/usr/share/doc/${PACKAGE_NAME}"
-mkdir -p "${DEB_DIR}/usr/share/${PACKAGE_NAME}"
+build_deb_package() {
+    local flavor="$1"
+    local other_flavor
+    local deb_dir="${BUILD_DIR}/${flavor}_${VERSION}_${TARGET_ARCH}"
+    local deb_file="${OUTPUT_DIR}/${flavor}_${VERSION}_${TARGET_ARCH}.deb"
 
-log_info "[4/9] 复制可执行文件..."
+    if [ "$flavor" = "fftp-gui" ]; then
+        other_flavor="fftp-http"
+    else
+        other_flavor="fftp-gui"
+    fi
 
-if [ -f "${TARGET_DIR}/fftp-gui" ]; then
-    cp "${TARGET_DIR}/fftp-gui" "${DEB_DIR}/usr/bin/"
-    chmod 755 "${DEB_DIR}/usr/bin/fftp-gui"
-    chown root:root "${DEB_DIR}/usr/bin/fftp-gui" 2> /dev/null || true
-    log_info "  已复制: fftp-gui (GUI管理程序)"
-fi
+    log_info "[4/5] 打包变体 ${flavor} ..."
 
-if [ -f "${TARGET_DIR}/fftpd" ]; then
-    cp "${TARGET_DIR}/fftpd" "${DEB_DIR}/usr/bin/"
-    chmod 755 "${DEB_DIR}/usr/bin/fftpd"
-    chown root:root "${DEB_DIR}/usr/bin/fftpd" 2> /dev/null || true
-    log_info "  已复制：fftpd (后台服务程序)"
-fi
+    if [ -d "$deb_dir" ]; then
+        rm -rf "$deb_dir"
+    fi
+    mkdir -p "${deb_dir}/DEBIAN" "${deb_dir}/usr/bin" "${deb_dir}/usr/lib/systemd/user" \
+        "${deb_dir}/usr/share/doc/${flavor}" "${deb_dir}/${SHARE_DIR}"
+    if [ "$flavor" = "fftp-gui" ]; then
+        mkdir -p "${deb_dir}/usr/share/applications" "${deb_dir}/usr/share/pixmaps" \
+            "${deb_dir}/usr/share/icons/hicolor/256x256/apps" \
+            "${deb_dir}/usr/share/icons/hicolor/48x48/apps" \
+            "${deb_dir}/usr/share/icons/hicolor/scalable/apps"
+    fi
 
-if [ -f "${TARGET_DIR}/fftp-http" ]; then
-    cp "${TARGET_DIR}/fftp-http" "${DEB_DIR}/usr/bin/"
-    chmod 755 "${DEB_DIR}/usr/bin/fftp-http"
-    chown root:root "${DEB_DIR}/usr/bin/fftp-http" 2> /dev/null || true
-    log_info "  已复制: fftp-http (Web管理前端)"
-fi
+    # 后端 fftpd + 变体自己的前端二进制
+    for bin in fftpd "$flavor"; do
+        cp "${TARGET_DIR}/${bin}" "${deb_dir}/usr/bin/"
+        chmod 755 "${deb_dir}/usr/bin/${bin}"
+        chown root:root "${deb_dir}/usr/bin/${bin}" 2> /dev/null || true
+        if [ "$bin" = "fftpd" ]; then
+            log_info "  已复制: fftpd (后台服务程序)"
+        elif [ "$flavor" = "fftp-gui" ]; then
+            log_info "  已复制: fftp-gui (GUI管理程序)"
+        else
+            log_info "  已复制: fftp-http (Web管理前端)"
+        fi
+    done
 
-log_info "[5/9] 复制桌面文件..."
-if [ -f "${SCRIPT_DIR}/fftp-gui.desktop" ]; then
-    cp "${SCRIPT_DIR}/fftp-gui.desktop" "${DEB_DIR}/usr/share/applications/"
-    chmod 644 "${DEB_DIR}/usr/share/applications/fftp-gui.desktop"
-    log_info "  已复制: fftp-gui.desktop"
-fi
+    if [ "$flavor" = "fftp-gui" ]; then
+        log_info "  复制桌面文件..."
+        if [ -f "${SCRIPT_DIR}/fftp-gui.desktop" ]; then
+            cp "${SCRIPT_DIR}/fftp-gui.desktop" "${deb_dir}/usr/share/applications/"
+            chmod 644 "${deb_dir}/usr/share/applications/fftp-gui.desktop"
+        fi
 
-log_info "[6/9] 创建图标文件..."
-mkdir -p "${DEB_DIR}/usr/share/pixmaps"
-mkdir -p "${DEB_DIR}/usr/share/icons/hicolor/scalable/apps"
-
-log_info "  生成SVG图标..."
-cat > "${DEB_DIR}/usr/share/icons/hicolor/scalable/apps/fftp-gui.svg" << 'EOF'
+        log_info "  创建图标文件..."
+        cat > "${deb_dir}/usr/share/icons/hicolor/scalable/apps/fftp-gui.svg" << 'EOF'
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256">
   <defs>
-    <linearGradient id="grad" x1="0%" y1="0%" x2="100%" y2="100%">
+    <linearGradient id="grad" x1="0%" y1="0%" y2="100%">
       <stop offset="0%" style="stop-color:#4A90E2;stop-opacity:1" />
       <stop offset="100%" style="stop-color:#357ABD;stop-opacity:1" />
     </linearGradient>
@@ -348,109 +389,139 @@ cat > "${DEB_DIR}/usr/share/icons/hicolor/scalable/apps/fftp-gui.svg" << 'EOF'
   <text x="128" y="160" font-family="Arial, sans-serif" font-size="30" fill="white" text-anchor="middle">Server</text>
 </svg>
 EOF
-chmod 644 "${DEB_DIR}/usr/share/icons/hicolor/scalable/apps/fftp-gui.svg"
-cp "${DEB_DIR}/usr/share/icons/hicolor/scalable/apps/fftp-gui.svg" "${DEB_DIR}/usr/share/pixmaps/fftp-gui.svg"
-chmod 644 "${DEB_DIR}/usr/share/pixmaps/fftp-gui.svg"
+        chmod 644 "${deb_dir}/usr/share/icons/hicolor/scalable/apps/fftp-gui.svg"
+        cp "${deb_dir}/usr/share/icons/hicolor/scalable/apps/fftp-gui.svg" "${deb_dir}/usr/share/pixmaps/fftp-gui.svg"
+        chmod 644 "${deb_dir}/usr/share/pixmaps/fftp-gui.svg"
 
-if command -v convert &> /dev/null; then
-    log_info "  生成PNG图标 (使用ImageMagick)..."
-    convert -background none -size 256x256 "${DEB_DIR}/usr/share/icons/hicolor/scalable/apps/fftp-gui.svg" \
-        "${DEB_DIR}/usr/share/icons/hicolor/256x256/apps/fftp-gui.png" 2>/dev/null || \
-        log_warning "    PNG 256x256生成失败"
+        if command -v convert &> /dev/null; then
+            convert -background none -size 256x256 "${deb_dir}/usr/share/icons/hicolor/scalable/apps/fftp-gui.svg" \
+                "${deb_dir}/usr/share/icons/hicolor/256x256/apps/fftp-gui.png" 2> /dev/null || \
+                log_warning "    PNG 256x256生成失败"
 
-    if [ -f "${DEB_DIR}/usr/share/icons/hicolor/256x256/apps/fftp-gui.png" ]; then
-        chmod 644 "${DEB_DIR}/usr/share/icons/hicolor/256x256/apps/fftp-gui.png"
-        convert -background none -size 48x48 "${DEB_DIR}/usr/share/icons/hicolor/scalable/apps/fftp-gui.svg" \
-            "${DEB_DIR}/usr/share/icons/hicolor/48x48/apps/fftp-gui.png" 2>/dev/null || \
-            log_warning "    PNG 48x48生成失败"
+            if [ -f "${deb_dir}/usr/share/icons/hicolor/256x256/apps/fftp-gui.png" ]; then
+                chmod 644 "${deb_dir}/usr/share/icons/hicolor/256x256/apps/fftp-gui.png"
+                convert -background none -size 48x48 "${deb_dir}/usr/share/icons/hicolor/scalable/apps/fftp-gui.svg" \
+                    "${deb_dir}/usr/share/icons/hicolor/48x48/apps/fftp-gui.png" 2> /dev/null || \
+                    log_warning "    PNG 48x48生成失败"
 
-        if [ -f "${DEB_DIR}/usr/share/icons/hicolor/48x48/apps/fftp-gui.png" ]; then
-            chmod 644 "${DEB_DIR}/usr/share/icons/hicolor/48x48/apps/fftp-gui.png"
+                if [ -f "${deb_dir}/usr/share/icons/hicolor/48x48/apps/fftp-gui.png" ]; then
+                    chmod 644 "${deb_dir}/usr/share/icons/hicolor/48x48/apps/fftp-gui.png"
+                fi
+
+                cp "${deb_dir}/usr/share/icons/hicolor/256x256/apps/fftp-gui.png" "${deb_dir}/usr/share/pixmaps/fftp-gui.png"
+            fi
+        else
+            log_warning "  未安装ImageMagick，跳过PNG图标生成"
         fi
-
-        cp "${DEB_DIR}/usr/share/icons/hicolor/256x256/apps/fftp-gui.png" "${DEB_DIR}/usr/share/pixmaps/fftp-gui.png"
     fi
-else
-    log_warning "  未安装ImageMagick，跳过PNG图标生成"
-fi
 
-log_info "[7/9] 复制 systemd 用户服务单元..."
-if [ -f "${SCRIPT_DIR}/fftpd.service" ]; then
-    cp "${SCRIPT_DIR}/fftpd.service" "${DEB_DIR}/usr/lib/systemd/user/"
-    chmod 644 "${DEB_DIR}/usr/lib/systemd/user/fftpd.service"
-    log_info "  已复制：fftpd.service（用户服务，无需 root）"
-fi
+    log_info "  复制 systemd 用户服务单元..."
+    if [ -f "${SCRIPT_DIR}/fftpd.service" ]; then
+        cp "${SCRIPT_DIR}/fftpd.service" "${deb_dir}/usr/lib/systemd/user/"
+        chmod 644 "${deb_dir}/usr/lib/systemd/user/fftpd.service"
+    fi
+    # fftp-http 变体额外携带 Web 前端自己的服务单元
+    if [ "$flavor" = "fftp-http" ] && [ -f "${SCRIPT_DIR}/fftp-http.service" ]; then
+        cp "${SCRIPT_DIR}/fftp-http.service" "${deb_dir}/usr/lib/systemd/user/"
+        chmod 644 "${deb_dir}/usr/lib/systemd/user/fftp-http.service"
+    fi
 
-log_info "[8/9] 安装初始配置文件..."
-if [ -f "${SCRIPT_DIR}/config_example.toml" ]; then
-    # 打包阶段把示例配置复制为 config.toml 随包交付（安装位置 /usr/share/fftps/），
-    # 各用户的实际配置位于 ~/.config/fftpd/config.toml
-    cp "${SCRIPT_DIR}/config_example.toml" "${DEB_DIR}/usr/share/${PACKAGE_NAME}/config.toml"
-    chmod 644 "${DEB_DIR}/usr/share/${PACKAGE_NAME}/config.toml"
-    log_info "  已复制：config_example.toml -> config.toml（实际配置位于 ~/.config/fftpd/config.toml）"
-fi
+    log_info "  安装初始配置文件模板..."
+    # 打包阶段把示例配置复制为 config.toml 随包交付（fftpd 不读取模板本身），
+    # 各用户的实际配置位于 ~/.config/fftpd/ 下，由 postinst 预置。
+    if [ -f "${SCRIPT_DIR}/config_example.toml" ]; then
+        cp "${SCRIPT_DIR}/config_example.toml" "${deb_dir}/${SHARE_DIR}/config.toml"
+        chmod 644 "${deb_dir}/${SHARE_DIR}/config.toml"
+    fi
+    if [ "$flavor" = "fftp-http" ] && [ -f "${PROJECT_DIR}/examples/fftp-http.toml.example" ]; then
+        cp "${PROJECT_DIR}/examples/fftp-http.toml.example" "${deb_dir}/${SHARE_DIR}/fftp-http.toml"
+        chmod 644 "${deb_dir}/${SHARE_DIR}/fftp-http.toml"
+    fi
 
-log_info "[9/9] 创建DEBIAN控制文件..."
-
-cat > "${DEB_DIR}/DEBIAN/control" << EOF
-Package: ${PACKAGE_NAME}
+    log_info "  创建DEBIAN控制文件..."
+    # 两个变体都携带 /usr/bin/fftpd 与 fftpd.service，文件路径互斥，必须声明冲突；
+    # fftps 是拆分前的旧单包名，同样需要冲突以便原地升级。
+    if [ "$flavor" = "fftp-gui" ]; then
+        cat > "${deb_dir}/DEBIAN/control" << EOF
+Package: ${flavor}
 Version: ${VERSION}
 Section: net
 Priority: optional
 Architecture: ${TARGET_ARCH}
 Maintainer: fftps developers <developers@fftps.dev>
-Description: SFTP/FTP(FTPS) server suite with GUI management tool
- fftp-suite provides the fftpd FTP(FTPS)/SFTP server daemon and the
- fftp-gui cross-platform (Slint) management frontend.
- A pure Rust implementation for managing SFTP and FTP servers with a
- user-friendly interface.
-Description-zh_CN: SFTP/FTP(FTPS) 服务套件与图形化管理工具
- 适用于Linux的SFTP+FTP(FTPS)服务套件。
- 使用纯Rust实现（fftpd 服务端 + fftp-gui Slint 图形界面），
- 提供友好的用户界面来管理SFTP和FTP服务器。
+Conflicts: ${other_flavor}, fftps
+Replaces: ${other_flavor}, fftps
 Homepage: https://github.com/fftps/fftps
 Depends: libc6, libxkbcommon0
 Recommends: libvulkan1
-Installed-Size: $(du -sk "${DEB_DIR}" | cut -f1)
+Installed-Size: $(du -sk "${deb_dir}" | cut -f1)
+Description: SFTP/FTP(FTPS) server suite with GUI management frontend
+ Contains the fftpd FTP(FTPS)/SFTP server backend and the fftp-gui
+ cross-platform (Slint) management frontend.
+ A pure Rust implementation for managing SFTP and FTP servers with a
+ user-friendly interface.
+Description-zh_CN: SFTP/FTP(FTPS) 服务套件（图形界面版）
+ 自带 fftpd 服务端后端与 fftp-gui（Slint）图形管理前端。
+ 使用纯Rust实现，提供友好的图形界面来管理SFTP和FTP服务器。
 EOF
+    else
+        cat > "${deb_dir}/DEBIAN/control" << EOF
+Package: ${flavor}
+Version: ${VERSION}
+Section: net
+Priority: optional
+Architecture: ${TARGET_ARCH}
+Maintainer: fftps developers <developers@fftps.dev>
+Conflicts: ${other_flavor}, fftps
+Replaces: ${other_flavor}, fftps
+Homepage: https://github.com/fftps/fftps
+Depends: libc6
+Installed-Size: $(du -sk "${deb_dir}" | cut -f1)
+Description: SFTP/FTP(FTPS) server suite with Web management frontend
+ Contains the fftpd FTP(FTPS)/SFTP server backend and the fftp-http
+ Web (HTTP/HTTPS) management frontend, each with its own systemd
+ user service unit.
+ Pure Rust headless deployment: manage the servers from a browser.
+Description-zh_CN: SFTP/FTP(FTPS) 服务套件（Web 管理版）
+ 自带 fftpd 服务端后端与 fftp-http Web 管理前端，
+ 两者各带一个 systemd 用户服务单元，可用浏览器远程管理服务器。
+EOF
+    fi
 
-if [ -f "${SCRIPT_DIR}/preinst" ]; then
-    cp "${SCRIPT_DIR}/preinst" "${DEB_DIR}/DEBIAN/"
-    chmod 755 "${DEB_DIR}/DEBIAN/preinst"
-fi
+    if [ -f "${SCRIPT_DIR}/preinst" ]; then
+        cp "${SCRIPT_DIR}/preinst" "${deb_dir}/DEBIAN/"
+        chmod 755 "${deb_dir}/DEBIAN/preinst"
+    fi
 
-if [ -f "${SCRIPT_DIR}/postinst" ]; then
-    cp "${SCRIPT_DIR}/postinst" "${DEB_DIR}/DEBIAN/"
-    chmod 755 "${DEB_DIR}/DEBIAN/postinst"
-fi
+    for maintscript in postinst prerm postrm; do
+        if [ -f "${SCRIPT_DIR}/${maintscript}" ]; then
+            cp "${SCRIPT_DIR}/${maintscript}" "${deb_dir}/DEBIAN/"
+            chmod 755 "${deb_dir}/DEBIAN/${maintscript}"
+        fi
+    done
 
-if [ -f "${SCRIPT_DIR}/prerm" ]; then
-    cp "${SCRIPT_DIR}/prerm" "${DEB_DIR}/DEBIAN/"
-    chmod 755 "${DEB_DIR}/DEBIAN/prerm"
-fi
-
-if [ -f "${SCRIPT_DIR}/postrm" ]; then
-    cp "${SCRIPT_DIR}/postrm" "${DEB_DIR}/DEBIAN/"
-    chmod 755 "${DEB_DIR}/DEBIAN/postrm"
-fi
-
-log_info "创建changelog文件..."
-CHANGELOG_DATE=$(date -R)
-cat > "${DEB_DIR}/usr/share/doc/${PACKAGE_NAME}/changelog" << EOF
-${PACKAGE_NAME} (${VERSION}) stable; urgency=medium
+    log_info "  创建changelog文件..."
+    CHANGELOG_DATE=$(date -R)
+    if [ "$flavor" = "fftp-gui" ]; then
+        FRONTEND_NOTE="  * Frontend: fftp-gui Slint graphical management interface"
+    else
+        FRONTEND_NOTE="  * Frontend: fftp-http Web (HTTP/HTTPS) management interface, packaged with its own user service"
+    fi
+    cat > "${deb_dir}/usr/share/doc/${flavor}/changelog" << EOF
+${flavor} (${VERSION}) stable; urgency=medium
 
   * Release version ${VERSION}
   * Support SFTP and FTP(FTPS) server management
-  * Slint cross-platform GUI interface
-  * Per-user systemd service model (no root needed)
+${FRONTEND_NOTE}
+  * Includes the fftpd backend (per-user systemd service, no root needed)
   * Multi-architecture support
 
  -- fftps developers <developers@fftps.dev>  ${CHANGELOG_DATE}
 EOF
-gzip -9 "${DEB_DIR}/usr/share/doc/${PACKAGE_NAME}/changelog"
+    gzip -9 "${deb_dir}/usr/share/doc/${flavor}/changelog"
 
-log_info "创建copyright文件..."
-cat > "${DEB_DIR}/usr/share/doc/${PACKAGE_NAME}/copyright" << 'EOF'
+    log_info "  创建copyright文件..."
+    cat > "${deb_dir}/usr/share/doc/${flavor}/copyright" << 'EOF'
 Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
 Upstream-Name: fftps
 Source: https://github.com/fftps/fftps
@@ -474,60 +545,76 @@ License: GPL-3.0
  along with this program.  If not, see <https://www.gnu.org/licenses/>.
 EOF
 
-log_info "设置目录权限..."
-# NTFS 等非 POSIX 挂载上 chown 可能失败；打包时用 --root-owner-group 保证归 root
-chown -R root:root "${DEB_DIR}" 2> /dev/null || log_warning "chown 不可用（非 POSIX 文件系统？），归档属主由 --root-owner-group 保证"
-chmod -R 755 "${DEB_DIR}/usr/bin"
+    log_info "  设置目录权限..."
+    # NTFS 等非 POSIX 挂载上 chown 可能失败；打包时用 --root-owner-group 保证归 root
+    chown -R root:root "${deb_dir}" 2> /dev/null || \
+        log_warning "chown 不可用（非 POSIX 文件系统？），归档属主由 --root-owner-group 保证"
+    chmod -R 755 "${deb_dir}/usr/bin"
 
-log_info "构建DEB包..."
-mkdir -p "${OUTPUT_DIR}"
-cd "${BUILD_DIR}"
-dpkg-deb --root-owner-group --build "${PACKAGE_NAME}_${VERSION}_${TARGET_ARCH}" "${OUTPUT_DIR}/${PACKAGE_NAME}_${VERSION}_${TARGET_ARCH}.deb"
+    log_info "  构建DEB包..."
+    mkdir -p "${OUTPUT_DIR}"
+    dpkg-deb --root-owner-group --build "$deb_dir" "$deb_file"
 
-DEB_FILE="${OUTPUT_DIR}/${PACKAGE_NAME}_${VERSION}_${TARGET_ARCH}.deb"
-
-if [ -f "$DEB_FILE" ]; then
-    if [ "$SKIP_LINTIAN" = false ] && command -v lintian &> /dev/null; then
-        log_info "运行lintian检查..."
-        lintian "$DEB_FILE" || log_warning "lintian检查发现问题，请检查上述输出"
+    if [ ! -f "$deb_file" ]; then
+        log_error "DEB包构建失败: ${deb_file}"
+        exit 1
     fi
 
+    if [ "$SKIP_LINTIAN" = false ] && command -v lintian &> /dev/null; then
+        log_info "  运行lintian检查: ${deb_file}"
+        lintian "$deb_file" || log_warning "lintian检查发现问题，请检查上述输出"
+    fi
+
+    rm -rf "$deb_dir"
+    BUILT_DEBS+=("$deb_file")
+    log_success "变体 ${flavor} 打包完成: ${deb_file} ($(du -h "$deb_file" | cut -f1))"
+}
+
+BUILT_DEBS=()
+for flavor in "${SELECTED_FLAVORS[@]}"; do
+    build_deb_package "$flavor"
+done
+
+log_info "[5/5] 清理构建目录..."
+rm -rf "${BUILD_DIR}"
+
+# 以 sudo 运行时把产物目录归还给原用户，避免 CI 后续步骤（tarball 打包）或本地后续操作因 root 属主而 Permission denied
+if [ -n "$SUDO_USER" ]; then
+    chown -R "${SUDO_USER}:$(id -gn "${SUDO_USER}")" "${OUTPUT_DIR}" "${BUILD_DIR}" 2> /dev/null || true
+fi
+
+if [ ${#BUILT_DEBS[@]} -gt 0 ]; then
     log_success "构建成功!"
     echo ""
     echo "========================================"
     echo "  构建完成"
     echo "========================================"
-    echo "DEB包位置: ${DEB_FILE}"
-    echo "包大小: $(du -h "$DEB_FILE" | cut -f1)"
+    for deb_file in "${BUILT_DEBS[@]}"; do
+        echo "DEB包: ${deb_file} ($(du -h "$deb_file" | cut -f1))"
+    done
     echo ""
     echo "安装方法:"
-    echo "  sudo dpkg -i ${DEB_FILE}"
-    echo ""
-    echo "或者:"
-    echo "  sudo apt install ${DEB_FILE}"
+    echo "  sudo dpkg -i ${BUILT_DEBS[0]}"
+    echo "  （两个变体互斥，安装一个会替换掉另一个）"
     echo ""
     echo "启用后台服务（桌面用户，无需 root）:"
     echo "  systemctl --user enable --now fftpd"
+    for flavor in "${SELECTED_FLAVORS[@]}"; do
+        if [ "$flavor" = "fftp-http" ]; then
+            echo "启用 Web 管理前端服务:"
+            echo "  systemctl --user enable --now fftp-http"
+        fi
+    done
     echo ""
     echo "卸载方法:"
-    echo "  sudo apt remove ${PACKAGE_NAME}"
+    echo "  sudo apt remove fftp-gui"
+    echo "  sudo apt remove fftp-http"
     echo ""
-    echo "查看包信息:"
-    echo "  dpkg -I ${DEB_FILE}"
-    echo ""
-    echo "查看包内容:"
-    echo "  dpkg -c ${DEB_FILE}"
+    echo "查看包信息: dpkg -I <包文件>"
+    echo "查看包内容: dpkg -c <包文件>"
     echo "========================================"
-
-    rm -rf "${BUILD_DIR}/${PACKAGE_NAME}_${VERSION}_${TARGET_ARCH}/"
-
-    # 以 sudo 运行时把产物目录归还给原用户，避免 CI 后续步骤（tarball 打包）或本地后续操作因 root 属主而 Permission denied
-    if [ -n "$SUDO_USER" ]; then
-        chown -R "${SUDO_USER}:$(id -gn "${SUDO_USER}")" "${OUTPUT_DIR}" "${BUILD_DIR}" 2> /dev/null || true
-    fi
-
     exit 0
 else
-    log_error "DEB包构建失败"
+    log_error "未产出任何DEB包"
     exit 1
 fi

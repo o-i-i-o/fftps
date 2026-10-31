@@ -1,4 +1,7 @@
-# fftps CI：静态检查、测试、交叉编译矩阵与 deb 打包
+# fftps CI：静态检查、测试、交叉编译矩阵与打包
+# 单平台产出 2 个变体包（都自带 fftpd 后端）：
+#   fftp-gui   后端 fftpd + 图形前端
+#   fftp-http  后端 fftpd + Web 前端，额外带 fftp-http 自己的 systemd 用户服务
 # 推送 v* 标签时自动构建 deb / tarball / windows zip 并创建 GitHub Release
 # 注：cargo fmt 检查暂未纳入——common/ipc/ftp/sftp 在当前 stable rustfmt
 # 下存在全量格式漂移（迁移前遗留，另行列清理项）；clippy 同样不加 -D warnings，
@@ -99,7 +102,7 @@ jobs:
           if-no-files-found: error
 
   deb:
-    name: deb 打包（ubuntu）
+    name: deb 打包（ubuntu，fftp-gui + fftp-http）
     runs-on: ubuntu-latest
     steps:
       - name: 检出代码
@@ -155,24 +158,41 @@ jobs:
           pattern: dist-*
           merge-multiple: true
 
-      - name: 打包 tarball（Linux 各目标）与 Windows zip
+      - name: 按变体打包 tarball（Linux 各目标）与 Windows zip
+        # 每个平台 2 个变体：fftp-gui 与 fftp-http，均含 fftpd 后端；
+        # Linux 包附 systemd --user 单元（fftp-http 变体再附自己的服务单元），
+        # Windows 包只给二进制与配置模板（install.cmd 仅随 GUI 变体，它依赖 fftp-gui.exe）。
         run: |
           TAG_VERSION="${GITHUB_REF_NAME#v}"
-          for t in x86_64-unknown-linux-gnu aarch64-unknown-linux-gnu x86_64-unknown-linux-musl; do
-            STAGE="fftps-${TAG_VERSION}-${t}"
-            mkdir -p "dist/${STAGE}"
-            cp "dist/${t}/fftpd" "dist/${t}/fftp-gui" "dist/${STAGE}/"
-            cp debian/config_example.toml "dist/${STAGE}/config.toml"
-            chmod 755 "dist/${STAGE}/fftpd" "dist/${STAGE}/fftp-gui"
-            tar -czf "dist/${STAGE}.tar.gz" -C dist "${STAGE}"
-            rm -rf "dist/${STAGE}"
+          for t in x86_64-unknown-linux-gnu aarch64-unknown-linux-gnu x86_64-unknown-linux-musl x86_64-pc-windows-gnu; do
+            case "$t" in
+              *windows-gnu) EXE=".exe"; WIN=true ;;
+              *) EXE=""; WIN=false ;;
+            esac
+            for flavor in fftp-gui fftp-http; do
+              NAME="${flavor}-${TAG_VERSION}-${t}"
+              mkdir -p "dist/${NAME}"
+              cp "dist/${t}/fftpd${EXE}" "dist/${t}/${flavor}${EXE}" "dist/${NAME}/"
+              cp debian/config_example.toml "dist/${NAME}/config.toml"
+              if [ "$flavor" = fftp-http ]; then
+                cp examples/fftp-http.toml.example "dist/${NAME}/fftp-http.toml"
+              fi
+              if [ "$WIN" = false ]; then
+                cp debian/fftpd.service "dist/${NAME}/"
+                chmod 755 "dist/${NAME}/fftpd" "dist/${NAME}/${flavor}"
+                if [ "$flavor" = fftp-http ]; then
+                  cp debian/fftp-http.service "dist/${NAME}/"
+                fi
+                tar -czf "dist/${NAME}.tar.gz" -C dist "${NAME}"
+              else
+                if [ "$flavor" = fftp-gui ]; then
+                  cp scripts/windows/install.cmd scripts/windows/uninstall.cmd "dist/${NAME}/"
+                fi
+                (cd dist && zip -qr "${NAME}.zip" "${NAME}")
+              fi
+              rm -rf "dist/${NAME}"
+            done
           done
-          STAGE="fftps-${TAG_VERSION}-x86_64-pc-windows-gnu"
-          mkdir -p "dist/${STAGE}"
-          cp dist/x86_64-pc-windows-gnu/fftpd.exe "dist/x86_64-pc-windows-gnu/fftp-gui.exe" "dist/${STAGE}/"
-          cp scripts/windows/install.cmd scripts/windows/uninstall.cmd "dist/${STAGE}/"
-          (cd dist && zip -qr "${STAGE}.zip" "${STAGE}")
-          rm -rf "dist/${STAGE}"
           ls -lh dist/
 
       - name: 创建 GitHub Release 并上传产物

@@ -1,6 +1,6 @@
 # fftps 配置示例（docs/design.md §5.1）
 #
-# 安装位置：/usr/share/fftps/config.toml（由 postinst 预置到 ~/.config/fftpd/config.toml）
+# 安装位置：/usr/share/fftpd/config.toml（由 postinst 预置到 ~/.config/fftpd/config.toml）
 # 实际配置：~/.config/fftpd/config.toml（env 覆盖：FFTPD_CONFIG_DIR）
 # 缺失字段按默认值补齐；文件缺失时 fftpd 首次启动自动生成默认配置。
 # 可写路径语义：空串 = 未设置（使用默认值）。

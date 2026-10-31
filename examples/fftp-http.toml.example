@@ -4,6 +4,7 @@
 #   1. 复制为实际配置文件（Linux 默认 ~/.config/fftpd/fftp-http.toml，
 #      Windows 默认 %ProgramData%\fftpd\fftp-http.toml），
 #      或用环境变量 FFTPD_HTTP_CONFIG 指定任意路径；
+#      （deb 的 fftp-http 变体安装时，postinst 已把本示例预置到上述默认路径）
 #   2. 生成管理员口令哈希：fftp-http hash '你的口令'
 #      （用单引号包裹，避免 shell 展开哈希中的 $ 字符）；
 #   3. 取消文末 [[admin_users]] 段的注释并填入真实哈希，然后启动 fftp-http。
