@@ -265,7 +265,11 @@ impl FtpService {
 
         tokio::spawn(async move {
             if let Err(e) = server.listen(bind_addr).await {
-                tracing::error!("FTP 监听任务异常退出: {e}");
+                // libunftp ServerError 的 Display 只含顶层描述（如 "io error"），
+                // 真实原因（如 Permission denied）在 source 链中，需展开打印
+                let err = anyhow::Error::from(e);
+                tracing::error!("FTP 监听任务异常退出: {err:#}");
+                log_bind_failure_hint(&err);
             }
             running.store(false, Ordering::SeqCst);
             let _ = closed_tx.send(());
@@ -369,6 +373,28 @@ impl FtpService {
         }
 
         builder.build().context("组装 libunftp 服务端失败")
+    }
+}
+
+/// 监听绑定失败的常见原因提示（面向桌面用户给出可操作建议）
+///
+/// 常见场景：非 root 用户绑定 <1024 特权端口（默认 21）被拒、端口被占用。
+fn log_bind_failure_hint(err: &anyhow::Error) {
+    let kind = err
+        .chain()
+        .find_map(|c| c.downcast_ref::<std::io::Error>())
+        .map(std::io::Error::kind);
+    match kind {
+        Some(std::io::ErrorKind::PermissionDenied) => {
+            tracing::error!(
+                "绑定被拒绝：非 root 用户监听 <1024 特权端口需授权 \
+                 （sudo setcap 'cap_net_bind_service=+ep' <fftpd 可执行文件>），或改用 >1024 的端口"
+            );
+        }
+        Some(std::io::ErrorKind::AddrInUse) => {
+            tracing::error!("端口已被占用：请停止占用该端口的进程，或修改 ftp.port");
+        }
+        _ => {}
     }
 }
 
