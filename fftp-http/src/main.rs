@@ -1,22 +1,27 @@
 //! fftp-http：fftps Web 管理前端入口（axum）
 //!
-//! 与 fftp-gui 平级的前端：经 fftp-ipc 与 fftpd 通信，自身配置/管理员
+//! 与已移除的旧图形前端平级的前端：经 fftp-ipc 与 fftpd 通信，自身配置/管理员
 //! 独立于 fftpd（fftp-http.toml，见 [`config`]）。提供 REST API 与内嵌
 //! 静态 Web UI；实时日志经 SSE 推送。
 //!
-//! 用法：`fftp-http`（前台服务） | `fftp-http hash <口令>`（生成口令哈希）
+//! 用法：`fftp-http serve`（前台服务，默认） | `fftp-http launch`（桌面入口）
+//!       `fftp-http hash <口令>`（生成口令哈希）
 //!       Windows 下另支持 `fftp-http --service`（SCM 服务方式，见 [`service_windows`]）
 
 mod auth;
 mod config;
 mod daemon;
 mod error;
+mod idle;
 mod ip_filter;
+mod launch;
 mod routes;
 #[cfg(windows)]
 mod service_windows;
+mod setup;
 mod sse;
 mod state;
+mod system_service;
 mod tls;
 
 use std::net::SocketAddr;
@@ -29,6 +34,8 @@ use hyper_util::rt::{TokioExecutor, TokioIo};
 use tokio::sync::watch;
 use tokio_rustls::TlsAcceptor;
 use tower::ServiceExt;
+
+use idle::ShutdownReason;
 
 fn main() -> Result<()> {
     // Windows 下先尝试服务方式（`--service` 或 SCM 自动检测），
@@ -46,8 +53,13 @@ fn main() -> Result<()> {
             let hash = fftp_common::users::UserManager::hash_password(&password)?;
             println!("{hash}");
         }
-        // 未识别参数/无参数均按前台服务运行
-        _ => run()?,
+        // 桌面快捷方式入口：确保服务运行并打开浏览器
+        Some("launch") => launch::run()?,
+        // 前台服务（显式 `serve` 或省略子命令）
+        Some("serve") | None => run()?,
+        Some(other) => anyhow::bail!(
+            "未知子命令: {other}\n用法: fftp-http [serve|launch|hash <口令>]"
+        ),
     }
     Ok(())
 }
@@ -76,6 +88,18 @@ async fn run_async(service_stop: Option<watch::Receiver<bool>>) -> Result<()> {
         path.display()
     );
 
+    if cfg.admin_users.is_empty() {
+        // 首次启动：生成一次性引导令牌，桌面入口据此打开 /setup?token=...
+        let token = setup::ensure_token()?;
+        let base = launch::browser_url(&cfg).unwrap_or_else(|_| "http://127.0.0.1".into());
+        tracing::warn!(
+            "尚未配置管理员账户，已进入首次设置引导（仅限本机）：{base}/setup?token={token}"
+        );
+    } else {
+        // 已有管理员：清理可能残留的引导令牌
+        setup::clear_token();
+    }
+
     serve(cfg, path, service_stop).await
 }
 
@@ -86,7 +110,7 @@ async fn serve(
     service_stop: Option<watch::Receiver<bool>>,
 ) -> Result<()> {
     let daemon = daemon::Daemon::spawn();
-    let state = state::AppState::new(cfg, daemon, http_config_path);
+    let (state, mut shutdown_rx) = state::AppState::new(cfg, daemon, http_config_path);
     let app = routes::build_router(Arc::clone(&state));
 
     let acceptor = if state.config.tls.enabled {
@@ -126,6 +150,26 @@ async fn serve(
                 tracing::info!("收到服务停止信号，退出");
                 return Ok(());
             }
+            reason = wait_shutdown(&mut shutdown_rx) => {
+                if let Some(reason) = reason {
+                    tracing::info!("{}，关闭 fftp-http（不关闭 fftpd）", reason.as_str());
+                }
+                return Ok(());
+            }
+        }
+    }
+}
+
+/// 空闲/手动关停信号；无信号时永不触发
+async fn wait_shutdown(
+    rx: &mut watch::Receiver<Option<ShutdownReason>>,
+) -> Option<ShutdownReason> {
+    loop {
+        if let Some(reason) = *rx.borrow() {
+            return Some(reason);
+        }
+        if rx.changed().await.is_err() {
+            std::future::pending::<()>().await;
         }
     }
 }
@@ -183,7 +227,7 @@ async fn handle_conn(
     }
 }
 
-/// 初始化控制台日志（RUST_LOG 可覆盖，默认 info）
+/// 初始化控制台日志（`RUST_LOG` 可覆盖，默认 info）
 fn init_logging() {
     use tracing_subscriber::EnvFilter;
     let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));

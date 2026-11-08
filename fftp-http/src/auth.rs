@@ -104,7 +104,7 @@ fn new_token() -> String {
 }
 
 /// 常量时间字符串比较（防时序侧信道；长度不等立即失败，仅泄露长度）
-fn ct_eq(a: &str, b: &str) -> bool {
+pub(crate) fn ct_eq(a: &str, b: &str) -> bool {
     let (a, b) = (a.as_bytes(), b.as_bytes());
     if a.len() != b.len() {
         return false;
@@ -183,6 +183,13 @@ pub struct LoginRequest {
     password: String,
 }
 
+/// 构造会话 Cookie（HttpOnly + SameSite=Strict；TLS 下追加 Secure）
+#[must_use]
+pub fn session_cookie(state: &AppState, token: &str) -> String {
+    let secure = if state.config.tls.enabled { "; Secure" } else { "" };
+    format!("{SESSION_COOKIE}={token}; HttpOnly; SameSite=Strict; Path=/{secure}")
+}
+
 /// 登录：校验管理员口令，签发会话 Cookie（成功与失败均写审计）
 pub async fn login(
     State(state): State<Arc<AppState>>,
@@ -203,10 +210,7 @@ pub async fn login(
     let token = state.sessions.create(&body.username);
     state.audit(&body.username, "login", "web", &peer.ip().to_string()).await;
 
-    let secure = if state.config.tls.enabled { "; Secure" } else { "" };
-    let cookie = format!(
-        "{SESSION_COOKIE}={token}; HttpOnly; SameSite=Strict; Path=/{secure}"
-    );
+    let cookie = session_cookie(&state, &token);
     ([(SET_COOKIE, cookie)], Json(json!({"ok": true, "username": body.username}))).into_response()
 }
 

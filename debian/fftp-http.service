@@ -15,8 +15,10 @@ RestartSec=3
 TimeoutStopSec=10
 
 # 用户态运行模型：无 User=/Group=，以启动服务的桌面用户身份运行。
-# 自身配置 ~/.config/fftpd/fftp-http.toml（包内模板 /usr/share/fftpd/fftp-http.toml），
-# 管理员口令哈希需自行生成：fftp-http hash '你的口令'。
+# 自身配置 ~/.config/fftpd/fftp-http.toml（包内模板 /usr/share/fftpd/fftp-http.toml）。
+# 首次启动无管理员账户时进入本机 setup 引导页，按页面提示创建管理员；
+# 也可预先用 `fftp-http hash '你的口令'` 生成哈希写入 [[admin_users]]。
+# 正常退出（空闲自动关闭/页面手动关闭）不会触发 Restart=on-failure。
 
 NoNewPrivileges=true
 PrivateTmp=yes

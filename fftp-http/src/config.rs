@@ -31,7 +31,14 @@ blacklist = []
 session_ttl_secs = 43200
 api_token = ""          # 可选；配置后可用 Authorization: Bearer <token> 认证
 
-# 管理员账户（至少一条，否则启动失败）
+[idle]
+enabled = false         # 无操作自动关闭 fftp-http（不关闭 fftpd）
+timeout_secs = 1800     # 空闲时长（秒，最小 30）
+mode = "no_page"        # no_page = 无可见页面；no_activity = 无用户操作
+warn_secs = 60          # 页面倒计时提示（秒，0 = 不提示）
+
+# 管理员账户：首次启动未配置时会进入本机 setup 引导页，
+# 也可预先添加（口令哈希用 `fftp-http hash <口令>` 生成）。
 #[[admin_users]]
 #username = "admin"
 #password_hash = "$argon2id$v=19$m=65536,t=3,p=4$..."
@@ -52,9 +59,65 @@ pub struct HttpConfig {
     /// 会话与 API token
     #[serde(default)]
     pub auth: AuthConfig,
-    /// 管理员账户（至少一条）
+    /// 空闲自动关闭（仅关闭 fftp-http 自身）
+    #[serde(default)]
+    pub idle: IdleConfig,
+    /// 管理员账户（可为空：仅回环地址下进入 setup 引导）
     #[serde(default)]
     pub admin_users: Vec<AdminUser>,
+}
+
+/// 空闲判定模式
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum IdleMode {
+    /// 没有可见页面心跳（关闭浏览器/隐藏标签页后计时）
+    #[default]
+    NoPage,
+    /// 没有真实用户操作（只看页面不操作也会计时）
+    NoActivity,
+}
+
+impl IdleMode {
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            IdleMode::NoPage => "no_page",
+            IdleMode::NoActivity => "no_activity",
+        }
+    }
+}
+
+/// 空闲自动关闭配置
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct IdleConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default = "default_idle_timeout")]
+    pub timeout_secs: u64,
+    #[serde(default)]
+    pub mode: IdleMode,
+    #[serde(default = "default_idle_warn")]
+    pub warn_secs: u64,
+}
+
+impl Default for IdleConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            timeout_secs: default_idle_timeout(),
+            mode: IdleMode::NoPage,
+            warn_secs: default_idle_warn(),
+        }
+    }
+}
+
+fn default_idle_timeout() -> u64 {
+    1800
+}
+
+fn default_idle_warn() -> u64 {
+    60
 }
 
 /// 监听配置
@@ -136,16 +199,20 @@ fn default_session_ttl() -> u64 {
 }
 
 impl HttpConfig {
-    /// 加载配置；文件缺失时生成默认模板（随后 [`Self::validate`] 会因
-    /// 无管理员账户拒绝启动，引导用户填写）
+    /// 加载配置；文件缺失时生成默认模板（空管理员账户仅允许回环绑定，
+    /// 首次启动会进入本机 setup 引导页）
     ///
     /// # Errors
     /// 模板写入失败或 TOML 解析失败时返回错误
     pub fn load(path: &Path) -> Result<Self> {
         if !path.exists() {
+            if let Some(parent) = path.parent() {
+                std::fs::create_dir_all(parent)
+                    .with_context(|| format!("创建配置目录失败: {}", parent.display()))?;
+            }
             std::fs::write(path, DEFAULT_CONFIG)
                 .with_context(|| format!("写入默认配置模板失败: {}", path.display()))?;
-            tracing::warn!("已生成默认配置模板: {}（请补充管理员账户后重启）", path.display());
+            tracing::warn!("已生成默认配置模板: {}（首次启动将进入本机 setup 引导）", path.display());
         }
         let raw = std::fs::read_to_string(path)
             .with_context(|| format!("读取配置失败: {}", path.display()))?;
@@ -201,6 +268,54 @@ impl HttpConfig {
         Ok(())
     }
 
+    /// 将空闲设置写回配置文件：仅替换 `[idle]` 段，保留其余内容与注释
+    ///
+    /// # Errors
+    /// 读取失败、生成的新内容解析/校验失败或写入失败时返回错误
+    pub fn save_idle(path: &Path, idle: &IdleConfig) -> Result<()> {
+        let raw = std::fs::read_to_string(path)
+            .with_context(|| format!("读取配置失败: {}", path.display()))?;
+
+        let mut kept: Vec<&str> = Vec::new();
+        let mut in_idle = false;
+        for line in raw.lines() {
+            let trimmed = line.trim_start();
+            if trimmed == "[idle]" || trimmed.starts_with("[idle] #") {
+                in_idle = true;
+                continue;
+            }
+            if in_idle && trimmed.starts_with('[') {
+                in_idle = false;
+            }
+            if !in_idle {
+                kept.push(line);
+            }
+        }
+        while kept.last().is_some_and(|l| l.trim().is_empty()) {
+            kept.pop();
+        }
+
+        let mut out = kept.join("\n");
+        out.push_str("\n\n[idle]\n");
+        {
+            use std::fmt::Write as _;
+            writeln!(out, "enabled = {}", idle.enabled).expect("写入 String 不会失败");
+            writeln!(out, "timeout_secs = {}", idle.timeout_secs).expect("写入 String 不会失败");
+            writeln!(out, "mode = \"{}\"", idle.mode.as_str()).expect("写入 String 不会失败");
+            writeln!(out, "warn_secs = {}", idle.warn_secs).expect("写入 String 不会失败");
+        }
+
+        let parsed: HttpConfig = toml::from_str(&out)
+            .with_context(|| format!("生成的新配置解析失败: {}", path.display()))?;
+        parsed
+            .validate_launch()
+            .context("生成的新配置未通过启动校验（未写入文件）")?;
+
+        std::fs::write(path, out)
+            .with_context(|| format!("写入配置失败: {}", path.display()))?;
+        Ok(())
+    }
+
     /// 绑定地址是否仅回环（解析失败按 false 处理，由 [`Self::validate`] 报错）
     #[must_use]
     pub fn is_loopback_only(&self) -> bool {
@@ -210,12 +325,12 @@ impl HttpConfig {
             .is_ok_and(|ip| ip.is_loopback())
     }
 
-    /// 启动校验：fail fast，错误信息给出修复指引
+    /// 与管理员账户无关的启动校验（`launch` 子命令也使用）
     ///
     /// # Errors
-    /// 监听地址非法、非回环绑定未启用 TLS 且未配置 api_token、TLS 文件缺失、
-    /// 管理员账户缺失或口令哈希格式非法、会话 TTL 为 0 时返回错误
-    pub fn validate(&self) -> Result<()> {
+    /// 监听地址非法、非回环绑定未启用 TLS 且未配置 `api_token`、TLS 文件缺失、
+    /// 会话 TTL 为 0、空闲配置非法时返回错误
+    pub fn validate_launch(&self) -> Result<()> {
         if self.listen.address.parse::<std::net::IpAddr>().is_err() {
             anyhow::bail!(
                 "listen.address 非法: {:?}（需 IPv4/IPv6 字面量，如 127.0.0.1 / 0.0.0.0 / ::）",
@@ -228,15 +343,40 @@ impl HttpConfig {
         if self.tls.enabled {
             for (label, p) in [("tls.cert_path", &self.tls.cert_path), ("tls.key_path", &self.tls.key_path)] {
                 if p.is_empty() || !Path::new(p).is_file() {
-                    anyhow::bail!("{label} 指向的文件不存在或未配置: {:?}（TLS 已启用）", p);
+                    anyhow::bail!("{label} 指向的文件不存在或未配置: {p:?}（TLS 已启用）");
                 }
             }
         }
+        if self.auth.session_ttl_secs == 0 {
+            anyhow::bail!("auth.session_ttl_secs 必须大于 0");
+        }
+        if self.idle.enabled {
+            if self.idle.timeout_secs < 30 {
+                anyhow::bail!("idle.timeout_secs 不能小于 30 秒");
+            }
+            if self.idle.warn_secs > self.idle.timeout_secs {
+                anyhow::bail!("idle.warn_secs 不能大于 idle.timeout_secs");
+            }
+        }
+        Ok(())
+    }
+
+    /// 启动校验：fail fast，错误信息给出修复指引
+    ///
+    /// # Errors
+    /// 监听地址非法、非回环绑定未启用 TLS 且未配置 `api_token`、TLS 文件缺失、
+    /// 非回环地址下管理员账户缺失、口令哈希格式非法、会话 TTL 为 0、
+    /// 空闲配置非法时返回错误
+    pub fn validate(&self) -> Result<()> {
+        self.validate_launch()?;
         if self.admin_users.is_empty() {
-            anyhow::bail!(
-                "未配置管理员账户：请在 {} 中添加 [[admin_users]]，口令哈希用 `fftp-http hash <口令>` 生成",
-                fftp_common::paths::http_config_path().display()
-            );
+            // 空管理员只允许本机 setup 引导；非回环绑定在 validate_launch 中已拒绝
+            if !self.is_loopback_only() {
+                anyhow::bail!(
+                    "未配置管理员账户时只能绑定回环地址（当前 {}）",
+                    self.listen.address
+                );
+            }
         }
         let mut seen = std::collections::HashSet::new();
         for u in &self.admin_users {
@@ -253,13 +393,10 @@ impl HttpConfig {
                 anyhow::bail!("管理员用户名重复: {:?}", u.username);
             }
         }
-        if self.auth.session_ttl_secs == 0 {
-            anyhow::bail!("auth.session_ttl_secs 必须大于 0");
-        }
         Ok(())
     }
 
-    /// 非回环绑定的强制保护规则：必须启用 TLS 或配置 api_token
+    /// 非回环绑定的强制保护规则：必须启用 TLS 或配置 `api_token`
     fn missing_network_protection(&self) -> Option<String> {
         if self.is_loopback_only() || self.tls.enabled || !self.auth.api_token.is_empty() {
             return None;
@@ -281,6 +418,7 @@ mod tests {
             tls: TlsConfig::default(),
             ip_filter: IpFilterConfig::default(),
             auth: AuthConfig::default(),
+            idle: IdleConfig::default(),
             admin_users: vec![AdminUser {
                 username: "admin".into(),
                 password_hash: "$argon2id$v=19$m=65536,t=3,p=4$dummy".into(),
@@ -320,8 +458,12 @@ mod tests {
         cfg.listen.address = "not-an-ip".into();
         assert!(cfg.validate().is_err());
 
+        // 回环地址允许空管理员（进入 setup 引导）；非回环地址仍拒绝
         let mut cfg = base();
         cfg.admin_users.clear();
+        assert!(cfg.validate().is_ok());
+        cfg.listen.address = "0.0.0.0".into();
+        cfg.auth.api_token = "secret".into();
         assert!(cfg.validate().is_err());
 
         let mut cfg = base();
@@ -342,8 +484,10 @@ mod tests {
         assert_eq!(cfg.listen.address, "127.0.0.1");
         assert_eq!(cfg.listen.port, 8080);
         assert_eq!(cfg.auth.session_ttl_secs, 43_200);
+        assert!(!cfg.idle.enabled);
+        assert_eq!(cfg.idle.timeout_secs, 1800);
         assert!(cfg.admin_users.is_empty());
-        assert!(cfg.validate().is_err()); // 模板缺管理员账户
+        assert!(cfg.validate().is_ok()); // 回环地址下允许空管理员，进入 setup 引导
     }
 
     #[test]
@@ -361,9 +505,11 @@ mod tests {
         assert!(cfg.ip_filter.blacklist.is_empty());
         assert_eq!(cfg.auth.session_ttl_secs, 43_200);
         assert!(cfg.auth.api_token.is_empty());
-        // 管理员段在示例中默认注释，启用前应拒绝启动
+        assert!(!cfg.idle.enabled);
+        assert_eq!(cfg.idle.mode, IdleMode::NoPage);
+        // 管理员段在示例中默认注释：回环地址下允许启动并进入 setup 引导
         assert!(cfg.admin_users.is_empty());
-        assert!(cfg.validate().is_err());
+        assert!(cfg.validate().is_ok());
     }
 
     #[test]
@@ -404,10 +550,44 @@ mod tests {
         assert_eq!(cfg.admin_users.len(), 2);
         assert_eq!(cfg.admin_users[1].username, "b");
 
-        // 全部删除应被启动校验拒绝，且不落盘
-        assert!(HttpConfig::save_admin_users(&path, &[]).is_err());
+        // 回环地址下允许清空管理员（下次启动会重新进入 setup 引导）
+        HttpConfig::save_admin_users(&path, &[]).unwrap();
         let cfg: HttpConfig = toml::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
-        assert_eq!(cfg.admin_users.len(), 2);
+        assert!(cfg.admin_users.is_empty());
+
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_dir(&dir);
+    }
+
+    #[test]
+    fn save_idle_replaces_block_and_preserves_rest() {
+        let dir = std::env::temp_dir().join(format!("fftp-http-idle-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("http.toml");
+        std::fs::write(
+            &path,
+            "# 注释\n[listen]\naddress = \"127.0.0.1\"\nport = 8080\n\n\
+             [idle]\nenabled = false\ntimeout_secs = 1800\non = \"old\"\n\n[ip_filter]\nwhitelist = []\n",
+        )
+        .unwrap();
+
+        let idle = IdleConfig {
+            enabled: true,
+            timeout_secs: 600,
+            mode: IdleMode::NoActivity,
+            warn_secs: 30,
+        };
+        HttpConfig::save_idle(&path, &idle).unwrap();
+
+        let raw = std::fs::read_to_string(&path).unwrap();
+        assert!(raw.contains("# 注释"));
+        assert!(raw.contains("[listen]"));
+        assert!(raw.contains("[ip_filter]"));
+        assert!(!raw.contains("on = \"old\""));
+        let cfg: HttpConfig = toml::from_str(&raw).unwrap();
+        assert!(cfg.idle.enabled);
+        assert_eq!(cfg.idle.timeout_secs, 600);
+        assert_eq!(cfg.idle.mode, IdleMode::NoActivity);
 
         let _ = std::fs::remove_file(&path);
         let _ = std::fs::remove_dir(&dir);

@@ -1,13 +1,12 @@
 # fftps CI：静态检查、测试、交叉编译矩阵与打包
-# 单平台产出 2 个变体包（都自带 fftpd 后端）：
-#   fftp-gui   后端 fftpd + 图形前端
-#   fftp-http  后端 fftpd + Web 前端，额外带 fftp-http 自己的服务：
-#              Linux 为 systemd --user 单元，Windows 为 install-http.cmd 注册脚本
-# 推送 v* 标签时自动构建 deb / tarball / windows zip 并创建 GitHub Release
+#
+# 单一产品形态：fftpd 后端 + fftp-http Web 管理前端
+#   - Linux: deb / tar.gz，附 systemd --user 单元与桌面入口
+#   - Windows: NSIS 安装器（setup.exe），注册 fftpd 服务并创建快捷方式
+# 推送 v* 标签时自动构建并创建 GitHub Release
 # 注：cargo fmt 检查暂未纳入——common/ipc/ftp/sftp 在当前 stable rustfmt
 # 下存在全量格式漂移（迁移前遗留，另行列清理项）；clippy 同样不加 -D warnings，
-# pedantic 告警遗留约百处（集中于 common/ftp 旧迁移代码），
-# fftpd / fftp-gui 已全量零告警。
+# pedantic 告警遗留约百处（集中于 common/ftp 旧迁移代码）。
 name: CI
 
 on:
@@ -95,6 +94,21 @@ jobs:
       - name: 构建（scripts/build.sh）
         run: ./scripts/build.sh ${{ matrix.target }}
 
+      - name: 安装 NSIS
+        if: matrix.target == 'x86_64-pc-windows-gnu'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y nsis
+
+      - name: 构建 Windows 安装器（NSIS）
+        if: matrix.target == 'x86_64-pc-windows-gnu'
+        run: |
+          VERSION="$(grep -m1 '^version = ' Cargo.toml | sed 's/version = "\(.*\)"/\1/')"
+          makensis -DAPP_VERSION="$VERSION" \
+                   -DDIST_DIR="dist/${{ matrix.target }}" \
+                   -DOUT_DIR=dist \
+                   scripts/windows/fftps-http.nsi
+
       - name: 上传构建产物
         uses: actions/upload-artifact@v4
         with:
@@ -103,7 +117,7 @@ jobs:
           if-no-files-found: error
 
   deb:
-    name: deb 打包（ubuntu，fftp-gui + fftp-http）
+    name: deb 打包（ubuntu，fftp-http）
     runs-on: ubuntu-latest
     steps:
       - name: 检出代码
@@ -159,44 +173,22 @@ jobs:
           pattern: dist-*
           merge-multiple: true
 
-      - name: 按变体打包 tarball（Linux 各目标）与 Windows zip
-        # 每个平台 2 个变体：fftp-gui 与 fftp-http，均含 fftpd 后端；
-        # Linux 包附 systemd --user 单元（fftp-http 变体再附自己的服务单元），
-        # Windows 包只给二进制与配置模板，附服务注册/卸载脚本：
-        # GUI 变体带 install.cmd/uninstall.cmd（注册 fftpd 后端服务），
-        # fftp-http 变体带 install-http.cmd/uninstall-http.cmd（注册 fftpd + fftp-http 两个服务）。
+      - name: 打包 Linux tarball（附 systemd 用户单元与桌面入口）
+        # 单一形态：fftpd + fftp-http，附带两个 systemd --user 单元。
+        # Windows 使用 NSIS 安装器（setup.exe），不再提供 zip + cmd 脚本。
         run: |
           TAG_VERSION="${GITHUB_REF_NAME#v}"
-          for t in x86_64-unknown-linux-gnu aarch64-unknown-linux-gnu x86_64-unknown-linux-musl x86_64-pc-windows-gnu; do
-            case "$t" in
-              *windows-gnu) EXE=".exe"; WIN=true ;;
-              *) EXE=""; WIN=false ;;
-            esac
-            for flavor in fftp-gui fftp-http; do
-              NAME="${flavor}-${TAG_VERSION}-${t}"
-              mkdir -p "dist/${NAME}"
-              cp "dist/${t}/fftpd${EXE}" "dist/${t}/${flavor}${EXE}" "dist/${NAME}/"
-              cp debian/config_example.toml "dist/${NAME}/config.toml"
-              if [ "$flavor" = fftp-http ]; then
-                cp examples/fftp-http.toml.example "dist/${NAME}/fftp-http.toml"
-              fi
-              if [ "$WIN" = false ]; then
-                cp debian/fftpd.service "dist/${NAME}/"
-                chmod 755 "dist/${NAME}/fftpd" "dist/${NAME}/${flavor}"
-                if [ "$flavor" = fftp-http ]; then
-                  cp debian/fftp-http.service "dist/${NAME}/"
-                fi
-                tar -czf "dist/${NAME}.tar.gz" -C dist "${NAME}"
-              else
-                if [ "$flavor" = fftp-gui ]; then
-                  cp scripts/windows/install.cmd scripts/windows/uninstall.cmd "dist/${NAME}/"
-                else
-                  cp scripts/windows/install-http.cmd scripts/windows/uninstall-http.cmd "dist/${NAME}/"
-                fi
-                (cd dist && zip -qr "${NAME}.zip" "${NAME}")
-              fi
-              rm -rf "dist/${NAME}"
-            done
+          for t in x86_64-unknown-linux-gnu aarch64-unknown-linux-gnu x86_64-unknown-linux-musl; do
+            NAME="fftp-http-${TAG_VERSION}-${t}"
+            mkdir -p "dist/${NAME}"
+            cp "dist/${t}/fftpd" "dist/${t}/fftp-http" "dist/${NAME}/"
+            cp debian/config_example.toml "dist/${NAME}/config.toml"
+            cp examples/fftp-http.toml.example "dist/${NAME}/fftp-http.toml"
+            cp debian/fftpd.service debian/fftp-http.service "dist/${NAME}/"
+            cp debian/fftp-http.desktop debian/fftp-http.svg "dist/${NAME}/"
+            chmod 755 "dist/${NAME}/fftpd" "dist/${NAME}/fftp-http"
+            tar -czf "dist/${NAME}.tar.gz" -C dist "${NAME}"
+            rm -rf "dist/${NAME}"
           done
           ls -lh dist/
 
@@ -205,7 +197,7 @@ jobs:
         with:
           files: |
             dist/*.tar.gz
-            dist/*.zip
+            dist/*-setup.exe
             dist/*.deb
           generate_release_notes: true
           fail_on_unmatched_files: true

@@ -1,0 +1,16 @@
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=FFTPS Web Management
+Name[zh_CN]=FFTPS Web 管理
+GenericName=SFTP/FTP Server Manager
+GenericName[zh_CN]=SFTP/FTP 服务器管理
+Comment=Start the Web management service and open it in your browser
+Comment[zh_CN]=启动 Web 管理服务并在浏览器中打开
+Exec=/usr/bin/fftp-http launch
+Icon=fftp-http
+Terminal=false
+StartupNotify=false
+Categories=Network;FileTransfer;System;
+Keywords=ftp;sftp;server;file;transfer;web;
+Keywords[zh_CN]=ftp;sftp;服务器;文件;传输;网页;

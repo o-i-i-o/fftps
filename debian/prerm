@@ -1,5 +1,5 @@
 #!/bin/sh
-# fftps 卸载前脚本（用户态服务模型，fftp-gui / fftp-http 两个变体共用）
+# fftps 卸载前脚本（用户态服务模型）
 #
 # remove/deconfigure：在各活跃用户会话中停止并禁用本包携带的用户服务。
 # 卸载后 /usr/bin/fftpd 消失，若服务仍处于 enabled/running，

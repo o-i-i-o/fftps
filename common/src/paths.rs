@@ -130,6 +130,24 @@ pub fn config_dir() -> PathBuf {
     override_dir("FFTPD_CONFIG_DIR").unwrap_or_else(|| program_data_dir().join("fftpd"))
 }
 
+/// 目录是否可写（实际创建探针文件；`readonly` 位在 Windows 上不可靠，
+/// 例如 `C:\Program Files` 对普通用户不可写但该位仍为 false）
+#[cfg(windows)]
+fn dir_writable(dir: &std::path::Path) -> bool {
+    let probe = dir.join(".fftpd-write-probe");
+    match std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&probe)
+    {
+        Ok(_) => {
+            let _ = std::fs::remove_file(&probe);
+            true
+        }
+        Err(_) => false,
+    }
+}
+
 /// 配置文件路径，按顺序解析：
 ///
 /// 1. `FFTPD_CONFIG_DIR` 环境变量覆盖（测试/多实例）；
@@ -148,10 +166,7 @@ pub fn config_path() -> PathBuf {
         .and_then(|exe| exe.parent().map(std::path::Path::to_path_buf))
     {
         let candidate = exe_dir.join("config.toml");
-        let dir_writable = std::fs::metadata(&exe_dir)
-            .map(|m| !m.permissions().readonly())
-            .unwrap_or(false);
-        if candidate.is_file() || dir_writable {
+        if candidate.is_file() || dir_writable(&exe_dir) {
             return candidate;
         }
     }
@@ -276,9 +291,7 @@ mod tests {
             .parent()
             .unwrap()
             .to_path_buf();
-        let binary_dir_usable = std::fs::metadata(&exe_dir)
-            .map(|m| !m.permissions().readonly())
-            .unwrap_or(false);
+        let binary_dir_usable = dir_writable(&exe_dir);
 
         if binary_dir_usable {
             assert_eq!(config_path(), exe_dir.join("config.toml"));

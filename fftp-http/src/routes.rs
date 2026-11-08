@@ -8,11 +8,13 @@
 //! 例外：`/api/admin-users` 管理 fftp-http 自身管理员账户，不经 IPC，
 //! 直接读写 fftp-http.toml（见 [`crate::config`]）。
 
+use std::net::SocketAddr;
 use std::sync::Arc;
 
-use axum::extract::{Path, Query, State};
-use axum::http::header::CONTENT_TYPE;
-use axum::response::{IntoResponse, Response};
+use axum::extract::{ConnectInfo, Path, Query, State};
+use axum::http::header::{CACHE_CONTROL, CONTENT_TYPE, SET_COOKIE};
+use axum::http::StatusCode;
+use axum::response::{IntoResponse, Redirect, Response};
 use axum::routing::{get, post, put};
 use axum::{middleware, Json, Router};
 use serde::{Deserialize, Serialize};
@@ -23,10 +25,12 @@ use fftp_ipc::protocol::{Command, ServiceTarget};
 
 use crate::auth::{self, AuthedUser};
 use crate::error::{ApiError, ApiResult};
+use crate::idle::{IdleSnapshot, ShutdownReason};
 use crate::ip_filter;
 use crate::state::AppState;
+use crate::system_service;
 
-// ---------- DTO（形状对齐 fftp-gui/src/ipc_service.rs） ----------
+// ---------- DTO ----------
 
 /// `GetStatus` 响应
 #[derive(Debug, Serialize, Deserialize)]
@@ -127,22 +131,74 @@ fn default_count() -> u32 {
     200
 }
 
+fn default_true() -> bool {
+    true
+}
+
+/// 页面心跳请求体
+#[derive(Debug, Deserialize)]
+pub struct HeartbeatBody {
+    /// 标签页标识（同一浏览器多标签页各自独立）
+    pub page_id: String,
+    /// 页面是否可见（隐藏/关闭时上报 false）
+    #[serde(default = "default_true")]
+    pub visible: bool,
+}
+
+/// 主目录建议请求体
+#[derive(Debug, Deserialize)]
+pub struct SuggestBody {
+    #[serde(default)]
+    pub username: String,
+}
+
+/// 主目录建议响应
+#[derive(Debug, Serialize)]
+pub struct SuggestResponse {
+    pub directories: Vec<String>,
+}
+
+/// 首次设置请求体
+#[derive(Debug, Deserialize)]
+pub struct SetupBody {
+    #[serde(default)]
+    pub token: String,
+    pub username: String,
+    pub password: String,
+}
+
+/// `/api/health` 响应（launcher 校验 `app` 身份，避免误开占用端口的其他程序）
+#[derive(Debug, Serialize)]
+pub struct HealthResponse {
+    pub app: &'static str,
+    pub version: &'static str,
+    pub setup_required: bool,
+}
+
 // ---------- Router 组装 ----------
 
 /// 组装完整 Router：public（login/logout）+ protected（认证中间件）
 /// + 静态资源；IP 过滤最后套上覆盖全部路由
 pub fn build_router(state: Arc<AppState>) -> Router {
     let protected = Router::new()
+        .route("/api/me", get(get_me))
         .route("/api/status", get(get_status))
         .route("/api/daemon", get(daemon_state))
         .route("/api/service/{action}", post(service_action))
         .route("/api/shutdown", post(shutdown))
+        .route("/api/idle", get(get_idle).put(put_idle))
+        .route("/api/activity", post(activity))
+        .route("/api/heartbeat", post(heartbeat))
+        .route("/api/self-shutdown", post(self_shutdown))
+        .route("/api/system-service/status", get(system_service_status))
+        .route("/api/system-service/{action}", post(system_service_action))
         .route("/api/config", get(get_config).put(put_config))
         .route("/api/users", get(get_users).put(put_users))
         .route("/api/user-hash", post(user_hash))
         .route("/api/admin-users", get(get_admin_users).put(put_admin_users))
         .route("/api/initial", get(get_initial))
         .route("/api/user-directories/ensure", post(ensure_user_dirs))
+        .route("/api/user-directories/suggest", post(suggest_user_dirs))
         .route("/api/user-directory", post(create_user_dir))
         .route("/api/directory-permissions", post(setup_dir_perms))
         .route("/api/logs", get(recent_logs))
@@ -159,12 +215,15 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         ));
 
     let public = Router::new()
+        .route("/api/health", get(health))
+        .route("/api/setup", post(do_setup))
         .route("/api/login", post(auth::login))
         .route("/api/logout", post(auth::logout));
 
     public
         .merge(protected)
         .route("/", get(index))
+        .route("/setup", get(setup_page))
         .route("/static/{file}", get(static_asset))
         .layer(middleware::from_fn_with_state(
             Arc::clone(&state),
@@ -175,11 +234,112 @@ pub fn build_router(state: Arc<AppState>) -> Router {
 
 // ---------- 静态资源 ----------
 
-/// 首页
-async fn index() -> Response {
+/// 首页：未完成首次设置时跳转引导页
+async fn index(State(state): State<Arc<AppState>>) -> Response {
+    if state.setup_required() {
+        return Redirect::temporary("/setup").into_response();
+    }
     (
-        [(CONTENT_TYPE, "text/html; charset=utf-8")],
+        [
+            (CONTENT_TYPE, "text/html; charset=utf-8"),
+            (CACHE_CONTROL, "no-cache"),
+        ],
         include_str!("../ui/index.html"),
+    )
+        .into_response()
+}
+
+/// 首次设置引导页（POST 校验令牌与回环来源；页面本身无敏感信息）
+async fn setup_page(State(state): State<Arc<AppState>>) -> Response {
+    if !state.setup_required() {
+        return Redirect::temporary("/").into_response();
+    }
+    (
+        [
+            (CONTENT_TYPE, "text/html; charset=utf-8"),
+            (CACHE_CONTROL, "no-cache"),
+        ],
+        include_str!("../ui/setup.html"),
+    )
+        .into_response()
+}
+
+/// GET /api/health → 身份与初始化状态（launcher 与监控使用，无需认证）
+async fn health(State(state): State<Arc<AppState>>) -> Json<HealthResponse> {
+    Json(HealthResponse {
+        app: "fftp-http",
+        version: env!("CARGO_PKG_VERSION"),
+        setup_required: state.setup_required(),
+    })
+}
+
+/// POST /api/setup → 首次设置：创建第一名管理员并自动登录
+///
+/// 三重限制：仅在未配置管理员时可用、仅回环来源、须匹配启动时写入的
+/// 一次性令牌（桌面入口从令牌文件拼到 URL 中）。
+async fn do_setup(
+    State(state): State<Arc<AppState>>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    Json(body): Json<SetupBody>,
+) -> Response {
+    if !state.setup_required() {
+        return ApiError::bad_request("已完成初始化，请直接登录").into_response();
+    }
+    if !crate::setup::is_loopback(peer) {
+        return ApiError::forbidden("首次设置仅允许本机访问").into_response();
+    }
+    match crate::setup::read_token() {
+        Some(expected) if auth::ct_eq(expected.as_str(), body.token.trim()) => {}
+        Some(_) => {
+            return ApiError::forbidden("引导令牌无效，请从桌面快捷方式重新打开")
+                .into_response();
+        }
+        None => {
+            return ApiError::bad_request("引导令牌缺失，请重启 fftp-http 后重试")
+                .into_response();
+        }
+    }
+
+    let name = body.username.trim();
+    if name.is_empty() {
+        return ApiError::bad_request("用户名不能为空").into_response();
+    }
+    if name.chars().count() > 64
+        || name
+            .chars()
+            .any(|c| c.is_whitespace() || c.is_control() || "/\\\"'".contains(c))
+    {
+        return ApiError::bad_request(
+            "用户名含非法字符（空白/引号/路径分隔符）或超过 64 字符",
+        )
+        .into_response();
+    }
+    if body.password.chars().count() < 8 {
+        return ApiError::bad_request("口令至少 8 个字符").into_response();
+    }
+    let hash = match fftp_common::users::UserManager::hash_password(&body.password) {
+        Ok(hash) => hash,
+        Err(e) => return ApiError::internal(format!("口令哈希失败: {e:#}")).into_response(),
+    };
+    let users = vec![crate::config::AdminUser {
+        username: name.to_string(),
+        password_hash: hash,
+    }];
+    if let Err(e) = crate::config::HttpConfig::save_admin_users(&state.http_config_path, &users) {
+        return ApiError::internal(format!("写入管理员配置失败: {e:#}")).into_response();
+    }
+
+    state.set_admins(users);
+    crate::setup::clear_token();
+    let token = state.sessions.create(name);
+    let cookie = auth::session_cookie(&state, &token);
+    state
+        .audit(name, "setup", "fftp-http.toml", "首次设置完成，已创建管理员")
+        .await;
+    tracing::info!("首次设置完成，管理员账户: {name}");
+    (
+        [(SET_COOKIE, cookie)],
+        Json(serde_json::json!({"ok": true, "username": name})),
     )
         .into_response()
 }
@@ -188,12 +348,18 @@ async fn index() -> Response {
 async fn static_asset(Path(file): Path<String>) -> Response {
     match file.as_str() {
         "app.js" => (
-            [(CONTENT_TYPE, "application/javascript; charset=utf-8")],
+            [
+                (CONTENT_TYPE, "application/javascript; charset=utf-8"),
+                (CACHE_CONTROL, "no-cache"),
+            ],
             include_str!("../ui/app.js"),
         )
             .into_response(),
         "style.css" => (
-            [(CONTENT_TYPE, "text/css; charset=utf-8")],
+            [
+                (CONTENT_TYPE, "text/css; charset=utf-8"),
+                (CACHE_CONTROL, "no-cache"),
+            ],
             include_str!("../ui/style.css"),
         )
             .into_response(),
@@ -202,6 +368,11 @@ async fn static_asset(Path(file): Path<String>) -> Response {
 }
 
 // ---------- 状态与生命周期 ----------
+
+/// GET /api/me → 当前会话身份（页面刷新后恢复登录状态；不依赖 fftpd）
+async fn get_me(user: AuthedUser) -> Json<Value> {
+    Json(serde_json::json!({ "username": user.0 }))
+}
 
 /// GET /api/status → GetStatus
 async fn get_status(State(state): State<Arc<AppState>>) -> ApiResult<Json<ServerStatus>> {
@@ -241,6 +412,110 @@ async fn shutdown(State(state): State<Arc<AppState>>, user: AuthedUser) -> ApiRe
         .await;
     let data = state.daemon.request(Command::Shutdown).await?;
     Ok(Json(data))
+}
+
+// ---------- fftp-http 自身生命周期（空闲关闭 / 关停） ----------
+
+/// GET /api/idle → 当前空闲配置与剩余时间
+async fn get_idle(State(state): State<Arc<AppState>>) -> Json<IdleSnapshot> {
+    Json(state.idle.snapshot())
+}
+
+/// PUT /api/idle → 保存空闲自动关闭配置（仅关闭 fftp-http，不关闭 fftpd）
+async fn put_idle(
+    State(state): State<Arc<AppState>>,
+    user: AuthedUser,
+    Json(idle): Json<crate::config::IdleConfig>,
+) -> ApiResult<Json<IdleSnapshot>> {
+    if idle.enabled {
+        if idle.timeout_secs < 30 {
+            return Err(ApiError::bad_request("空闲时长不能小于 30 秒"));
+        }
+        if idle.warn_secs > idle.timeout_secs {
+            return Err(ApiError::bad_request("倒计时提示不能大于空闲时长"));
+        }
+    }
+    crate::config::HttpConfig::save_idle(&state.http_config_path, &idle)?;
+    let snapshot = {
+        state.idle.update(idle);
+        state.idle.snapshot()
+    };
+    state
+        .audit(
+            &user.0,
+            "save_idle",
+            "fftp-http.toml",
+            &format!(
+                "enabled={} timeout={}s mode={} warn={}s",
+                snapshot.enabled, snapshot.timeout_secs, snapshot.mode, snapshot.warn_secs
+            ),
+        )
+        .await;
+    Ok(Json(snapshot))
+}
+
+/// POST /api/activity → 真实用户操作（仅 `no_activity` 模式计时使用）
+async fn activity(State(state): State<Arc<AppState>>, _user: AuthedUser) -> Json<Value> {
+    state.idle.touch_activity();
+    Json(serde_json::json!({"ok": true}))
+}
+
+/// POST /api/heartbeat → 可见页面心跳（页面隐藏/关闭时 `visible=false`）
+async fn heartbeat(
+    State(state): State<Arc<AppState>>,
+    _user: AuthedUser,
+    Json(body): Json<HeartbeatBody>,
+) -> Json<Value> {
+    let page_id = if body.page_id.trim().is_empty() {
+        "default"
+    } else {
+        body.page_id.trim()
+    };
+    state.idle.touch_page(page_id, body.visible);
+    Json(serde_json::json!({"ok": true}))
+}
+
+/// POST /api/self-shutdown → 手动关闭 fftp-http（不关闭 fftpd）
+async fn self_shutdown(
+    State(state): State<Arc<AppState>>,
+    user: AuthedUser,
+) -> Json<Value> {
+    state
+        .audit(&user.0, "self_shutdown", "fftp-http", "Web 服务手动关闭")
+        .await;
+    // 稍作延迟，确保响应先送达浏览器（页面据此显示关闭提示）
+    let state = Arc::clone(&state);
+    tokio::spawn(async move {
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        state.request_shutdown(ShutdownReason::Manual);
+    });
+    Json(serde_json::json!({"ok": true}))
+}
+
+// ---------- 系统服务（fftpd 安装/卸载/自启） ----------
+
+/// GET /api/system-service/status → fftpd 系统服务状态
+async fn system_service_status() -> ApiResult<Json<system_service::ServiceStatus>> {
+    system_service::status()
+        .await
+        .map(Json)
+        .map_err(|e| ApiError::new(StatusCode::BAD_GATEWAY, "system_service", e))
+}
+
+/// POST /api/system-service/{install|uninstall|autostart-on|autostart-off}
+async fn system_service_action(
+    _user: AuthedUser,
+    Path(action): Path<String>,
+) -> ApiResult<Json<Value>> {
+    let action = system_service::Action::parse(&action).ok_or_else(ApiError::not_found)?;
+    let output = system_service::perform(action)
+        .await
+        .map_err(|e| ApiError::new(StatusCode::BAD_GATEWAY, "system_service", e))?;
+    Ok(Json(serde_json::json!({
+        "ok": true,
+        "message": action.ok_text(),
+        "output": output,
+    })))
 }
 
 // ---------- 配置与用户 ----------
@@ -391,6 +666,68 @@ async fn put_admin_users(
 }
 
 // ---------- 目录辅助 ----------
+
+/// POST /api/user-directories/suggest → 按用户名给出主目录候选
+///
+/// 本地计算（不访问文件系统，便于跨平台）：HOME 下常用目录、带用户名
+/// 的候选，以及 Linux 的 /srv/ftp、/var/ftp（Windows 为 C:\ftp）。
+async fn suggest_user_dirs(
+    _user: AuthedUser,
+    Json(body): Json<SuggestBody>,
+) -> Json<SuggestResponse> {
+    Json(SuggestResponse {
+        directories: suggested_dirs(&body.username),
+    })
+}
+
+/// 建议的主目录候选（保留顺序去重）
+fn suggested_dirs(username: &str) -> Vec<String> {
+    let name = username.trim();
+    if name.is_empty()
+        || name
+            .chars()
+            .any(|c| c.is_whitespace() || c.is_control() || "/\\\"'".contains(c))
+    {
+        return Vec::new();
+    }
+
+    let mut dirs: Vec<String> = Vec::new();
+    #[cfg(windows)]
+    {
+        if let Ok(profile) = std::env::var("USERPROFILE") {
+            let base = std::path::PathBuf::from(&profile);
+            dirs.push(profile);
+            for sub in ["Desktop", "Documents", "Downloads"] {
+                let path = base.join(sub);
+                if path.is_dir() {
+                    dirs.push(path.to_string_lossy().into_owned());
+                }
+            }
+            dirs.push(base.join(format!("ftp-{name}")).to_string_lossy().into_owned());
+        }
+        dirs.push(format!("C:\\ftp\\{name}"));
+    }
+    #[cfg(not(windows))]
+    {
+        if let Ok(home) = std::env::var("HOME") {
+            let base = std::path::PathBuf::from(&home);
+            dirs.push(home);
+            for sub in ["Desktop", "Documents", "Downloads"] {
+                let path = base.join(sub);
+                if path.is_dir() {
+                    dirs.push(path.to_string_lossy().into_owned());
+                }
+            }
+            dirs.push(base.join(format!("ftp-{name}")).to_string_lossy().into_owned());
+        }
+        dirs.push(format!("/srv/ftp/{name}"));
+        dirs.push(format!("/var/ftp/{name}"));
+    }
+
+    let mut seen = std::collections::HashSet::new();
+    dirs.retain(|d| seen.insert(d.clone()));
+    dirs
+}
 
 /// POST /api/user-directories/ensure → EnsureUserDirectories
 async fn ensure_user_dirs(State(state): State<Arc<AppState>>) -> ApiResult<Json<Value>> {

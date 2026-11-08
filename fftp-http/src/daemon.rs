@@ -1,6 +1,6 @@
 //! 守护进程连接管理器
 //!
-//! 移植 fftp-gui 的连接状态机思想并适配 HTTP handler 形态：
+//! 移植自旧图形前端的连接状态机思想并适配 HTTP handler 形态：
 //! `watch::channel<Option<Client>>` 保存当前连接；后台监督任务负责
 //! 连接 → 心跳探活（每 [`HEARTBEAT_SECS`] 秒 `GetStatus`）→ 断开后指数
 //! 退避重连（1s 起上限 [`BACKOFF_MAX_SECS`]）。
@@ -18,7 +18,7 @@ use fftp_ipc::protocol::Command;
 
 /// 心跳探活间隔（秒）
 const HEARTBEAT_SECS: u64 = 5;
-/// 重连退避上限（秒，对齐 fftp-gui）
+/// 重连退避上限（秒）
 const BACKOFF_MAX_SECS: u64 = 10;
 
 /// 守护进程连接句柄（Clone 廉价，可放进多个 handler）

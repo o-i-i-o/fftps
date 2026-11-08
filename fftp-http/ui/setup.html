@@ -1,0 +1,90 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>fftp Web 管理 · 首次设置</title>
+<link rel="stylesheet" href="/static/style.css">
+<style>
+  body { display: flex; align-items: center; justify-content: center; min-height: 100vh; }
+  .setup-box { width: min(460px, calc(100vw - 32px)); background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 28px; box-shadow: 0 12px 40px rgba(0,0,0,.08); }
+  .setup-box h1 { font-size: 20px; margin: 0 0 6px; }
+  .setup-box p.lead { margin: 0 0 20px; color: var(--text-muted); font-size: 13px; }
+  .setup-box label { display: block; margin-bottom: 14px; font-size: 13px; }
+  .setup-box input { display: block; width: 100%; margin-top: 6px; padding: 9px 11px; border: 1px solid var(--border); border-radius: 6px; font: inherit; background: var(--surface); color: var(--text); }
+  .setup-box input:focus { outline: 2px solid color-mix(in srgb, var(--primary) 35%, transparent); border-color: var(--primary); }
+  .setup-box .btn { width: 100%; padding: 10px; font-size: 14px; }
+  .setup-box .hint { margin-top: 16px; }
+  .setup-box .token-row { display: none; }
+</style>
+</head>
+<body>
+
+<form id="setup-form" class="setup-box" autocomplete="off">
+  <h1>欢迎使用 fftp Web 管理</h1>
+  <p class="lead">首次启动，请创建 Web 管理员账户。该账户仅用于管理界面登录，与 FTP/SFTP 用户库无关。</p>
+
+  <label>管理员用户名
+    <input id="su-name" type="text" maxlength="64" autocomplete="username" required>
+  </label>
+  <label>登录口令
+    <input id="su-pass" type="password" minlength="8" autocomplete="new-password" required>
+  </label>
+  <label>确认口令
+    <input id="su-pass2" type="password" minlength="8" autocomplete="new-password" required>
+  </label>
+  <label class="token-row">引导令牌
+    <input id="su-token" type="text" autocomplete="off">
+  </label>
+
+  <p id="su-err" class="error hidden"></p>
+  <button type="submit" id="su-submit" class="btn primary">创建管理员并进入</button>
+  <p class="hint">口令至少 8 个字符。设置完成后本页立即失效；如需重置，可在登录后于顶栏「账户设置」中管理。</p>
+</form>
+
+<script>
+"use strict";
+const $ = (id) => document.getElementById(id);
+const params = new URLSearchParams(location.search);
+$("su-token").value = params.get("token") || "";
+
+$("setup-form").addEventListener("submit", async (ev) => {
+  ev.preventDefault();
+  const err = $("su-err");
+  err.classList.add("hidden");
+  const username = $("su-name").value.trim();
+  const password = $("su-pass").value;
+  const confirm = $("su-pass2").value;
+  if (password.length < 8) { showErr("口令至少 8 个字符"); return; }
+  if (password !== confirm) { showErr("两次输入的口令不一致"); return; }
+  $("su-submit").disabled = true;
+  try {
+    const res = await fetch("/api/setup", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      credentials: "same-origin",
+      body: JSON.stringify({ token: $("su-token").value, username, password }),
+    });
+    if (res.ok) {
+      location.replace("/");
+      return;
+    }
+    let msg = "设置失败（HTTP " + res.status + "）";
+    try { msg = (await res.json()).error.message; } catch (_) { /* 忽略 */ }
+    showErr(msg);
+  } catch (e) {
+    showErr("网络错误：" + e.message);
+  } finally {
+    $("su-submit").disabled = false;
+  }
+});
+
+function showErr(msg) {
+  const err = $("su-err");
+  err.textContent = msg;
+  err.classList.remove("hidden");
+  err.scrollIntoView({ block: "nearest" });
+}
+</script>
+</body>
+</html>

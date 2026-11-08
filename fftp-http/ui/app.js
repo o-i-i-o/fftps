@@ -4,7 +4,7 @@
 // ---------- 工具 ----------
 
 const $ = (id) => document.getElementById(id);
-const state = { user: null };
+const state = { user: null, shuttingDown: false };
 
 function escapeHtml(s) {
   return String(s).replace(/[&<>"']/g, (c) => ({
@@ -103,12 +103,17 @@ async function boot() {
   $("login").classList.add("hidden");
   $("topbar").classList.remove("hidden");
   $("main").classList.remove("hidden");
+  $("whoami").textContent = state.user || "";
   try {
     const st = await api("/api/status");
     fillIdentity(st);
   } catch (e) { /* 离线横幅已展示 */ }
   switchTab("service");
   startConnPoll();
+  startPresence();
+  loadIdleStatus();
+  loadSystemService();
+  startIdlePoll();
 }
 
 function fillIdentity(st) {
@@ -154,6 +159,8 @@ $("btn-logout").addEventListener("click", async () => {
   stopConnPoll();
   stopLogStream();
   stopFopStream();
+  stopPresence();
+  stopIdlePoll();
   try { await fetch("/api/logout", { method: "POST", credentials: "same-origin" }); } catch (_) { /* 忽略 */ }
   state.user = null;
   $("main").classList.add("hidden");
@@ -173,7 +180,7 @@ function switchTab(name) {
   document.querySelectorAll("#tabs button").forEach((b) => {
     b.classList.toggle("active", b.dataset.tab === name);
   });
-  if (name === "service") refreshStatus();
+  if (name === "service") { refreshStatus(); loadIdleStatus(); loadSystemService(); }
   if (name === "config") loadConfigPage();
   if (name === "users") loadUsers();
   if (name === "proglog") { startLogStream(); loadLogFileList(); }
@@ -203,6 +210,226 @@ function startConnPoll() {
   }, 5000);
 }
 function stopConnPoll() { clearInterval(connTimer); connTimer = null; }
+
+// ---------- 页面心跳与用户活动（空闲自动关闭判定） ----------
+
+// 每个标签页独立标识：多标签页中任一可见即视为有页面
+const PAGE_ID = (crypto.randomUUID ? crypto.randomUUID()
+  : String(Date.now()) + "-" + Math.random().toString(16).slice(2));
+// 心跳间隔：需小于服务端页面过期阈值（75 秒）
+const HEARTBEAT_MS = 15000;
+let presenceTimer = null;
+let lastActivityPing = 0;
+
+function sendHeartbeat(visible, keepalive) {
+  if (!state.user || state.shuttingDown) return;
+  fetch("/api/heartbeat", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    credentials: "same-origin",
+    keepalive: !!keepalive,
+    body: JSON.stringify({ page_id: PAGE_ID, visible: !!visible }),
+  }).catch(() => { /* 服务关闭/网络抖动时忽略 */ });
+}
+
+function startPresence() {
+  stopPresence();
+  sendHeartbeat(document.visibilityState === "visible");
+  presenceTimer = setInterval(() => {
+    sendHeartbeat(document.visibilityState === "visible");
+  }, HEARTBEAT_MS);
+}
+
+function stopPresence() {
+  if (presenceTimer) {
+    clearInterval(presenceTimer);
+    presenceTimer = null;
+    // 主动告知页面已离开，避免等待服务端过期
+    sendHeartbeat(false, true);
+  }
+}
+
+// 真实用户操作（节流到 15 秒一次；后台轮询/SSE 不计入）
+function pingActivity() {
+  if (!state.user || state.shuttingDown) return;
+  const now = Date.now();
+  if (now - lastActivityPing < 15000) return;
+  lastActivityPing = now;
+  fetch("/api/activity", { method: "POST", credentials: "same-origin" }).catch(() => {});
+}
+for (const ev of ["pointerdown", "keydown", "wheel", "touchstart"]) {
+  window.addEventListener(ev, pingActivity, { passive: true });
+}
+
+document.addEventListener("visibilitychange", () => {
+  if (!state.user || state.shuttingDown) return;
+  sendHeartbeat(document.visibilityState === "visible");
+  if (document.visibilityState === "visible") loadIdleStatus();
+});
+
+window.addEventListener("pagehide", () => {
+  if (state.user && !state.shuttingDown) sendHeartbeat(false, true);
+});
+
+// ---------- 空闲自动关闭配置 ----------
+
+let idleTimer = null;
+let idleWarned = false;
+
+function startIdlePoll() {
+  stopIdlePoll();
+  idleTimer = setInterval(() => {
+    if (!state.shuttingDown && !$("tab-service").classList.contains("hidden")) {
+      loadIdleStatus();
+    }
+  }, 10000);
+}
+
+function stopIdlePoll() {
+  if (idleTimer) { clearInterval(idleTimer); idleTimer = null; }
+}
+
+function fillIdleForm(s) {
+  $("idle-enabled").checked = !!s.enabled;
+  $("idle-mode").value = s.mode === "no_activity" ? "no_activity" : "no_page";
+  $("idle-timeout").value = s.timeout_secs;
+  $("idle-warn").value = s.warn_secs;
+}
+
+function renderIdleStatus(s) {
+  const badge = $("idle-badge");
+  badge.textContent = s.enabled ? "已启用" : "未启用";
+  badge.className = "badge " + (s.enabled ? "on" : "off");
+  if (!s.enabled) {
+    $("idle-status").textContent = "未启用自动关闭。";
+    idleWarned = false;
+    return;
+  }
+  const mins = Math.max(0, Math.ceil(s.remaining_secs / 60));
+  $("idle-status").textContent =
+    `当前可见页面 ${s.visible_pages} 个，距自动关闭约 ${mins} 分钟（${s.remaining_secs} 秒）。`;
+  if (s.warn_secs > 0 && s.remaining_secs <= s.warn_secs) {
+    if (!idleWarned) {
+      idleWarned = true;
+      toast(`Web 服务将在约 ${s.remaining_secs} 秒后自动关闭（在页面上操作可重新计时）`, true);
+    }
+  } else if (s.remaining_secs > s.warn_secs + 5) {
+    idleWarned = false;
+  }
+}
+
+async function loadIdleStatus() {
+  try {
+    const s = await api("/api/idle");
+    fillIdleForm(s);
+    renderIdleStatus(s);
+  } catch (_) { /* 离线/未登录已由统一处理 */ }
+}
+
+$("idle-reload").addEventListener("click", loadIdleStatus);
+
+$("idle-save").addEventListener("click", async () => {
+  const timeout = parseInt($("idle-timeout").value, 10);
+  const warn = parseInt($("idle-warn").value, 10);
+  if (!Number.isFinite(timeout) || timeout < 30) {
+    toast("空闲时长必须是不小于 30 的整数（秒）", true);
+    return;
+  }
+  const warnSecs = Number.isFinite(warn) && warn > 0 ? warn : 0;
+  if (warnSecs > timeout) { toast("关闭前提示不能大于空闲时长", true); return; }
+  try {
+    const s = await api("/api/idle", {
+      method: "PUT",
+      body: {
+        enabled: $("idle-enabled").checked,
+        timeout_secs: timeout,
+        mode: $("idle-mode").value,
+        warn_secs: warnSecs,
+      },
+    });
+    fillIdleForm(s);
+    renderIdleStatus(s);
+    toast("空闲设置已保存");
+  } catch (e) { toast(errMsg(e), true); }
+});
+
+$("web-shutdown").addEventListener("click", async () => {
+  if (!confirm("确认关闭 Web 管理服务（fftp-http）？\n\nfftpd 与 FTP/SFTP 传输不受影响；关闭后本页面将无法继续操作，需从桌面快捷方式重新启动。")) return;
+  try {
+    await api("/api/self-shutdown", { method: "POST" });
+    showShutdownNotice();
+  } catch (e) { toast(errMsg(e), true); }
+});
+
+function showShutdownNotice() {
+  state.shuttingDown = true;
+  state.user = null;
+  stopConnPoll();
+  stopLogStream();
+  stopFopStream();
+  stopPresence();
+  stopIdlePoll();
+  $("main").classList.add("hidden");
+  $("topbar").classList.add("hidden");
+  $("offline").classList.add("hidden");
+  $("login").classList.add("hidden");
+  $("shutdown-notice").classList.remove("hidden");
+}
+
+// ---------- 系统服务（fftpd） ----------
+
+const SYS_ACT_LABELS = {
+  install: "安装/修复服务",
+  uninstall: "卸载服务",
+  "autostart-on": "开启开机自启",
+  "autostart-off": "关闭开机自启",
+};
+
+async function loadSystemService() {
+  try {
+    const s = await api("/api/system-service/status");
+    $("sys-svc-platform").textContent = s.platform || "—";
+    $("sys-svc-detail").textContent = s.detail || "—";
+    const badge = $("sys-svc-badge");
+    if (!s.installed) {
+      badge.textContent = "未安装";
+      badge.className = "badge off";
+    } else if (s.running) {
+      badge.textContent = s.autostart ? "运行中 · 自启" : "运行中";
+      badge.className = "badge on";
+    } else {
+      badge.textContent = s.autostart ? "已安装 · 未运行 · 自启" : "已安装 · 未运行";
+      badge.className = "badge off";
+    }
+  } catch (e) {
+    $("sys-svc-badge").textContent = "检测失败";
+    $("sys-svc-badge").className = "badge off";
+    $("sys-svc-detail").textContent = errMsg(e);
+  }
+}
+
+$("sys-refresh").addEventListener("click", loadSystemService);
+
+document.querySelectorAll("[data-sys-act]").forEach((btn) => {
+  btn.addEventListener("click", async () => {
+    const act = btn.dataset.sysAct;
+    const label = SYS_ACT_LABELS[act] || act;
+    if ((act === "uninstall" || act === "autostart-off") && !confirm(`确认${label}？`)) return;
+    btn.disabled = true;
+    btn.classList.add("busy");
+    try {
+      const r = await api("/api/system-service/" + act, { method: "POST" });
+      toast((r.message || label + "完成") + (r.output ? "：" + r.output : ""));
+      setTimeout(() => { loadSystemService(); refreshStatus(); }, 800);
+    } catch (e) {
+      toast(errMsg(e), true);
+    } finally {
+      btn.disabled = false;
+      btn.classList.remove("busy");
+    }
+  });
+});
+
 
 // ---------- 服务状态与操作 ----------
 
@@ -312,14 +539,39 @@ function logLine(entry) {
   const div = document.createElement("div");
   div.className = "line";
   const extra = [entry.client_ip, entry.username, entry.action].filter(Boolean).join(" ");
+  const raw = [entry.timestamp, entry.level, entry.source, entry.message, extra].filter(Boolean).join(" ");
+  div.dataset.filter = raw;
   div.innerHTML =
     `<span class="t-dim">${escapeHtml(fmtTime(entry.timestamp))}</span> ` +
     `<span class="lvl-${escapeHtml(entry.level)}">${escapeHtml(entry.level)}</span> ` +
     `<span class="t-dim">[${escapeHtml(entry.source)}]</span> ` +
     escapeHtml(entry.message) +
     (extra ? ` <span class="t-dim">(${escapeHtml(extra)})</span>` : "");
+  div.classList.toggle("filtered", !matchesFilter(raw, $("log-filter").value));
   return div;
 }
+
+function matchesFilter(raw, query) {
+  const q = String(query || "").trim().toLowerCase();
+  return !q || String(raw || "").toLowerCase().includes(q);
+}
+
+function applyLogFilter(view, query) {
+  for (const el of view.children) {
+    el.classList.toggle("filtered", !matchesFilter(el.dataset.filter || el.textContent, query));
+  }
+}
+
+function applyTableFilter(wrap, query) {
+  for (const tr of wrap.querySelectorAll("tbody tr")) {
+    tr.classList.toggle("filtered", !matchesFilter(tr.dataset.filter || tr.textContent, query));
+  }
+}
+
+$("log-filter").addEventListener("input", () => applyLogFilter($("log-view"), $("log-filter").value));
+$("logfile-filter").addEventListener("input", () => applyLogFilter($("logfile-view"), $("logfile-filter").value));
+$("fop-filter").addEventListener("input", () => applyTableFilter($("fop-live"), $("fop-filter").value));
+$("fileop-filter").addEventListener("input", () => applyTableFilter($("fileop-view"), $("fileop-filter").value));
 
 function appendLog(entry) {
   const view = $("log-view");
@@ -392,6 +644,7 @@ async function loadLogFileContent() {
     view.textContent = "";
     for (const e of entries) view.appendChild(logLine(e));
     if (!entries.length) view.textContent = "（无记录）";
+    applyLogFilter(view, $("logfile-filter").value);
     view.scrollTop = view.scrollHeight;
   } catch (e) {
     view.textContent = "加载失败：" + errMsg(e);
@@ -417,6 +670,11 @@ function buildOpTable() {
 
 function opRow(e) {
   const tr = document.createElement("tr");
+  tr.dataset.filter = [
+    e.timestamp, e.username, e.client_ip, e.operation, e.file_path,
+    e.file_size, e.protocol, e.success ? "成功" : "失败", e.message,
+  ].filter((v) => v != null).join(" ");
+  tr.classList.toggle("filtered", !matchesFilter(tr.dataset.filter, $("fop-filter").value));
   tr.innerHTML =
     `<td>${escapeHtml(fmtTime(e.timestamp))}</td>` +
     `<td>${escapeHtml(e.username)}</td>` +
@@ -511,6 +769,7 @@ async function loadFileOpContent() {
     const tbody = table.tBodies[0];
     for (const e of entries) tbody.appendChild(opRow(e));
     view.appendChild(table);
+    applyTableFilter(view, $("fileop-filter").value);
     view.scrollTop = view.scrollHeight;
   } catch (e) {
     view.textContent = "加载失败：" + errMsg(e);
@@ -860,6 +1119,7 @@ function openUserDialog(name) {
   $("ud-quota").value = p.quota_mb != null ? p.quota_mb : "";
   $("ud-speed").value = p.speed_limit_kbps != null ? p.speed_limit_kbps : "";
   $("user-dialog").classList.remove("hidden");
+  refreshHomeSuggestions();
   $("ud-name").focus();
 }
 
@@ -867,6 +1127,28 @@ function closeUserDialog() {
   $("user-dialog").classList.add("hidden");
   editingUser = null;
 }
+
+// 主目录候选：按当前用户名请求服务端建议（本地路径计算，不发往 fftpd）
+let homeSuggestTimer = null;
+async function refreshHomeSuggestions() {
+  const name = $("ud-name").value.trim();
+  const list = $("ud-home-list");
+  if (!name) { list.innerHTML = ""; return; }
+  try {
+    const res = await api("/api/user-directories/suggest", {
+      method: "POST",
+      body: { username: name },
+    });
+    list.innerHTML = (res.directories || [])
+      .map((d) => `<option value="${escapeHtml(d)}"></option>`)
+      .join("");
+  } catch (_) { /* 建议失败不影响手工填写 */ }
+}
+
+$("ud-name").addEventListener("input", () => {
+  clearTimeout(homeSuggestTimer);
+  homeSuggestTimer = setTimeout(refreshHomeSuggestions, 300);
+});
 
 function showDlgErr(msg) {
   const el = $("user-dlg-err");
@@ -1104,4 +1386,14 @@ async function deleteAdmin(name) {
 
 // ---------- 启动 ----------
 
-showLogin();
+// 刷新页面时先探测既有会话：有效则直接进入，无需重新登录。
+(async function start() {
+  try {
+    const me = await api("/api/me");
+    state.user = me.username;
+    await boot();
+  } catch (_) {
+    // 未登录/会话过期时 api() 已弹出登录框；网络错误同样回到登录界面。
+    showLogin(false);
+  }
+})();

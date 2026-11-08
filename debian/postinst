@@ -1,9 +1,7 @@
 #!/bin/bash
-# fftps 安装后脚本（用户态服务模型，fftp-gui / fftp-http 两个变体共用）
+# fftps 安装后脚本（用户态服务模型）
 #
 # fftpd 与 fftp-http 均以 systemd 用户服务运行，无需 root 权限、无需专用用户。
-# 变体差异在运行时探测：/usr/bin/fftp-http 存在即 Web 前端变体，
-# 连带处理 fftp-http 用户服务与它的配置模板。
 # 本脚本职责：
 #   1. 把包内配置模板（/usr/share/fftpd/，打包时由示例配置重命名）
 #      预置到活跃用户的 ~/.config/fftpd/ 下；
@@ -91,19 +89,11 @@ case "$1" in
         done
 
         echo "FFTPS 安装完成。"
-        if [ -x /usr/bin/fftp-http ]; then
-            echo "启用后台服务（以桌面用户运行，无需 root）："
-            echo "  systemctl --user enable --now fftpd"
-            echo "启用 Web 管理前端（默认监听 http://127.0.0.1:8080）："
-            echo "  1. 生成口令哈希：fftp-http hash '你的口令'"
-            echo "  2. 填入 ~/.config/fftpd/fftp-http.toml 的 [[admin_users]]（无管理员账户将拒绝启动）"
-            echo "  3. systemctl --user enable --now fftp-http"
-        else
-            echo "启用后台服务（以桌面用户运行，无需 root）："
-            echo "  systemctl --user enable --now fftpd"
-            echo "启动图形管理界面："
-            echo "  fftp-gui"
-        fi
+        echo "启用后台服务（以桌面用户运行，无需 root）："
+        echo "  systemctl --user enable --now fftpd"
+        echo "启动 Web 管理界面："
+        echo "  从应用菜单打开「FFTPS Web 管理」，或执行 fftp-http launch"
+        echo "  首次启动会自动进入本机 setup 引导页（默认 http://127.0.0.1:8080）"
         ;;
 esac
 

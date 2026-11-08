@@ -204,7 +204,7 @@ impl UserManager {
     /// 使用 Argon2id 生成口令哈希（自动随机盐）
     ///
     /// 显式策略参数 `m=65536,t=3,p=4,len=32`（docs/design.md §5.2）。
-    /// 公开供 fftp-gui / fftp-http 生成各自管理面的口令哈希。
+    /// 公开供管理前端（fftp-http）生成口令哈希。
     ///
     /// # Errors
     /// 参数非法或 Argon2 哈希计算失败（如盐生成失败）时返回错误
@@ -220,7 +220,7 @@ impl UserManager {
         Ok(hash)
     }
 
-    /// 校验口令与 PHC 哈希是否匹配（供 fftp-gui / fftp-http 登录校验复用）
+    /// 校验口令与 PHC 哈希是否匹配（供 fftp-http 登录校验复用）
     pub fn verify_password(password: &str, hash: &str) -> bool {
         let parsed_hash = match PasswordHash::new(hash) {
             Ok(h) => h,

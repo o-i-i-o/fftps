@@ -26,13 +26,24 @@ tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 anyhow = { workspace = true }
 
+[target.'cfg(unix)'.dependencies]
+# launch：脱离终端启动（setsid）与启动锁（flock）
+nix = { workspace = true, features = ["process"] }
+
 [target.'cfg(windows)'.dependencies]
 # Windows 服务集成（service_windows：SCM 调度 + 服务控制处理）
 windows-service = "0.8"
+# launch：错误提示 MessageBoxW
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_UI_WindowsAndMessaging"] }
 
 [[bin]]
 name = "fftp-http"
 path = "src/main.rs"
+
+# Windows GUI 子系统启动器（快捷方式目标，避免控制台黑框）
+[[bin]]
+name = "fftp-http-launcher"
+path = "src/launcher.rs"
 
 [lints]
 workspace = true

@@ -157,17 +157,64 @@ pub mod named_pipe {
     use super::Duplex;
     use anyhow::{Context, Result};
     use tokio::net::windows::named_pipe::{NamedPipeServer, ServerOptions};
+    use windows_sys::Win32::Foundation::LocalFree;
+    use windows_sys::Win32::Security::{PSECURITY_DESCRIPTOR, SECURITY_ATTRIBUTES};
 
     pub const PIPE_NAME: &str = "fftpd";
     pub const PIPE_PATH: &str = r"\\.\pipe\fftpd";
+
+    /// 命名管道 DACL：LocalSystem / 管理员完全控制，交互用户可读写。
+    ///
+    /// fftpd 以 SCM 服务（LocalSystem）运行，默认 DACL 不允许普通用户
+    /// 连接；而 fftp-http 由桌面快捷方式以当前用户身份按需启动，故显式
+    /// 放宽到 `IU`（Interactive Users）。（`GA`=完全控制，`GRGW`=读写）
+    const PIPE_SDDL: &str = "D:(A;;GA;;;SY)(A;;GA;;;BA)(A;;GRGW;;;IU)";
+
+    /// 构造安全属性（调用方负责在创建管道后释放描述符）
+    fn security_attributes() -> Result<(SECURITY_ATTRIBUTES, PSECURITY_DESCRIPTOR)> {
+        use std::os::windows::ffi::OsStrExt;
+        use windows_sys::Win32::Security::Authorization::{
+            ConvertStringSecurityDescriptorToSecurityDescriptorW, SDDL_REVISION_1,
+        };
+
+        let wide: Vec<u16> = std::ffi::OsStr::new(PIPE_SDDL)
+            .encode_wide()
+            .chain(std::iter::once(0))
+            .collect();
+        let mut sd: PSECURITY_DESCRIPTOR = std::ptr::null_mut();
+        let ok = unsafe {
+            ConvertStringSecurityDescriptorToSecurityDescriptorW(
+                wide.as_ptr(),
+                SDDL_REVISION_1,
+                &mut sd,
+                std::ptr::null_mut(),
+            )
+        };
+        if ok == 0 {
+            return Err(std::io::Error::last_os_error())
+                .context("构造命名管道安全描述符失败");
+        }
+        let attrs = SECURITY_ATTRIBUTES {
+            nLength: std::mem::size_of::<SECURITY_ATTRIBUTES>() as u32,
+            lpSecurityDescriptor: sd,
+            bInheritHandle: 0,
+        };
+        Ok((attrs, sd))
+    }
 
     fn create_instance(first: bool) -> Result<NamedPipeServer> {
         let mut opts = ServerOptions::new();
         if first {
             opts.first_pipe_instance(true);
         }
-        opts.create(PIPE_NAME)
-            .context("创建命名管道实例失败（可能已有 fftpd 实例在运行）")
+        let (mut attrs, sd) = security_attributes()?;
+        // SAFETY: attrs 指向有效的 SECURITY_ATTRIBUTES，描述符在调用期间有效
+        let created = unsafe {
+            opts.create_with_security_attributes_raw(PIPE_NAME, std::ptr::addr_of_mut!(attrs).cast())
+        };
+        // CreateNamedPipe 会复制安全描述符，返回后即可释放
+        unsafe { LocalFree(sd) };
+        created.context("创建命名管道实例失败（可能已有 fftpd 实例在运行）")
     }
 
     pub(super) async fn accept_one(first_instance: &mut bool) -> Result<Duplex> {

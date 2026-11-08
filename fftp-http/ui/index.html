@@ -60,6 +60,53 @@
         <button id="btn-shutdown" class="btn danger">关停 fftpd 守护进程</button>
       </div>
     </div>
+
+    <div class="grid-2">
+      <div class="card">
+        <div class="card-head">
+          <h3>系统服务（fftpd）</h3>
+          <span id="sys-svc-badge" class="badge off">检测中…</span>
+        </div>
+        <p class="hint">由操作系统托管 fftpd 并开机自启。Linux 使用 <code>systemctl --user</code>，Windows 使用 <code>sc.exe</code>（需要管理员权限）。</p>
+        <div class="meta-list">
+          <div><label>平台</label><span id="sys-svc-platform">—</span></div>
+          <div><label>状态</label><span id="sys-svc-detail" class="mono">—</span></div>
+        </div>
+        <div class="form-actions left">
+          <button type="button" class="btn primary" data-sys-act="install">安装/修复服务</button>
+          <button type="button" class="btn" data-sys-act="autostart-on">开启开机自启</button>
+          <button type="button" class="btn ghost" data-sys-act="autostart-off">关闭开机自启</button>
+          <button type="button" class="btn danger" data-sys-act="uninstall">卸载服务</button>
+          <button type="button" id="sys-refresh" class="btn ghost">刷新状态</button>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-head">
+          <h3>Web 服务（fftp-http）</h3>
+          <span id="idle-badge" class="badge off">未启用</span>
+        </div>
+        <p class="hint">无操作自动关闭只关闭当前 Web 管理服务（fftp-http），<strong>不会关闭 fftpd</strong>，也不影响正在进行的传输。下次从桌面快捷方式启动即可恢复。</p>
+        <div class="form-grid">
+          <label class="check wide"><input id="idle-enabled" type="checkbox"> 启用无操作自动关闭</label>
+          <label>判定方式
+            <select id="idle-mode">
+              <option value="no_page">没有可见页面（关闭或隐藏浏览器后计时）</option>
+              <option value="no_activity">没有用户操作（只看不点也会计时）</option>
+            </select>
+          </label>
+          <label>空闲时长（秒） <input id="idle-timeout" type="number" min="30" step="1"></label>
+          <label>关闭前提示（秒） <input id="idle-warn" type="number" min="0" step="1" placeholder="0 = 不提示"></label>
+        </div>
+        <p id="idle-status" class="hint">—</p>
+        <div class="form-actions">
+          <button type="button" id="idle-reload" class="btn ghost">重新加载</button>
+          <button type="button" id="idle-save" class="btn primary">保存空闲设置</button>
+          <span class="spacer"></span>
+          <button type="button" id="web-shutdown" class="btn danger">立即关闭 Web 服务</button>
+        </div>
+      </div>
+    </div>
   </section>
 
   <!-- 配置 -->
@@ -234,6 +281,7 @@
           <button id="log-pause" class="btn">暂停</button>
           <button id="log-clear" class="btn ghost">清屏</button>
           <label class="check"><input id="log-autoscroll" type="checkbox" checked> 自动滚动</label>
+          <input id="log-filter" class="filter-input" type="search" placeholder="过滤（级别/来源/内容）" aria-label="过滤实时日志">
           <span id="log-state" class="hint"></span>
         </div>
         <div id="log-view" class="console"></div>
@@ -247,6 +295,7 @@
               <option>200</option><option>1000</option><option selected>5000</option>
             </select>
           </label>
+          <input id="logfile-filter" class="filter-input" type="search" placeholder="过滤历史日志" aria-label="过滤历史日志">
           <button id="logfile-refresh" class="btn ghost">刷新</button>
         </div>
         <div id="logfile-view" class="console small">选择历史文件查看</div>
@@ -263,6 +312,7 @@
           <button id="fop-pause" class="btn">暂停</button>
           <button id="fop-clear" class="btn ghost">清屏</button>
           <label class="check"><input id="fop-autoscroll" type="checkbox" checked> 自动滚动</label>
+          <input id="fop-filter" class="filter-input" type="search" placeholder="过滤（用户/路径/操作）" aria-label="过滤实时文件操作">
           <span id="fop-state" class="hint"></span>
         </div>
         <div id="fop-live" class="table-wrap small">连接中…</div>
@@ -276,6 +326,7 @@
               <option>200</option><option>1000</option><option selected>5000</option>
             </select>
           </label>
+          <input id="fileop-filter" class="filter-input" type="search" placeholder="过滤历史操作" aria-label="过滤历史文件操作">
           <button id="fileop-refresh" class="btn ghost">刷新</button>
         </div>
         <div id="fileop-view" class="table-wrap small">选择历史文件查看</div>
@@ -294,7 +345,7 @@
         <div><label>用户库</label><span id="about-users" class="mono">—</span></div>
         <div><label>IPC 端点</label><span id="about-endpoint" class="mono">—</span></div>
       </div>
-      <p class="hint">fftp-http 是与 fftp-gui 平级的 Web 管理前端，经 fftp-ipc 与 fftpd 通信；
+      <p class="hint">fftp-http 是 fftps 的 Web 管理前端，经 fftp-ipc 与 fftpd 通信；
       管理员账户、监听地址、TLS 与 IP 黑白名单均在 fftp-http 自身配置文件中独立管理。</p>
     </div>
   </section>
@@ -308,7 +359,8 @@
     <div class="form-grid">
       <label>用户名 <input id="ud-name" type="text" autocomplete="off"></label>
       <label>口令 <input id="ud-pass" type="password" autocomplete="new-password"></label>
-      <label class="wide">主目录 <input id="ud-home" type="text" placeholder="/home/fftp/user1"></label>
+      <label class="wide">主目录 <input id="ud-home" type="text" list="ud-home-list" placeholder="/home/fftp/user1"></label>
+      <datalist id="ud-home-list"></datalist>
       <label>配额（MB） <input id="ud-quota" type="number" min="0" step="1" placeholder="空 = 不限"></label>
       <label>限速（KB/s） <input id="ud-speed" type="number" min="0" step="1" placeholder="空 = 不限"></label>
       <label class="check"><input id="ud-enabled" type="checkbox" checked> 启用账户</label>
@@ -364,6 +416,16 @@
 </div>
 
 <div id="toast" class="toast hidden"></div>
+
+<!-- Web 服务已关闭提示（手动/空闲关停后显示） -->
+<div id="shutdown-notice" class="overlay hidden">
+  <div class="dialog-box notice-box">
+    <h3>Web 服务已关闭</h3>
+    <p class="hint">fftp-http 已退出，fftpd 与 FTP/SFTP 传输不受影响。</p>
+    <p class="hint">可以关闭本页面。下次从桌面快捷方式启动，或执行
+      <code>systemctl --user start fftp-http</code> 即可恢复。</p>
+  </div>
+</div>
 
 <script src="/static/app.js"></script>
 </body>

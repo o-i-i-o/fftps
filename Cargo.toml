@@ -6,7 +6,6 @@ members = [
     "ftp",
     "sftp",
     "fftpd",
-    "fftp-gui",
     "fftp-http",
 ]
 
@@ -74,12 +73,6 @@ argon2 = "0.6"
 
 # 平台
 nix = { version = "0.31", features = ["user", "fs", "socket"] }
-
-# GUI（fftp-gui；声明式 UI 编译期生成 Rust，运行时后端可选 winit 或 Qt）
-slint = "1"
-slint-build = "1"
-# GUI 剪贴板（Slint 1.18 未公开 Clipboard API，winit 后端内部同款实现）
-arboard = { version = "3", default-features = false, features = ["wayland-data-control"] }
 
 [profile.release]
 opt-level = 3

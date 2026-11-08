@@ -4,12 +4,15 @@
 #   1. 复制为实际配置文件（Linux 默认 ~/.config/fftpd/fftp-http.toml，
 #      Windows 默认 %ProgramData%\fftpd\fftp-http.toml），
 #      或用环境变量 FFTPD_HTTP_CONFIG 指定任意路径；
-#      （deb 的 fftp-http 变体安装时，postinst 已把本示例预置到上述默认路径）
-#   2. 生成管理员口令哈希：fftp-http hash '你的口令'
-#      （用单引号包裹，避免 shell 展开哈希中的 $ 字符）；
-#   3. 取消文末 [[admin_users]] 段的注释并填入真实哈希，然后启动 fftp-http。
+#      （deb 安装时，postinst 已把本示例预置到上述默认路径）
+#   2. 首次启动且 [[admin_users]] 为空时，服务只监听回环地址并进入
+#      本机 setup 引导页（桌面快捷方式会自动带上一次性令牌：
+#      http://127.0.0.1:8080/setup?token=...），按页面提示创建管理员即可。
+#   3. 也可预先手工创建管理员：fftp-http hash '你的口令'
+#      （用单引号包裹，避免 shell 展开哈希中的 $ 字符），
+#      取消文末 [[admin_users]] 段的注释并填入真实哈希。
 #
-# 文件缺失时 fftp-http 会自动生成一份默认模板；管理员账户为空将拒绝启动。
+# 文件缺失时 fftp-http 会自动生成一份默认模板。
 # 所有字段均可缺省，缺省值与本示例一致。
 
 [listen]
@@ -43,9 +46,22 @@ session_ttl_secs = 43200
 # 生成建议：openssl rand -hex 32
 api_token = ""
 
-# 管理员账户（至少一条，否则启动失败；用户名不可重复）。
-# 口令哈希必须为 Argon2id PHC 字符串（以 $argon2id$ 开头），
-# 用 `fftp-http hash '<口令>'` 生成后替换下方占位值。
+[idle]
+# 无操作自动关闭 fftp-http（只关闭 Web 管理进程，不关闭 fftpd，
+# 也不影响正在进行的 FTP/SFTP 传输）。可在页面「服务 → Web 服务」中修改。
+enabled = false
+# 空闲时长（秒，最小 30）
+timeout_secs = 1800
+# 判定方式：
+#   no_page     = 没有可见的管理页面（浏览器标签页关闭或切到后台后计时）
+#   no_activity = 没有页面真实操作（只看不点也会计时）
+mode = "no_page"
+# 关闭前页面提示倒计时（秒，0 = 不提示；不能大于 timeout_secs）
+warn_secs = 60
+
+# 管理员账户（可选；为空时走首次启动的本机 setup 引导页）。
+# 手工配置时用户名不可重复，口令哈希必须为 Argon2id PHC 字符串
+# （以 $argon2id$ 开头），用 `fftp-http hash '<口令>'` 生成后替换占位值。
 #[[admin_users]]
 #username = "admin"
 #password_hash = "$argon2id$v=19$m=65536,t=3,p=4$<salt>$<hash>"

@@ -15,5 +15,13 @@ anyhow = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
 
+[target.'cfg(windows)'.dependencies]
+# 命名管道安全描述符（放宽到交互用户，供普通用户运行的 fftp-http 连接）
+windows-sys = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_Security_Authorization",
+] }
+
 [lints]
 workspace = true
