@@ -56,7 +56,9 @@ show_help() {
       Windows 另附 fftp-http-launcher.exe（NSIS 快捷方式目标）
 
 依赖:
-    cargo、rustup 目标、cargo-zigbuild、zig（windows-gnu 回退需要 mingw-w64）
+    cargo、rustup 目标、cargo-zigbuild、zig（可用 pip install ziglang 安装，
+    仅当 zig 在 PATH 中缺失时脚本才回退到 python3 -m ziglang）
+    windows-gnu 回退需要 mingw-w64
 EOF
 }
 
@@ -85,6 +87,37 @@ check_rust_target() {
     fi
 }
 
+# 定位 zig：PATH、CARGO_ZIGBUILD_ZIG_PATH、npm 本地安装、~/.local/bin、
+# pip ziglang 模块。找到返回 0；必要时导出 CARGO_ZIGBUILD_ZIG_PATH。
+resolve_zig() {
+    if [ -n "${CARGO_ZIGBUILD_ZIG_PATH:-}" ] && [ -x "${CARGO_ZIGBUILD_ZIG_PATH}" ]; then
+        return 0
+    fi
+    if command -v zig &> /dev/null; then
+        return 0
+    fi
+
+    local candidate
+    for candidate in \
+        "${PROJECT_DIR}/node_modules/.bin/zig" \
+        "${HOME}/.local/bin/zig" \
+        "${HOME}/node_modules/.bin/zig"; do
+        if [ -x "$candidate" ]; then
+            export CARGO_ZIGBUILD_ZIG_PATH="$candidate"
+            log_info "使用 zig: ${candidate}"
+            return 0
+        fi
+    done
+
+    # cargo-zigbuild 支持通过 Python ziglang 包（pip install ziglang）调用 zig
+    if command -v python3 &> /dev/null && python3 -m ziglang version &> /dev/null; then
+        log_info "使用 Python ziglang 模块中的 zig $(python3 -m ziglang version)"
+        return 0
+    fi
+
+    return 1
+}
+
 # 检查 cargo-zigbuild 与 zig；缺失返回 1（调用方决定回退或报错）
 check_zigbuild() {
     local ok=0
@@ -92,8 +125,8 @@ check_zigbuild() {
         log_warning "未找到 cargo-zigbuild（cargo install cargo-zigbuild 可安装）"
         ok=1
     fi
-    if ! command -v zig &> /dev/null; then
-        log_warning "未找到 zig（https://ziglang.org/download 或包管理器安装）"
+    if ! resolve_zig; then
+        log_warning "未找到 zig（https://ziglang.org/download 或 pip install ziglang 安装）"
         ok=1
     fi
     return "$ok"
@@ -155,7 +188,7 @@ build_target() {
             cargo zigbuild --release --target "$target" -p fftpd -p fftp-http
         else
             log_error "linux 目标需要 cargo-zigbuild + zig"
-            log_info "安装: cargo install cargo-zigbuild ；并安装 zig 后重试"
+            log_info "安装: cargo install cargo-zigbuild ；zig 可用 pip install ziglang 安装后重试"
             exit 1
         fi
     fi
