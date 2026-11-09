@@ -26,10 +26,10 @@ chrono = { workspace = true }
 
 # FTP/FTPS 服务端（版本对齐 wftpd-windows/wftpd/Cargo.toml）
 libunftp = { version = "0.23.1", default-features = false, features = ["aws_lc_rs"] }
-unftp-core = "0.1.0"
-unftp-sbe-fs = "0.4.0"
-unftp-sbe-rooter = "0.3.0"
-unftp-sbe-restrict = "0.1.5"
+unftp-core = "0.1.1"
+unftp-sbe-fs = "0.4.1"
+unftp-sbe-rooter = "0.3.1"
+unftp-sbe-restrict = "0.1.6"
 
 # FTPS 自签证书生成（rcgen 证书时间字段为 time 类型）
 rcgen = "0.14"
