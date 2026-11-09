@@ -846,7 +846,7 @@ dependencies = [
 
 [[package]]
 name = "fftp-common"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "argon2",
@@ -866,7 +866,7 @@ dependencies = [
 
 [[package]]
 name = "fftp-ftp"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "argon2",
@@ -887,7 +887,7 @@ dependencies = [
 
 [[package]]
 name = "fftp-http"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "axum",
@@ -914,7 +914,7 @@ dependencies = [
 
 [[package]]
 name = "fftp-ipc"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "fftp-common",
@@ -928,7 +928,7 @@ dependencies = [
 
 [[package]]
 name = "fftp-sftp"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "bitflags",
@@ -952,7 +952,7 @@ dependencies = [
 
 [[package]]
 name = "fftpd"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "fftp-common",

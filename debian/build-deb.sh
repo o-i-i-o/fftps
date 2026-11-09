@@ -28,6 +28,7 @@ show_help() {
 
 选项:
     -a, --arch ARCH       目标架构 (arm64, amd64, armhf, i386) [默认: 自动检测]
+    -b, --bin-dir DIR     使用预编译产物目录（跳过编译，CI 打包用）
     -c, --clean           构建前清理target目录
     -d, --debug           使用debug模式编译
     -h, --help            显示此帮助信息
@@ -42,6 +43,7 @@ show_help() {
     $0                          # 构建当前架构的 deb 包
     $0 -a arm64                 # 构建 arm64 包
     $0 -a amd64 --cross         # 交叉编译 amd64 包
+    $0 -a arm64 -b dist/aarch64-unknown-linux-gnu   # 用预编译产物打包
     $0 -c -n                    # 清理构建并跳过 lintian 检查
 EOF
 }
@@ -70,14 +72,16 @@ get_rust_target() {
 
 check_dependencies() {
     local missing=()
-    for dep in cargo dpkg-deb dpkg; do
+    local deps=(dpkg-deb dpkg)
+    [ -n "$BIN_DIR" ] || deps+=(cargo)
+    for dep in "${deps[@]}"; do
         command -v "$dep" &> /dev/null || missing+=("$dep")
     done
     if [ ${#missing[@]} -gt 0 ]; then
         log_error "缺少必要的依赖: ${missing[*]}"
         exit 1
     fi
-    if [ "$ENABLE_CROSS" = "true" ] && [ ! -x "${PROJECT_DIR}/scripts/build.sh" ]; then
+    if [ -z "$BIN_DIR" ] && [ "$ENABLE_CROSS" = "true" ] && [ ! -x "${PROJECT_DIR}/scripts/build.sh" ]; then
         log_error "交叉编译需要 scripts/build.sh"
         exit 1
     fi
@@ -89,6 +93,7 @@ SKIP_LINTIAN=false
 ENABLE_CROSS=false
 TARGET_ARCH=""
 RUST_TARGET=""
+BIN_DIR=""
 OUTPUT_DIR=""
 CUSTOM_VERSION=""
 PACKAGE="fftp-http"
@@ -96,6 +101,7 @@ PACKAGE="fftp-http"
 while [[ $# -gt 0 ]]; do
     case $1 in
         -a|--arch) TARGET_ARCH="$2"; shift 2 ;;
+        -b|--bin-dir) BIN_DIR="$2"; shift 2 ;;
         -c|--clean) CLEAN_BUILD=true; shift ;;
         -d|--debug) DEBUG_MODE=true; shift ;;
         -h|--help) show_help; exit 0 ;;
@@ -160,8 +166,9 @@ echo "========================================"
 echo "版本: ${VERSION}"
 echo "架构: ${TARGET_ARCH}"
 echo "Rust目标: ${RUST_TARGET:-默认}"
-echo "编译模式: $([ "$DEBUG_MODE" = true ] && echo "debug" || echo "release")"
+echo "编译模式: $([ -n "$BIN_DIR" ] && echo "跳过（使用预编译产物）" || { [ "$DEBUG_MODE" = true ] && echo "debug" || echo "release"; })"
 echo "交叉编译: $([ "$ENABLE_CROSS" = true ] && echo "是" || echo "否")"
+[ -n "$BIN_DIR" ] && echo "产物目录: ${BIN_DIR}"
 echo "项目目录: ${PROJECT_DIR}"
 echo "构建目录: ${BUILD_DIR}"
 echo "输出目录: ${OUTPUT_DIR}"
@@ -169,16 +176,23 @@ echo "========================================"
 
 cd "${PROJECT_DIR}"
 
-if [ "$CLEAN_BUILD" = true ]; then
+if [ "$CLEAN_BUILD" = true ] && [ -z "$BIN_DIR" ]; then
     log_info "[1/5] 清理旧的构建文件..."
     rm -rf "${BUILD_DIR}" "${PROJECT_DIR}/target"
 fi
 mkdir -p "${BUILD_DIR}"
 
-log_info "[2/5] 编译项目..."
 BUILD_MODE=$([ "$DEBUG_MODE" = true ] && echo "" || echo "--release")
 
-if [ "$ENABLE_CROSS" = true ]; then
+if [ -n "$BIN_DIR" ]; then
+    log_info "[2/5] 使用预编译产物，跳过编译: ${BIN_DIR}"
+    if [ ! -d "$BIN_DIR" ]; then
+        log_error "预编译产物目录不存在: ${BIN_DIR}"
+        exit 1
+    fi
+    TARGET_DIR="$(cd "$BIN_DIR" && pwd)"
+elif [ "$ENABLE_CROSS" = true ]; then
+    log_info "[2/5] 编译项目（交叉编译）..."
     if [ -z "$RUST_TARGET" ]; then
         log_error "--cross 需要同时给出 -t/--target 或 -a/--arch"
         exit 1
@@ -187,6 +201,7 @@ if [ "$ENABLE_CROSS" = true ]; then
     "${PROJECT_DIR}/scripts/build.sh" "$RUST_TARGET"
     TARGET_DIR="${PROJECT_DIR}/dist/${RUST_TARGET}"
 else
+    log_info "[2/5] 编译项目..."
     if [ -n "$RUST_TARGET" ]; then
         log_info "使用cargo编译目标: ${RUST_TARGET}"
         cargo build $BUILD_MODE --target "$RUST_TARGET"

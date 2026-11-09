@@ -1,8 +1,8 @@
 # fftps CI：静态检查、测试、交叉编译矩阵与打包
 #
 # 单一产品形态：fftpd 后端 + fftp-http Web 管理前端
-#   - Linux: deb / tar.gz，附 systemd --user 单元与桌面入口
-#   - Windows: NSIS 安装器（setup.exe），注册 fftpd 服务并创建快捷方式
+#   - Linux: deb / rpm / tar.gz（amd64 + arm64），附 systemd --user 单元与桌面入口
+#   - Windows: NSIS 安装器（setup.exe，x86_64），注册 fftpd 服务并创建快捷方式
 # 推送 v* 标签时自动构建并创建 GitHub Release
 # 注：cargo fmt 检查暂未纳入——common/ipc/ftp/sftp 在当前 stable rustfmt
 # 下存在全量格式漂移（迁移前遗留，另行列清理项）；clippy 同样不加 -D warnings，
@@ -117,39 +117,87 @@ jobs:
           if-no-files-found: error
 
   deb:
-    name: deb 打包（ubuntu，fftp-http）
+    name: deb 打包（${{ matrix.arch }}，fftp-http）
+    needs: [build]
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            target: x86_64-unknown-linux-gnu
+          - arch: arm64
+            target: aarch64-unknown-linux-gnu
     steps:
       - name: 检出代码
         uses: actions/checkout@v5
-
-      - name: 安装 Rust 工具链
-        uses: dtolnay/rust-toolchain@stable
 
       - name: 安装系统依赖（图标生成）
         run: |
           sudo apt-get update
           sudo apt-get install -y imagemagick
 
-      - name: 缓存 Cargo 构建产物
-        uses: Swatinem/rust-cache@v2
+      # 复用 build 矩阵产物，避免重复交叉编译
+      - name: 下载构建产物
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          pattern: dist-*-linux-*
+          merge-multiple: true
 
-      # 复用 debian/build-deb.sh：release 编译 + 打包 deb（脚本要求 root，CI 有免密 sudo）
       - name: 构建 deb 包
-        run: sudo ./debian/build-deb.sh -a amd64 -o dist -n
+        run: sudo ./debian/build-deb.sh -a ${{ matrix.arch }} -b dist/${{ matrix.target }} -o dist -n
 
       - name: 上传 deb 产物
         uses: actions/upload-artifact@v4
         with:
-          name: dist-deb
+          name: dist-deb-${{ matrix.arch }}
           path: dist/*.deb
+          if-no-files-found: error
+
+  rpm:
+    name: rpm 打包（${{ matrix.arch }}，fftp-http）
+    needs: [build]
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x86_64
+            target: x86_64-unknown-linux-gnu
+          - arch: aarch64
+            target: aarch64-unknown-linux-gnu
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v5
+
+      - name: 安装 rpmbuild
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y rpm
+
+      - name: 下载构建产物
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          pattern: dist-*-linux-*
+          merge-multiple: true
+
+      - name: 构建 rpm 包
+        run: ./rpm/build-rpm.sh -a ${{ matrix.arch }} -b dist/${{ matrix.target }} -o dist
+
+      - name: 上传 rpm 产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: dist-rpm-${{ matrix.arch }}
+          path: dist/*.rpm
           if-no-files-found: error
 
   release:
     name: 发布 Release
     # 仅在推送 v* 标签时触发，且 CI 全部通过后才发布
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: [lint, test, build, deb]
+    needs: [lint, test, build, deb, rpm]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -199,5 +247,6 @@ jobs:
             dist/*.tar.gz
             dist/*-setup.exe
             dist/*.deb
+            dist/*.rpm
           generate_release_notes: true
           fail_on_unmatched_files: true
