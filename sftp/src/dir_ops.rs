@@ -134,11 +134,15 @@ impl SftpState {
             return Err(status_err(StatusCode::PermissionDenied, "Permission denied"));
         }
 
-        let full_path = self.resolve_path_or_err(&filename)?;
+        // 末段不跟随符号链接：删除链接本身，而不是链接指向的目标
+        let full_path = self.resolve_path_no_follow_or_err(&filename)?;
 
-        let file_size = tokio::fs::metadata(&full_path)
+        // 用 lstat 取大小：符号链接自身不占配额，且避免 metadata 跟随链接
+        let file_size = tokio::fs::symlink_metadata(&full_path)
             .await
-            .map_or(0, |m| m.len());
+            .map_or(0, |m| {
+                if m.file_type().is_symlink() { 0 } else { m.len() }
+            });
 
         if tokio::fs::remove_file(&full_path).await.is_ok() {
             if file_size > 0
@@ -200,6 +204,16 @@ impl SftpState {
 
         let full_path = self.resolve_path_or_err(&path)?;
 
+        // 禁止删除 home 根：`/`、`.` 等都会解析到 home，删除后会话 jail 失效
+        let home = PathBuf::from(&self.home_dir);
+        if crate::path_resolve::paths_equal_ignore_case(&full_path, &home) {
+            tracing::warn!("SFTP RMDIR denied: refusing to remove home root");
+            return Err(status_err(
+                StatusCode::PermissionDenied,
+                "Permission denied: cannot remove home directory",
+            ));
+        }
+
         let dir_size = calculate_dir_size(&full_path).await;
 
         match tokio::fs::remove_dir(&full_path).await {
@@ -240,8 +254,9 @@ impl SftpState {
             return Err(status_err(StatusCode::PermissionDenied, "Permission denied"));
         }
 
-        let old_full = self.resolve_path_or_err(&oldpath)?;
-        let new_full = self.resolve_path_or_err(&newpath)?;
+        // 末段不跟随符号链接：重命名/移动链接本身，而不是其目标
+        let old_full = self.resolve_path_no_follow_or_err(&oldpath)?;
+        let new_full = self.resolve_path_no_follow_or_err(&newpath)?;
 
         tracing::debug!(
             "SFTP RENAME: raw_old='{oldpath}', resolved_old='{}', raw_new='{newpath}', \
@@ -376,6 +391,9 @@ impl SftpState {
 }
 
 /// 递归统计目录字节数（删除目录时回收配额用）
+///
+/// 使用 `DirEntry::file_type`（lstat 语义）而不是 `metadata`（跟随链接），
+/// 避免统计时穿过符号链接进入链接目标（可能越出 home 或形成环）。
 fn calculate_dir_size(
     path: &Path,
 ) -> std::pin::Pin<Box<dyn std::future::Future<Output = u64> + Send + '_>> {
@@ -383,12 +401,18 @@ fn calculate_dir_size(
         let mut total_size: u64 = 0;
         if let Ok(mut entries) = tokio::fs::read_dir(path).await {
             while let Ok(Some(entry)) = entries.next_entry().await {
-                if let Ok(metadata) = entry.metadata().await {
-                    if metadata.is_file() {
+                let Ok(file_type) = entry.file_type().await else {
+                    continue;
+                };
+                if file_type.is_symlink() {
+                    continue;
+                }
+                if file_type.is_file() {
+                    if let Ok(metadata) = entry.metadata().await {
                         total_size += metadata.len();
-                    } else if metadata.is_dir() {
-                        total_size += calculate_dir_size(&entry.path()).await;
                     }
+                } else if file_type.is_dir() {
+                    total_size += calculate_dir_size(&entry.path()).await;
                 }
             }
         }
@@ -448,6 +472,31 @@ mod tests {
         let handle = env.state.opendir(11, "/empty").unwrap().handle;
         let err = env.state.readdir(12, handle).await.unwrap_err();
         assert_eq!(err.status_code, StatusCode::Eof);
+    }
+
+    /// RMDIR 不能删除 home 根（`/`、`.` 都解析到 home）
+    #[tokio::test]
+    async fn rmdir_rejects_home_root() {
+        for path in ["/", ".", ""] {
+            let mut env = crate::test_util::setup();
+            let err = env.state.rmdir(1, path.to_string()).await.unwrap_err();
+            assert_eq!(err.status_code, StatusCode::PermissionDenied, "path={path:?}");
+            assert!(env.dir.path().exists());
+        }
+    }
+
+    /// REMOVE 删除符号链接本身，不删除链接指向的目标
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn remove_deletes_symlink_not_target() {
+        let mut env = crate::test_util::setup();
+        std::fs::write(env.dir.path().join("target.txt"), b"keep").unwrap();
+        std::os::unix::fs::symlink("target.txt", env.dir.path().join("link.txt")).unwrap();
+
+        env.state.remove(1, "/link.txt".to_string()).await.unwrap();
+
+        assert!(!env.dir.path().join("link.txt").exists());
+        assert!(env.dir.path().join("target.txt").exists());
     }
 
     /// 不存在的目录 `OPENDIR` 回 `NO_SUCH_FILE`

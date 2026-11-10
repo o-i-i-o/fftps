@@ -111,6 +111,21 @@ impl fmt::Display for Permissions {
     }
 }
 
+/// 日志里的内容预览，按字符边界截断到至多 `max` 字节
+///
+/// 直接按字节切片可能落在多字节 UTF-8 字符中间并 panic（users.json 含中文
+/// 或已损坏时即可触发），因此向前回退到最近的字符边界。
+fn content_preview(content: &str, max: usize) -> &str {
+    if content.len() <= max {
+        return content;
+    }
+    let mut end = max;
+    while end > 0 && !content.is_char_boundary(end) {
+        end -= 1;
+    }
+    &content[..end]
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct UserManager {
     users: HashMap<String, User>,
@@ -164,7 +179,7 @@ impl UserManager {
             error!(
                 "[UserManager] 解析用户配置文件 JSON 失败：{} - 内容预览：{}",
                 e,
-                &content[..content.len().min(200)]
+                content_preview(&content, 200)
             );
             eprintln!("Warning: Failed to parse users file: {e}");
             UserManager::new()
@@ -466,7 +481,7 @@ impl UserManager {
             error!(
                 "[UserManager::reload] 解析 JSON 失败：{} - 内容预览：{}",
                 e,
-                &content[..content.len().min(200)]
+                content_preview(&content, 200)
             );
             warn!("Failed to parse users file during reload: {}", e);
             UserManager::new()
@@ -551,6 +566,16 @@ mod tests {
             assert!(!is_safe_username(name), "应拒绝: {name:?}");
         }
         assert!(!is_safe_username(&"a".repeat(65)), "超过 64 字符应拒绝");
+    }
+
+    #[test]
+    fn content_preview_truncates_on_char_boundary() {
+        // 200 字节处正好落在三字节汉字的中间，必须回退而不是 panic
+        let content = "汉".repeat(100);
+        let preview = content_preview(&content, 200);
+        assert!(preview.len() <= 200);
+        assert!(content.starts_with(preview));
+        assert_eq!(content_preview("short", 200), "short");
     }
 
     fn temp_home() -> (tempfile::TempDir, String) {

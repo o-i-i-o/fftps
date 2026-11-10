@@ -150,6 +150,23 @@ pub fn resolve_ftps_paths(ftps: &FtpsConfig) -> Result<Option<(PathBuf, PathBuf)
     }
 }
 
+/// 被动端口范围校验
+///
+/// libunftp 用 `(end - start)` 作取模基数（`switchboard.rs`），`start == end`
+/// 会除零 panic，`start > end` 会下溢，故必须严格 `start < end` 且都在
+/// 合法端口范围内。
+fn validate_passive_ports((start, end): (u16, u16)) -> Result<()> {
+    if start < 1 || end < 1 {
+        bail!("ftp.passive_ports 不能为 0（当前 {start}-{end}）");
+    }
+    if start >= end {
+        bail!(
+            "ftp.passive_ports 起止非法（当前 {start}-{end}），必须满足起始端口 < 结束端口"
+        );
+    }
+    Ok(())
+}
+
 /// 被动模式通告地址：IP 字面量 → [`PassiveHost::Ip`]，非空主机名 → `Dns`，
 /// 空/未指定地址 → `FromConnection`（跟随实际连接地址）
 #[must_use]
@@ -249,6 +266,8 @@ impl FtpService {
 
         // 配置快照：后续组装不跨 await 持锁，热重载在下次 start() 生效
         let cfg = self.config.read().unwrap().clone();
+
+        validate_passive_ports(cfg.ftp.passive_ports)?;
 
         let root_mode = resolve_root_mode(cfg.ftp.ftp_root_opt())?;
         let ftps_paths = resolve_ftps_paths(&cfg.ftp.ftps)?;

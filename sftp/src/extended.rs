@@ -181,6 +181,10 @@ impl SftpState {
                 Ok(0) => break,
                 Ok(n) => {
                     hasher.update(&buffer[..n]);
+                    // 摘要同样是读 IO，按读取字节数计入用户限速
+                    if let Some(limiter) = &self.rate_limiter {
+                        limiter.acquire(n).await;
+                    }
                     if let Some(ref mut rem) = remaining {
                         *rem -= n as u64;
                     }
@@ -234,18 +238,18 @@ impl SftpState {
 
         // 配额：按源大小预留，复制完成后结算
         let quota_mb = self.cached_permissions.as_ref().and_then(|p| p.quota_mb);
+        let src_size = match tokio::fs::metadata(&src_full).await {
+            Ok(m) => m.len(),
+            Err(e) => {
+                tracing::warn!("SFTP COPY: cannot read source metadata: {e}");
+                return Err(status_err(
+                    StatusCode::Failure,
+                    "Cannot read source file metadata",
+                ));
+            }
+        };
         let mut quota_reserved = 0u64;
         if let Some(quota) = quota_mb {
-            let src_size = match tokio::fs::metadata(&src_full).await {
-                Ok(m) => m.len(),
-                Err(e) => {
-                    tracing::warn!("SFTP COPY: cannot read source metadata: {e}");
-                    return Err(status_err(
-                        StatusCode::Failure,
-                        "Cannot read source file metadata",
-                    ));
-                }
-            };
             let username = self.audit_user();
             if self
                 .quota_manager
@@ -255,6 +259,13 @@ impl SftpState {
             } else {
                 return Err(status_err(StatusCode::Failure, "Quota exceeded"));
             }
+        }
+
+        // 服务端复制同样受用户限速约束（按源大小预扣令牌）
+        if let Some(limiter) = &self.rate_limiter {
+            limiter
+                .acquire(usize::try_from(src_size).unwrap_or(usize::MAX))
+                .await;
         }
 
         match tokio::fs::copy(&src_full, &dst_full).await {

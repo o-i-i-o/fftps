@@ -109,12 +109,59 @@ impl SftpState {
             return Err(status_err(StatusCode::NoSuchFile, "No such file"));
         }
 
-        apply_file_attributes(&full_path, &attrs)
-            .await
-            .map_err(|e| {
-                tracing::warn!("SETSTAT failed for {full_path:?}: {e}");
-                status_err(StatusCode::Failure, &format!("Failed to set attributes: {e}"))
-            })?;
+        // 变更 size 需先按增量做配额校验，避免用 SETSTAT 扩容绕过配额
+        let quota_mb = self.cached_permissions.as_ref().and_then(|p| p.quota_mb);
+        let username = self.audit_user().to_string();
+        let mut reserved = 0u64;
+        let mut shrink = 0u64;
+        let mut target_size = None;
+        if let Some(size) = attrs.size {
+            target_size = Some(size);
+            let current = tokio::fs::metadata(&full_path).await.map_or(0, |m| m.len());
+            let growth = size.saturating_sub(current);
+            shrink = current.saturating_sub(size);
+            if growth > 0
+                && let Some(quota) = quota_mb
+            {
+                if !self.quota_manager.try_reserve_quota(&username, growth, quota) {
+                    return Err(status_err(StatusCode::Failure, "Quota exceeded"));
+                }
+                reserved = growth;
+            }
+        }
+
+        if let Err(e) = apply_file_attributes(&full_path, &attrs).await {
+            if reserved > 0 {
+                self.quota_manager.rollback_reservation(&username, reserved);
+            }
+            tracing::warn!("SETSTAT failed for {full_path:?}: {e}");
+            return Err(status_err(
+                StatusCode::Failure,
+                &format!("Failed to set attributes: {e}"),
+            ));
+        }
+
+        if let Some(size) = target_size {
+            // 同一路径有打开的句柄时把增量并入句柄结算，避免 CLOSE 重复计费
+            if let Some(SftpFileHandle::File {
+                quota_reserved,
+                current_size,
+                ..
+            }) = self
+                .handles
+                .values_mut()
+                .find(|h| matches!(h, SftpFileHandle::File { path, .. } if *path == full_path))
+            {
+                *quota_reserved = quota_reserved.saturating_add(reserved);
+                *current_size = size;
+            } else if reserved > 0 {
+                self.quota_manager
+                    .commit_usage(&username, reserved, reserved);
+            } else if shrink > 0 {
+                self.quota_manager.subtract_usage(&username, shrink);
+            }
+        }
+
         tracing::debug!("SETSTAT applied to {full_path:?}");
         Ok(status_ok(id))
     }
@@ -149,12 +196,48 @@ impl SftpState {
             }
         };
 
-        apply_file_attributes(&path, &attrs)
-            .await
-            .map_err(|e| {
-                tracing::warn!("FSETSTAT failed for {path:?}: {e}");
-                status_err(StatusCode::Failure, &format!("Failed to set attributes: {e}"))
-            })?;
+        // 与 SETSTAT 相同的配额防护：扩容按增量校验
+        let quota_mb = self.cached_permissions.as_ref().and_then(|p| p.quota_mb);
+        let username = self.audit_user().to_string();
+        let mut reserved = 0u64;
+        let mut target_size = None;
+        if let Some(size) = attrs.size {
+            target_size = Some(size);
+            let current = tokio::fs::metadata(&path).await.map_or(0, |m| m.len());
+            let growth = size.saturating_sub(current);
+            if growth > 0
+                && let Some(quota) = quota_mb
+            {
+                if !self.quota_manager.try_reserve_quota(&username, growth, quota) {
+                    return Err(status_err(StatusCode::Failure, "Quota exceeded"));
+                }
+                reserved = growth;
+            }
+        }
+
+        if let Err(e) = apply_file_attributes(&path, &attrs).await {
+            if reserved > 0 {
+                self.quota_manager.rollback_reservation(&username, reserved);
+            }
+            tracing::warn!("FSETSTAT failed for {path:?}: {e}");
+            return Err(status_err(
+                StatusCode::Failure,
+                &format!("Failed to set attributes: {e}"),
+            ));
+        }
+
+        // 增量并入句柄预留，CLOSE 时统一按实际增长结算
+        if let Some(size) = target_size
+            && let Some(SftpFileHandle::File {
+                quota_reserved,
+                current_size,
+                ..
+            }) = self.handles.get_mut(&handle)
+        {
+            *quota_reserved = quota_reserved.saturating_add(reserved);
+            *current_size = size;
+        }
+
         tracing::debug!("FSETSTAT applied to {path:?}");
         Ok(status_ok(id))
     }
@@ -169,18 +252,30 @@ fn stat_io_error(e: &std::io::Error) -> StatusReply {
     }
 }
 
-/// 应用属性修改：permissions（仅 Unix 取低 9 位）、size（截断/扩容）、atime/mtime
+/// 应用属性修改：permissions（仅 Unix 取低 9 位，且去掉组/其他写位）、
+/// size（截断/扩容）、atime/mtime
+///
+/// 组/其他写位会被清除（`& 0o755`），避免客户端把文件改成 0777 后，
+/// 同机其他用户可篡改上传内容。
 ///
 /// # Errors
 /// 文件操作失败时返回错误
 pub async fn apply_file_attributes(path: &Path, attrs: &FileAttributes) -> anyhow::Result<()> {
-    // permissions：v3 仅保留低 9 位访问权限位
+    // permissions：v3 仅保留低 9 位访问权限位，并清除组/其他写位
     #[cfg(unix)]
     if let Some(permissions) = attrs.permissions {
         use std::os::unix::fs::PermissionsExt;
         let metadata = tokio::fs::metadata(path).await?;
         let mut perm = metadata.permissions();
-        perm.set_mode(permissions & 0o777);
+        let masked = permissions & 0o755;
+        if masked != permissions & 0o777 {
+            tracing::warn!(
+                "SETSTAT: requested permissions {:o} masked to {:o} for {path:?}",
+                permissions & 0o777,
+                masked
+            );
+        }
+        perm.set_mode(masked);
         tokio::fs::set_permissions(path, perm).await?;
     }
     #[cfg(windows)]
@@ -355,5 +450,25 @@ mod tests {
         };
         apply_file_attributes(&path, &attrs).await.unwrap();
         assert_eq!(std::fs::metadata(&path).unwrap().len(), 3);
+    }
+
+    /// Unix 下 chmod 会清除组/其他写位，0777 被收敛为 0755
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn apply_file_attributes_masks_world_writable() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("f.txt");
+        std::fs::write(&path, b"x").unwrap();
+
+        let attrs = FileAttributes {
+            permissions: Some(0o777),
+            ..FileAttributes::default()
+        };
+        apply_file_attributes(&path, &attrs).await.unwrap();
+
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o755);
     }
 }

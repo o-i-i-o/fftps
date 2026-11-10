@@ -129,6 +129,12 @@ where
         loop {
             match process_handler(&mut stream, &mut handler, &cfg).await {
                 Err(Error::UnexpectedEof) => break,
+                Err(err @ Error::BadMessage(_)) => {
+                    // 超长包错误时只读了长度字段、未消费负载，流已失步；
+                    // 继续读会把负载当新包解析，必须关闭连接而不是只记日志。
+                    tracing::warn!("{}", err);
+                    break;
+                }
                 Err(err) => tracing::warn!("{}", err),
                 Ok(_) => (),
             }

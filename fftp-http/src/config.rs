@@ -67,6 +67,80 @@ pub struct HttpConfig {
     pub admin_users: Vec<AdminUser>,
 }
 
+/// 将内容原子写入配置文件，并在 Unix 下收紧为 0600
+///
+/// 配置文件含 api_token 与口令哈希，直接 `fs::write` 会以 umask 默认权限
+/// 落盘且回写非原子（中途失败会留下截断文件）。这里先写同目录私有临时文件，
+/// 再 `rename` 覆盖。
+fn write_config(path: &Path, contents: &str) -> Result<()> {
+    let parent = path
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    let file_name = path
+        .file_name()
+        .map_or_else(|| "http.toml".to_string(), |n| n.to_string_lossy().into_owned());
+    let unique = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_nanos());
+    let tmp = parent.join(format!(".{file_name}.{}.{unique}.tmp", std::process::id()));
+
+    #[cfg(unix)]
+    {
+        use std::io::Write;
+        use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(&tmp)
+            .with_context(|| format!("创建临时配置文件失败: {}", tmp.display()))?;
+        if let Err(e) = file.write_all(contents.as_bytes()).and_then(|()| file.sync_all()) {
+            let _ = std::fs::remove_file(&tmp);
+            return Err(e).with_context(|| format!("写入临时配置文件失败: {}", tmp.display()));
+        }
+        // create_new + mode 在部分文件系统上仍可能被 umask 影响，显式收紧
+        let _ = std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o600));
+    }
+    #[cfg(not(unix))]
+    {
+        std::fs::write(&tmp, contents)
+            .with_context(|| format!("写入临时配置文件失败: {}", tmp.display()))?;
+    }
+
+    std::fs::rename(&tmp, path).with_context(|| {
+        let _ = std::fs::remove_file(&tmp);
+        format!("写入配置失败: {}", path.display())
+    })
+}
+
+/// Unix 下把既有配置文件的权限收紧到 0600（首次加载时补齐历史遗留的宽权限）
+#[cfg(unix)]
+fn tighten_config_permissions(path: &Path) {
+    use std::os::unix::fs::PermissionsExt;
+
+    if let Ok(meta) = std::fs::metadata(path)
+        && meta.permissions().mode() & 0o077 != 0
+    {
+        if let Err(e) = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600)) {
+            tracing::warn!(
+                path = %path.display(),
+                error = %e,
+                "配置文件权限过宽且收紧失败，请手动执行 chmod 600"
+            );
+        } else {
+            tracing::warn!(
+                path = %path.display(),
+                "配置文件权限过宽，已自动收紧为 0600"
+            );
+        }
+    }
+}
+
+#[cfg(not(unix))]
+fn tighten_config_permissions(_path: &Path) {}
+
 /// 空闲判定模式
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -210,10 +284,11 @@ impl HttpConfig {
                 std::fs::create_dir_all(parent)
                     .with_context(|| format!("创建配置目录失败: {}", parent.display()))?;
             }
-            std::fs::write(path, DEFAULT_CONFIG)
+            write_config(path, DEFAULT_CONFIG)
                 .with_context(|| format!("写入默认配置模板失败: {}", path.display()))?;
             tracing::warn!("已生成默认配置模板: {}（首次启动将进入本机 setup 引导）", path.display());
         }
+        tighten_config_permissions(path);
         let raw = std::fs::read_to_string(path)
             .with_context(|| format!("读取配置失败: {}", path.display()))?;
         toml::from_str(&raw).with_context(|| format!("解析配置失败: {}", path.display()))
@@ -263,7 +338,7 @@ impl HttpConfig {
             .validate()
             .context("生成的新配置未通过启动校验（未写入文件）")?;
 
-        std::fs::write(path, out)
+        write_config(path, &out)
             .with_context(|| format!("写入配置失败: {}", path.display()))?;
         Ok(())
     }
@@ -311,7 +386,7 @@ impl HttpConfig {
             .validate_launch()
             .context("生成的新配置未通过启动校验（未写入文件）")?;
 
-        std::fs::write(path, out)
+        write_config(path, &out)
             .with_context(|| format!("写入配置失败: {}", path.display()))?;
         Ok(())
     }

@@ -258,26 +258,51 @@ impl QuotaManager {
     }
 }
 
+/// 配额目录统计的最大递归深度（防符号链接环/超深目录拖死线程）
+const MAX_QUOTA_DIR_DEPTH: usize = 64;
+
 /// 递归统计目录（或单文件）占用的字节数
+///
+/// 使用 `symlink_metadata`/`DirEntry::file_type`（lstat 语义）且跳过符号链接，
+/// 避免跟随链接进入目录环或统计到 home 之外的内容。
 ///
 /// # Errors
 /// 元数据读取或目录遍历失败时返回错误
 pub fn dir_size(path: &Path) -> anyhow::Result<u64> {
-    let mut total_size = 0u64;
+    dir_size_inner(path, 0)
+}
 
-    if path.is_file() {
-        return Ok(std::fs::metadata(path)?.len());
+fn dir_size_inner(path: &Path, depth: usize) -> anyhow::Result<u64> {
+    let meta = std::fs::symlink_metadata(path)?;
+    if meta.file_type().is_symlink() {
+        return Ok(0);
+    }
+    if meta.is_file() {
+        return Ok(meta.len());
+    }
+    if !meta.is_dir() {
+        return Ok(0);
+    }
+    if depth >= MAX_QUOTA_DIR_DEPTH {
+        tracing::warn!(
+            path = %path.display(),
+            depth,
+            "配额目录统计达到深度上限，跳过更深层内容"
+        );
+        return Ok(0);
     }
 
-    if path.is_dir() {
-        for entry in std::fs::read_dir(path)? {
-            let entry = entry?;
-            let entry_path = entry.path();
-            if entry_path.is_dir() {
-                total_size = total_size.saturating_add(dir_size(&entry_path)?);
-            } else {
-                total_size = total_size.saturating_add(entry.metadata()?.len());
-            }
+    let mut total_size = 0u64;
+    for entry in std::fs::read_dir(path)? {
+        let entry = entry?;
+        let file_type = entry.file_type()?;
+        if file_type.is_symlink() {
+            continue;
+        }
+        if file_type.is_dir() {
+            total_size = total_size.saturating_add(dir_size_inner(&entry.path(), depth + 1)?);
+        } else if file_type.is_file() {
+            total_size = total_size.saturating_add(entry.metadata()?.len());
         }
     }
 

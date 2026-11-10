@@ -85,6 +85,12 @@ impl SessionTracker {
     }
 }
 
+/// 单个 SSH 连接允许同时挂起的会话通道上限
+///
+/// 客户端在发出 subsystem 请求前可反复 open session 通道；不设上限会耗尽
+/// 内存且无法回收（未使用的通道一直挂在 `pending_channels`）。
+const MAX_PENDING_CHANNELS: usize = 8;
+
 /// 认证上下文（会话级：尝试次数、超时、认证结果）
 pub struct AuthContext {
     pub authenticated: bool,
@@ -420,6 +426,19 @@ impl russh::server::Handler for SftpHandler {
             return Ok(());
         }
 
+        if self.pending_channels.len() >= MAX_PENDING_CHANNELS {
+            tracing::warn!(
+                client_ip = %self.client_ip,
+                action = "CHANNEL_OPEN_DENIED",
+                reason = "too_many_channels",
+                "Reject session channel open: pending channel limit reached"
+            );
+            reply
+                .reject(russh::ChannelOpenFailure::ResourceShortage)
+                .await;
+            return Ok(());
+        }
+
         tracing::debug!(
             client_ip = %self.client_ip,
             action = "CHANNEL_OPEN_SESSION",
@@ -430,6 +449,16 @@ impl russh::server::Handler for SftpHandler {
         reply.accept().await;
         // russh 的 accept 不回传 channel，暂存等待 subsystem 请求取出
         self.pending_channels.insert(channel.id(), channel);
+        Ok(())
+    }
+
+    /// 客户端关闭通道：回收尚未被 subsystem 取走的挂起通道
+    async fn channel_close(
+        &mut self,
+        channel: ChannelId,
+        _session: &mut server::Session,
+    ) -> Result<(), Self::Error> {
+        self.pending_channels.remove(&channel);
         Ok(())
     }
 

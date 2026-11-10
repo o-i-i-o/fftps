@@ -125,11 +125,29 @@ impl SftpState {
         self.username.as_deref().unwrap_or("anonymous")
     }
 
-    /// 检查当前用户权限（带 30s 缓存）
+    /// 检查当前用户权限（权限位带 30s 缓存，`enabled` 每次实时校验）
+    ///
+    /// 账号被禁用或删除后立即失效，不必等待权限缓存过期。
     ///
     /// # Panics
     /// 内部用户库互斥锁中毒时 panic（`fftp-common` 语义）
     pub fn check_permission(&mut self, check_fn: impl Fn(&Permissions) -> bool) -> bool {
+        let Some(username) = self.username.clone() else {
+            return false;
+        };
+
+        // 每次调用都确认账号仍存在且启用，禁用立即生效
+        {
+            let users = self.user_manager.lock().unwrap();
+            match users.get_user(&username) {
+                Some(user) if user.enabled => {}
+                _ => {
+                    self.cached_permissions = None;
+                    return false;
+                }
+            }
+        }
+
         if let Some(expiry) = self.cache_expiry
             && expiry < Instant::now()
         {
@@ -141,15 +159,10 @@ impl SftpState {
             return check_fn(perms);
         }
 
-        if let Some(username) = &self.username {
-            let users = self.user_manager.lock().unwrap();
-            if let Some(user) = users.get_user(username) {
-                check_fn(&user.permissions)
-            } else {
-                false
-            }
-        } else {
-            false
+        let users = self.user_manager.lock().unwrap();
+        match users.get_user(&username) {
+            Some(user) => check_fn(&user.permissions),
+            None => false,
         }
     }
 
