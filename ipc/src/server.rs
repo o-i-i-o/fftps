@@ -7,14 +7,15 @@ use std::sync::Arc;
 
 use anyhow::Result;
 use serde_json::Value;
-use tokio::io::{split, AsyncRead, AsyncWrite};
-use tokio::sync::{broadcast, mpsc, Mutex};
+use tokio::io::{AsyncRead, AsyncWrite, split};
+use tokio::sync::{Mutex, broadcast, mpsc};
 use tokio::task::JoinHandle;
 
 use crate::framing;
-use crate::protocol::{
-    Command, ErrorCode, Event, Message, Notification, Response,
-};
+use crate::protocol::{Command, ErrorCode, Event, Hello, Message, Notification, Response};
+
+/// 服务端等待客户端握手帧的上限
+const HANDSHAKE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 
 /// 业务处理器：实现方通常持有 `Arc<AppState>`
 ///
@@ -80,25 +81,62 @@ impl From<anyhow::Error> for HandlerError {
 /// 监听失败时返回错误；单连接错误仅记录日志
 pub async fn serve<H: Handler>(handler: H, events: broadcast::Sender<Event>) -> Result<()> {
     let mut listener = crate::transport::listen().await?;
+    let token: Arc<str> = Arc::from(
+        fftp_common::paths::load_or_create_ipc_token()
+            .map_err(|e| anyhow::anyhow!("初始化 IPC 握手令牌失败: {e}"))?,
+    );
     tracing::info!("IPC 服务端就绪: {}", crate::transport::endpoint_display());
 
     loop {
         let conn = listener.accept().await?;
         let handler = handler.clone();
         let events = events.clone();
+        let token = Arc::clone(&token);
         tokio::spawn(async move {
-            if let Err(e) = handle_conn(conn, handler, events).await {
+            if let Err(e) = handle_conn(conn, handler, events, &token).await {
                 tracing::debug!("IPC 连接结束: {e:#}");
             }
         });
     }
 }
 
+/// 首帧握手：校验共享令牌后回送 [`Message::HelloAck`]
+async fn handshake(conn: &mut crate::transport::Duplex, expected: &str) -> Result<()> {
+    let frame = match tokio::time::timeout(HANDSHAKE_TIMEOUT, framing::read_frame(conn)).await {
+        Ok(frame) => frame?,
+        Err(_) => anyhow::bail!("IPC 握手超时"),
+    };
+    let Some(Message::Hello(Hello { token })) = frame else {
+        anyhow::bail!("IPC 首帧不是握手消息");
+    };
+    if !constant_time_eq(token.as_bytes(), expected.as_bytes()) {
+        tracing::warn!("IPC 握手令牌不匹配，拒绝连接");
+        anyhow::bail!("IPC 握手令牌不匹配");
+    }
+    framing::write_frame(conn, &Message::HelloAck).await?;
+    Ok(())
+}
+
+/// 常量时间比较，避免按字节提前返回泄露令牌前缀
+fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
+    let mut diff = 0_u8;
+    for (x, y) in a.iter().zip(b) {
+        diff |= x ^ y;
+    }
+    diff == 0
+}
+
 async fn handle_conn<H: Handler>(
-    conn: crate::transport::Duplex,
+    mut conn: crate::transport::Duplex,
     handler: H,
     events: broadcast::Sender<Event>,
+    token: &str,
 ) -> Result<()> {
+    handshake(&mut conn, token).await?;
+
     let (mut reader, writer) = split(conn);
     let writer = Arc::new(Mutex::new(writer));
 
@@ -108,7 +146,15 @@ async fn handle_conn<H: Handler>(
 
     let mut log_forward: Option<JoinHandle<()>> = None;
 
-    let result = read_dispatch_loop(&mut reader, &writer, &handler, &events, &notify_tx, &mut log_forward).await;
+    let result = read_dispatch_loop(
+        &mut reader,
+        &writer,
+        &handler,
+        &events,
+        &notify_tx,
+        &mut log_forward,
+    )
+    .await;
 
     if let Some(task) = log_forward {
         task.abort();
@@ -144,7 +190,10 @@ where
                 // 先订阅后补推历史，保证新日志不丢
                 *log_forward = Some(spawn_log_forwarder(events.subscribe(), notify_tx.clone()));
                 if tail_count > 0 {
-                    match handler.handle(Command::GetRecentLogs { count: tail_count }).await {
+                    match handler
+                        .handle(Command::GetRecentLogs { count: tail_count })
+                        .await
+                    {
                         Ok(data) => push_history(data, notify_tx).await,
                         Err(e) => tracing::warn!("读取订阅历史日志失败: {}", e.message),
                     }
@@ -210,7 +259,10 @@ where
     tokio::spawn(async move {
         while let Some(event) = rx.recv().await {
             let msg = Message::Notification(Notification { event });
-            if framing::write_frame(&mut *writer.lock().await, &msg).await.is_err() {
+            if framing::write_frame(&mut *writer.lock().await, &msg)
+                .await
+                .is_err()
+            {
                 break;
             }
         }

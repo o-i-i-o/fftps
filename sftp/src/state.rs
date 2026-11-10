@@ -4,6 +4,7 @@
 //! 打开句柄、锁文件集合与路径解析入口。对接 `fftp-common` 的用户库、配额、
 //! 限速与审计日志，不重复实现这些能力。
 
+use fftp_common::sync::MutexExt;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -16,7 +17,7 @@ use fftp_common::rate_limit::RateLimiter;
 use fftp_common::users::{Permissions, UserManager};
 
 use crate::path_resolve::{self, PathResolveError};
-use crate::protocol::{Status, StatusReply, StatusCode};
+use crate::protocol::{Status, StatusCode, StatusReply};
 use crate::types::{HANDLE_TIMEOUT_SECS, SftpFileHandle};
 
 /// 权限缓存有效期
@@ -138,7 +139,7 @@ impl SftpState {
 
         // 每次调用都确认账号仍存在且启用，禁用立即生效
         {
-            let users = self.user_manager.lock().unwrap();
+            let users = self.user_manager.lock_recover();
             match users.get_user(&username) {
                 Some(user) if user.enabled => {}
                 _ => {
@@ -159,7 +160,7 @@ impl SftpState {
             return check_fn(perms);
         }
 
-        let users = self.user_manager.lock().unwrap();
+        let users = self.user_manager.lock_recover();
         match users.get_user(&username) {
             Some(user) => check_fn(&user.permissions),
             None => false,
@@ -172,7 +173,7 @@ impl SftpState {
     /// 内部用户库互斥锁中毒时 panic
     pub fn cache_permissions(&mut self) {
         if let Some(username) = &self.username {
-            let users = self.user_manager.lock().unwrap();
+            let users = self.user_manager.lock_recover();
             if let Some(user) = users.get_user(username) {
                 self.cached_permissions = Some(user.permissions);
                 self.cache_expiry = Some(Instant::now() + PERMISSION_CACHE_TTL);
@@ -252,9 +253,7 @@ impl SftpState {
                 let resolved = if link_target.is_absolute() {
                     link_target
                 } else {
-                    let parent = path
-                        .parent()
-                        .unwrap_or_else(|| Path::new(&self.home_dir));
+                    let parent = path.parent().unwrap_or_else(|| Path::new(&self.home_dir));
                     parent.join(&link_target)
                 };
                 match resolved.canonicalize() {
@@ -553,7 +552,10 @@ mod tests {
             false,
         );
         assert!(state.rate_limiter.is_some());
-        assert_eq!(state.rate_limiter.as_ref().map(RateLimiter::get_limit), Some(64));
+        assert_eq!(
+            state.rate_limiter.as_ref().map(RateLimiter::get_limit),
+            Some(64)
+        );
 
         // 无速度限制 → 无限速器
         state.cached_permissions = Some(Permissions::full());

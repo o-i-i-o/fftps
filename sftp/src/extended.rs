@@ -13,13 +13,13 @@ use bytes::Bytes;
 use md5::Digest as _;
 
 use crate::protocol::{
-    de, ser,
+    Config, Packet, StatusCode, StatusReply, de,
     extensions::{self, FsyncExtension, HardlinkExtension, Statvfs, StatvfsExtension},
     message::ExtendedReply,
-    Config, Packet, StatusReply, StatusCode,
+    ser,
 };
 use crate::state::{SftpState, status_err, status_ok};
-use crate::types::{SftpFileHandle, MAX_HANDLES, SFTP_READ_BUFFER_SIZE};
+use crate::types::{MAX_HANDLES, SFTP_READ_BUFFER_SIZE, SftpFileHandle};
 use std::time::Instant;
 use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
 
@@ -143,7 +143,10 @@ impl SftpState {
         };
 
         if !self.check_permission(|p| p.can_read) {
-            return Err(status_err(StatusCode::PermissionDenied, "Permission denied"));
+            return Err(status_err(
+                StatusCode::PermissionDenied,
+                "Permission denied",
+            ));
         }
 
         let full_path = self.resolve_path_or_err(&path)?;
@@ -190,10 +193,7 @@ impl SftpState {
                     }
                 }
                 Err(e) => {
-                    return Err(status_err(
-                        StatusCode::Failure,
-                        &format!("Read error: {e}"),
-                    ));
+                    return Err(status_err(StatusCode::Failure, &format!("Read error: {e}")));
                 }
             }
         }
@@ -216,17 +216,17 @@ impl SftpState {
             de::from_bytes(&mut buf).map_err(|_| malformed_request())?;
 
         if !self.check_permission(|p| p.can_read && p.can_write) {
-            return Err(status_err(StatusCode::PermissionDenied, "Permission denied"));
+            return Err(status_err(
+                StatusCode::PermissionDenied,
+                "Permission denied",
+            ));
         }
 
         let src_full = self.resolve_path_or_err(&src)?;
         let dst_full = self.resolve_path_or_err(&dst)?;
 
         if !src_full.exists() {
-            return Err(status_err(
-                StatusCode::NoSuchFile,
-                "Source file not found",
-            ));
+            return Err(status_err(StatusCode::NoSuchFile, "Source file not found"));
         }
 
         if dst_full.exists() {
@@ -287,7 +287,6 @@ impl SftpState {
                 tracing::debug!(
                     "SFTP COPY_FILE: copied {bytes_copied} bytes from {src_full:?} to {dst_full:?}"
                 );
-                fftp_common::metrics::record_upload_bytes("SFTP", bytes_copied);
                 Ok(status_ok(id).into())
             }
             Err(e) => {
@@ -316,17 +315,17 @@ impl SftpState {
             de::from_bytes(&mut buf).map_err(|_| malformed_request())?;
 
         if !self.check_permission(|p| p.can_write) {
-            return Err(status_err(StatusCode::PermissionDenied, "Permission denied"));
+            return Err(status_err(
+                StatusCode::PermissionDenied,
+                "Permission denied",
+            ));
         }
 
         let src_full = self.resolve_path_or_err(&oldpath)?;
         let dst_full = self.resolve_path_or_err(&newpath)?;
 
         if !src_full.exists() {
-            return Err(status_err(
-                StatusCode::NoSuchFile,
-                "Source file not found",
-            ));
+            return Err(status_err(StatusCode::NoSuchFile, "Source file not found"));
         }
 
         if dst_full.exists() {
@@ -358,17 +357,11 @@ impl SftpState {
                     src_full.display(),
                     dst_full.display()
                 );
-                Err(status_err(
-                    StatusCode::Failure,
-                    "Failed to create hardlink",
-                ))
+                Err(status_err(StatusCode::Failure, "Failed to create hardlink"))
             }
             Err(e) => {
                 tracing::error!("SFTP HARDLINK task failed: {e}");
-                Err(status_err(
-                    StatusCode::Failure,
-                    "Failed to create hardlink",
-                ))
+                Err(status_err(StatusCode::Failure, "Failed to create hardlink"))
             }
         }
     }
@@ -383,7 +376,10 @@ impl SftpState {
             de::from_bytes(&mut buf).map_err(|_| malformed_request())?;
 
         if !self.check_permission(|p| p.can_read || p.can_list) {
-            return Err(status_err(StatusCode::PermissionDenied, "Permission denied"));
+            return Err(status_err(
+                StatusCode::PermissionDenied,
+                "Permission denied",
+            ));
         }
 
         let full_path = self.resolve_path_or_err(&path)?;
@@ -462,14 +458,14 @@ impl SftpState {
 
         if let Err(e) = file.flush().await {
             tracing::warn!("SFTP FSYNC flush failed for handle {handle}: {e}");
-            return Err(status_err(StatusCode::Failure, &format!("Flush error: {e}")));
+            return Err(status_err(
+                StatusCode::Failure,
+                &format!("Flush error: {e}"),
+            ));
         }
         if let Err(e) = file.sync_data().await {
             tracing::warn!("SFTP FSYNC sync_data failed for handle {handle}: {e}");
-            return Err(status_err(
-                StatusCode::Failure,
-                &format!("Sync error: {e}"),
-            ));
+            return Err(status_err(StatusCode::Failure, &format!("Sync error: {e}")));
         }
         tracing::debug!("SFTP FSYNC: handle {handle} flushed to disk");
         Ok(status_ok(id).into())
@@ -507,7 +503,12 @@ mod tests {
     /// 打开文件句柄的辅助
     async fn open_file(state: &mut SftpState, path: &str) -> String {
         state
-            .open(1, path.to_string(), OpenFlags::WRITE | OpenFlags::CREATE, FileAttributes::default())
+            .open(
+                1,
+                path.to_string(),
+                OpenFlags::WRITE | OpenFlags::CREATE,
+                FileAttributes::default(),
+            )
             .await
             .unwrap()
             .handle
@@ -542,7 +543,11 @@ mod tests {
 
         let reply = env
             .state
-            .extended(1, "md5sum".to_string(), crate::test_util::str_field("/f.txt"))
+            .extended(
+                1,
+                "md5sum".to_string(),
+                crate::test_util::str_field("/f.txt"),
+            )
             .await
             .unwrap();
         let Packet::ExtendedReply(r) = reply else {
@@ -587,7 +592,10 @@ mod tests {
         };
         let hex = hex_of(&r.data);
         assert_eq!(hex.len(), 64);
-        assert_ne!(hex, "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824");
+        assert_ne!(
+            hex,
+            "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824"
+        );
     }
 
     /// 摘要请求负载畸形回 FAILURE
@@ -619,7 +627,10 @@ mod tests {
             panic!("expected Status");
         };
         assert_eq!(s.status_code, StatusCode::Ok);
-        assert_eq!(std::fs::read(env.dir.path().join("dst.txt")).unwrap(), b"payload");
+        assert_eq!(
+            std::fs::read(env.dir.path().join("dst.txt")).unwrap(),
+            b"payload"
+        );
 
         // 目标已存在
         let mut data = crate::test_util::str_field("/src.txt");
@@ -649,7 +660,10 @@ mod tests {
             panic!("expected Status");
         };
         assert_eq!(s.status_code, StatusCode::Ok);
-        assert_eq!(std::fs::read(env.dir.path().join("dst.txt")).unwrap(), b"payload");
+        assert_eq!(
+            std::fs::read(env.dir.path().join("dst.txt")).unwrap(),
+            b"payload"
+        );
 
         // 目标已存在
         let mut data = crate::test_util::str_field("/src.txt");
@@ -731,9 +745,7 @@ mod tests {
 
         let nums = &r.data[4 + name_len..];
         assert_eq!(nums.len(), 32);
-        let read_u64 = |off: usize| {
-            u64::from_be_bytes(nums[off..off + 8].try_into().unwrap())
-        };
+        let read_u64 = |off: usize| u64::from_be_bytes(nums[off..off + 8].try_into().unwrap());
         assert_eq!(read_u64(0), 262_144); // max_packet
         assert_eq!(read_u64(8), crate::types::SFTP_READ_BUFFER_SIZE as u64); // max_read
         assert_eq!(read_u64(16), 261_120); // max_write

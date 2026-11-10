@@ -2,9 +2,10 @@
 //!
 //! 负责认证（口令 / 公钥）与 SFTP 子系统通道接入。
 //! 认证对接 `fftp-common` 的 [`UserManager`]（口令校验 + 用户名安全检查），
-//! 公钥认证读取 `keys_dir()/<user>/authorized_keys`；失败计数接 Fail2Ban，指标接 prometheus。
+//! 公钥认证读取 `keys_dir()/<user>/authorized_keys`；失败计数接 `Fail2Ban`。
 //! SFTP 报文循环由 [`run_with_config`] 移交给 [`Session`]。
 
+use fftp_common::sync::MutexExt;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::Mutex as StdMutex;
@@ -40,7 +41,7 @@ impl SessionTracker {
     /// # Panics
     /// 内部互斥锁中毒时 panic（`fftp-common` 语义）
     pub fn increment(&self, username: &str) {
-        let mut sessions = self.active_sessions.lock().unwrap();
+        let mut sessions = self.active_sessions.lock_recover();
         let counter = sessions
             .entry(username.to_string())
             .or_insert_with(|| Arc::new(AtomicU32::new(0)));
@@ -53,7 +54,7 @@ impl SessionTracker {
     /// # Panics
     /// 内部互斥锁中毒时 panic（`fftp-common` 语义）
     pub fn decrement(&self, username: &str) {
-        let mut sessions = self.active_sessions.lock().unwrap();
+        let mut sessions = self.active_sessions.lock_recover();
         if let Some(counter) = sessions.get(username) {
             let old_count = counter.fetch_sub(1, Ordering::SeqCst);
             if old_count == 0 {
@@ -78,8 +79,7 @@ impl SessionTracker {
     #[must_use]
     pub fn get_count(&self, username: &str) -> u32 {
         self.active_sessions
-            .lock()
-            .unwrap()
+            .lock_recover()
             .get(username)
             .map_or(0, |c| c.load(Ordering::SeqCst))
     }
@@ -241,7 +241,6 @@ impl SftpHandler {
         self.auth.authenticated = true;
         self.auth.username = Some(user.to_string());
         self.sessions.increment(user);
-        fftp_common::metrics::record_auth_success();
 
         tracing::info!(
             client_ip = %self.client_ip,
@@ -254,12 +253,11 @@ impl SftpHandler {
         server::Auth::Accept
     }
 
-    /// 记录一次认证失败（Fail2Ban + 指标）
+    /// 记录一次认证失败（Fail2Ban + 审计）
     async fn record_auth_failure(&self) {
         if let Some(fb) = &self.fail2ban {
             fb.add_failure(&self.client_ip).await;
         }
-        fftp_common::metrics::record_auth_failure();
     }
 
     /// 认证成功后重置 `Fail2Ban` 计数
@@ -310,19 +308,34 @@ impl russh::server::Handler for SftpHandler {
             return Ok(reject);
         }
 
-        let (auth_result, home_dir_opt) = {
-            let mut users = self.user_manager.lock().unwrap();
+        // 口令校验（Argon2id）与 users.json 写回均为同步/CPU 密集操作：
+        // 整体移入阻塞线程，避免占满 tokio worker（未认证 DoS）。
+        let users = Arc::clone(&self.user_manager);
+        let username = user.to_string();
+        let password = password.to_string();
+        let (auth_result, home_dir_opt) = tokio::task::spawn_blocking(move || {
+            let mut users = users.lock_recover();
 
-            if users.get_user(user).is_none()
+            if users.get_user(&username).is_none()
                 && let Err(e) = users.reload(&fftp_common::paths::users_path())
             {
                 tracing::warn!("Failed to reload users during SFTP authentication: {e}");
             }
 
-            let result = users.authenticate(user, password);
-            let home = users.get_user(user).map(|u| u.home_dir.clone());
+            let result = users.authenticate(&username, &password);
+            if matches!(result, Ok(true))
+                && let Err(e) = users.save(&fftp_common::paths::users_path())
+            {
+                tracing::warn!("写回 users.json 失败（last_login 未持久化）: {e}");
+            }
+            let home = users.get_user(&username).map(|u| u.home_dir.clone());
             (result, home)
-        };
+        })
+        .await
+        .unwrap_or_else(|e| {
+            tracing::error!("SFTP 认证阻塞任务失败: {e}");
+            (Ok(false), None)
+        });
 
         match auth_result {
             Ok(true) => {
@@ -370,7 +383,7 @@ impl russh::server::Handler for SftpHandler {
         }
 
         let (enabled, home_dir) = {
-            let users = self.user_manager.lock().unwrap();
+            let users = self.user_manager.lock_recover();
             match users.get_user(user) {
                 Some(u) => (u.enabled, Some(u.home_dir.clone())),
                 None => (false, None),
@@ -697,7 +710,8 @@ mod tests {
 
     #[test]
     fn authorized_keys_line_matches_ignoring_comment() {
-        let bare = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIF/0OFXQSRRXlUI29qILoNdMSbtW/89Z+yfvFWRPjKd6";
+        let bare =
+            "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIF/0OFXQSRRXlUI29qILoNdMSbtW/89Z+yfvFWRPjKd6";
         let with_comment = format!("{bare} alice@example");
         let client = PublicKey::from_openssh(bare).expect("解析测试公钥");
 

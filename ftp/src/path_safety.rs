@@ -83,10 +83,7 @@ pub fn path_starts_with_ignore_case<P: AsRef<Path>>(path: &Path, prefix: P) -> b
 
 /// 单个路径成分的大小写不敏感比较（Windows 专用）
 #[cfg(windows)]
-fn component_eq_ignore_case(
-    a: &std::path::Component<'_>,
-    b: &std::path::Component<'_>,
-) -> bool {
+fn component_eq_ignore_case(a: &std::path::Component<'_>, b: &std::path::Component<'_>) -> bool {
     use std::path::Component;
 
     fn eq_os(a: &OsStr, b: &OsStr) -> bool {
@@ -125,7 +122,7 @@ pub fn is_absolute_ftp_path(path: &str) -> bool {
     if Path::new(path).is_absolute() {
         return true;
     }
-    matches!(path.chars().next(), Some('/') | Some('\\'))
+    matches!(path.chars().next(), Some('/' | '\\'))
 }
 
 /// 校验单个路径成分是否合法（全平台统一严格规则）
@@ -151,12 +148,19 @@ pub fn is_valid_path_component(name: &OsStr) -> bool {
     }
 
     let invalid_chars = ['<', '>', '"', '|', '?', '*', '/', '\\'];
-    if name_str.chars().any(|c| invalid_chars.contains(&c) || c.is_control()) {
+    if name_str
+        .chars()
+        .any(|c| invalid_chars.contains(&c) || c.is_control())
+    {
         return false;
     }
 
     // Windows 保留设备名（含 `CON.txt` 这类带扩展名形态），全平台统一拒绝
-    let stem = name_str.split('.').next().unwrap_or(name_str).to_uppercase();
+    let stem = name_str
+        .split('.')
+        .next()
+        .unwrap_or(name_str)
+        .to_uppercase();
     const RESERVED: [&str; 22] = [
         "CON", "PRN", "AUX", "NUL", "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8",
         "COM9", "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
@@ -300,9 +304,7 @@ pub fn resolve_in_root(
     virtual_path: &str,
     allow_symlinks: bool,
 ) -> Result<PathBuf, PathError> {
-    let root_canon = root
-        .canonicalize()
-        .map_err(|_| PathError::RootNotFound)?;
+    let root_canon = root.canonicalize().map_err(|_| PathError::RootNotFound)?;
 
     let normalized = normalize_virtual_path(virtual_path)?;
     let resolved = join_virtual(&root_canon, &normalized);
@@ -313,7 +315,10 @@ pub fn resolve_in_root(
 /// 把 `/a/b` 形态的虚拟路径拼到 `base` 之下（保持平台原生分隔符，跳过 `.` 成分）
 fn join_virtual(base: &Path, virtual_path: &str) -> PathBuf {
     let mut result = base.to_path_buf();
-    for name in virtual_path.split('/').filter(|s| !s.is_empty() && *s != ".") {
+    for name in virtual_path
+        .split('/')
+        .filter(|s| !s.is_empty() && *s != ".")
+    {
         result.push(name);
     }
     result
@@ -385,12 +390,18 @@ mod tests {
 
     #[test]
     fn test_normalize_virtual_path_escape() {
-        assert_eq!(normalize_virtual_path("/..").unwrap_err(), PathError::PathEscape);
+        assert_eq!(
+            normalize_virtual_path("/..").unwrap_err(),
+            PathError::PathEscape
+        );
         assert_eq!(
             normalize_virtual_path("/a/../../b").unwrap_err(),
             PathError::PathEscape
         );
-        assert_eq!(normalize_virtual_path("../x").unwrap_err(), PathError::PathEscape);
+        assert_eq!(
+            normalize_virtual_path("../x").unwrap_err(),
+            PathError::PathEscape
+        );
     }
 
     #[test]
@@ -407,8 +418,17 @@ mod tests {
 
     #[test]
     fn test_normalize_virtual_path_too_deep() {
-        let deep = format!("/{}", (0..=MAX_PATH_DEPTH).map(|_| "a").collect::<Vec<_>>().join("/"));
-        assert_eq!(normalize_virtual_path(&deep).unwrap_err(), PathError::PathTooDeep);
+        let deep = format!(
+            "/{}",
+            (0..=MAX_PATH_DEPTH)
+                .map(|_| "a")
+                .collect::<Vec<_>>()
+                .join("/")
+        );
+        assert_eq!(
+            normalize_virtual_path(&deep).unwrap_err(),
+            PathError::PathTooDeep
+        );
     }
 
     #[test]
@@ -433,7 +453,11 @@ mod tests {
         let resolved = resolve_in_root(root.path(), "/sub/file.txt", false).unwrap();
         assert!(paths_equal_ignore_case(
             resolved,
-            root.path().join("sub").join("file.txt").canonicalize().unwrap()
+            root.path()
+                .join("sub")
+                .join("file.txt")
+                .canonicalize()
+                .unwrap()
         ));
 
         // 根目录自身
@@ -455,10 +479,7 @@ mod tests {
             resolve_in_root(root.path(), "/../etc", false).unwrap_err(),
             PathError::PathEscape
         );
-        assert_eq!(
-            resolve_in_root(root.path(), "/no-such-root", false).is_ok(),
-            true
-        );
+        assert!(resolve_in_root(root.path(), "/no-such-root", false).is_ok());
     }
 
     #[test]

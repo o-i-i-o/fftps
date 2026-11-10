@@ -118,8 +118,7 @@ mod unix {
     pub(super) async fn listen() -> Result<Listener> {
         // 运行时目录以 0700 创建并校验属主，防止其他用户抢占目录后
         // 预置同路径 socket 冒充 fftpd。
-        let dir = fftp_common::paths::ensure_runtime_dir()
-            .context("创建/校验运行时目录失败")?;
+        let dir = fftp_common::paths::ensure_runtime_dir().context("创建/校验运行时目录失败")?;
         let path = dir.join("fftpd.sock");
 
         // 清理上次异常退出的残留套接字；若已有存活实例则让 bind 失败暴露冲突
@@ -143,7 +142,6 @@ mod unix {
             .with_context(|| format!("连接 {} 失败", path.display()))?;
         Ok(Box::new(stream))
     }
-
 }
 
 #[cfg(windows)]
@@ -190,8 +188,7 @@ pub mod named_pipe {
             )
         };
         if ok == 0 {
-            return Err(std::io::Error::last_os_error())
-                .context("构造命名管道安全描述符失败");
+            return Err(std::io::Error::last_os_error()).context("构造命名管道安全描述符失败");
         }
         let attrs = SECURITY_ATTRIBUTES {
             nLength: std::mem::size_of::<SECURITY_ATTRIBUTES>() as u32,
@@ -209,7 +206,10 @@ pub mod named_pipe {
         let (mut attrs, sd) = security_attributes()?;
         // SAFETY: attrs 指向有效的 SECURITY_ATTRIBUTES，描述符在调用期间有效
         let created = unsafe {
-            opts.create_with_security_attributes_raw(PIPE_NAME, std::ptr::addr_of_mut!(attrs).cast())
+            opts.create_with_security_attributes_raw(
+                PIPE_NAME,
+                std::ptr::addr_of_mut!(attrs).cast(),
+            )
         };
         // CreateNamedPipe 会复制安全描述符，返回后即可释放
         unsafe { LocalFree(sd) };

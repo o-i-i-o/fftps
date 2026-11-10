@@ -90,9 +90,7 @@ fn component_eq_ignore_case(a: &Component<'_>, b: &Component<'_>) -> bool {
     }
 
     match (a, b) {
-        (Component::Prefix(pa), Component::Prefix(pb)) => {
-            eq_os(pa.as_os_str(), pb.as_os_str())
-        }
+        (Component::Prefix(pa), Component::Prefix(pb)) => eq_os(pa.as_os_str(), pb.as_os_str()),
         (Component::RootDir, Component::RootDir) => true,
         (Component::CurDir, Component::CurDir) => true,
         (Component::ParentDir, Component::ParentDir) => true,
@@ -790,7 +788,10 @@ mod tests {
     #[test]
     fn test_to_ftp_path() {
         let home = Path::new("share_test");
-        assert_eq!(to_ftp_path(Path::new("share_test/file.txt"), home).unwrap(), "/file.txt");
+        assert_eq!(
+            to_ftp_path(Path::new("share_test/file.txt"), home).unwrap(),
+            "/file.txt"
+        );
         assert_eq!(to_ftp_path(Path::new("share_test"), home).unwrap(), "/");
         assert_eq!(
             to_ftp_path(Path::new("share_test/subdir/file.txt"), home).unwrap(),
@@ -853,8 +854,14 @@ mod tests {
         assert!(rel.ends_with("file.txt"));
 
         // 空路径 / "." → home
-        assert_eq!(resolve_path_internal("", &home_canon, "").unwrap(), home_canon);
-        assert_eq!(resolve_path_internal("", &home_canon, ".").unwrap(), home_canon);
+        assert_eq!(
+            resolve_path_internal("", &home_canon, "").unwrap(),
+            home_canon
+        );
+        assert_eq!(
+            resolve_path_internal("", &home_canon, ".").unwrap(),
+            home_canon
+        );
     }
 
     #[test]

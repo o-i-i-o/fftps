@@ -259,224 +259,24 @@
         </div>
         <div class="card">
 
-          <div class="field">
-            <div class="meta">
-              <label for="ftp-enabled">启用 FTP <code>enabled</code></label>
-              <p>关闭后不启动 FTP 监听，SFTP 不受影响。</p>
-            </div>
-            <div class="ctl">
-              <label class="switch"><input type="checkbox" id="ftp-enabled"><span class="track"></span></label>
-              <span class="hint">默认开启</span>
-            </div>
-          </div>
-
-          <div class="field">
-            <div class="meta">
-              <label for="ftp-bind_ip">绑定地址 <code>bind_ip</code></label>
-              <p>监听所用的 IPv4/IPv6 地址。0.0.0.0 表示监听全部网卡。</p>
-            </div>
-            <div class="ctl">
-              <input type="text" id="ftp-bind_ip" placeholder="0.0.0.0" spellcheck="false">
-              <span class="hint">默认 <code>0.0.0.0</code></span>
-            </div>
-          </div>
-
-          <div class="field">
-            <div class="meta">
-              <label for="ftp-port">监听端口 <code>port</code></label>
-              <p>FTP 控制连接端口。标准端口为 21，使用非特权端口可免 root 运行。</p>
-            </div>
-            <div class="ctl">
-              <input type="number" id="ftp-port" min="1" max="65535" step="1" placeholder="21">
-              <span class="hint">范围 1–65535，默认 <code>21</code></span>
-            </div>
-          </div>
-
-          <div class="field">
-            <div class="meta">
-              <label for="ftp-welcome_message">欢迎信息 <code>welcome_message</code></label>
-              <p>客户端登录成功后显示在 220 响应中的文本。</p>
-            </div>
-            <div class="ctl">
-              <input type="text" id="ftp-welcome_message" placeholder="Welcome to fftpd">
-              <span class="hint">默认 <code>Welcome to fftpd</code></span>
-            </div>
-          </div>
-
-          <div class="field">
-            <div class="meta">
-              <label for="ftp-encoding">文件名编码 <code>encoding</code></label>
-              <p>控制通道与文件名使用的字符集，需与客户端协商一致。</p>
-            </div>
-            <div class="ctl">
-              <input type="text" id="ftp-encoding" list="encoding-list" placeholder="UTF-8" spellcheck="false">
-              <datalist id="encoding-list">
-                <option value="UTF-8"></option>
-                <option value="GBK"></option>
-                <option value="GB18030"></option>
-                <option value="ISO-8859-1"></option>
-              </datalist>
-              <span class="hint">默认 <code>UTF-8</code></span>
-            </div>
-          </div>
-
-          <div class="field">
-            <div class="meta">
-              <label for="ftp-default_transfer_mode">默认传输模式 <code>default_transfer_mode</code></label>
-              <p>客户端未指定 TYPE 时使用的传输模式。</p>
-            </div>
-            <div class="ctl">
-              <select id="ftp-default_transfer_mode">
-                <option value="binary">binary（二进制）</option>
-                <option value="ascii">ascii（文本）</option>
-              </select>
-              <span class="hint">默认 <code>binary</code></span>
-            </div>
-          </div>
-
-          <div class="field">
-            <div class="meta">
-              <label for="ftp-connection_mode">连接模式 <code>connection_mode</code></label>
-              <p>允许的数据连接建立方式。仅内网环境可考虑开放主动模式。</p>
-            </div>
-            <div class="ctl">
-              <select id="ftp-connection_mode">
-                <option value="passive_only">passive_only（仅被动）</option>
-                <option value="active_only">active_only（仅主动）</option>
-                <option value="active_and_passive">active_and_passive（主动 + 被动）</option>
-              </select>
-              <span class="hint">默认 <code>passive_only</code></span>
-            </div>
-          </div>
-
-          <div class="field">
-            <div class="meta">
-              <label for="ftp-allow_anonymous">允许匿名登录 <code>allow_anonymous</code></label>
-              <p>开启后允许 anonymous / ftp 用户免密码登录。</p>
-            </div>
-            <div class="ctl">
-              <label class="switch"><input type="checkbox" id="ftp-allow_anonymous"><span class="track"></span></label>
-              <span class="hint">默认关闭</span>
-            </div>
-          </div>
-
-          <div class="field">
-            <div class="meta">
-              <label for="ftp-anonymous_home">匿名用户主目录 <code>anonymous_home</code></label>
-              <p>匿名登录后的根目录。留空 = 未设置（使用默认值）。</p>
-            </div>
-            <div class="ctl">
-              <input type="text" id="ftp-anonymous_home" placeholder="留空 = 未设置" spellcheck="false">
-              <span class="hint">空串 = 未设置</span>
-            </div>
-          </div>
-
-          <div class="field">
-            <div class="meta">
-              <label>被动模式端口区间 <code>passive_ports</code></label>
-              <p>PASV 数据连接可用的端口范围（含端点），需在防火墙放行。</p>
-            </div>
-            <div class="ctl">
-              <div class="range-row">
-                <input type="number" id="ftp-passive_ports-min" min="1" max="65535" step="1" placeholder="50000">
-                <span class="sep">–</span>
-                <input type="number" id="ftp-passive_ports-max" min="1" max="65535" step="1" placeholder="51000">
-              </div>
-              <span class="hint">默认 <code>50000 – 51000</code></span>
-            </div>
-          </div>
-
-          <div class="field">
-            <div class="meta">
-              <label for="ftp-max_speed_kbps">单连接限速 <code>max_speed_kbps</code></label>
-              <p>单个连接的最大传输速率，单位 KB/s。</p>
-            </div>
-            <div class="ctl">
-              <input type="number" id="ftp-max_speed_kbps" min="0" step="1" placeholder="0">
-              <span class="hint"><code>0</code> = 不限速（默认）</span>
-            </div>
-          </div>
-
-          <div class="field">
-            <div class="meta">
-              <label for="ftp-masquerade_address">被动模式通告地址 <code>masquerade_address</code></label>
-              <p>NAT / 端口映射环境下，PASV 响应中回给客户端的外网地址。</p>
-            </div>
-            <div class="ctl">
-              <input type="text" id="ftp-masquerade_address" placeholder="留空 = 使用实际连接地址" spellcheck="false">
-              <span class="hint">空串 = 使用实际连接地址</span>
-            </div>
-          </div>
-
-          <div class="field">
-            <div class="meta">
-              <label for="ftp-connection_timeout">连接超时 <code>connection_timeout</code></label>
-              <p>建立连接后等待客户端响应的超时时间（秒）。</p>
-            </div>
-            <div class="ctl">
-              <input type="number" id="ftp-connection_timeout" min="1" step="1" placeholder="15">
-              <span class="hint">单位：秒，默认 <code>15</code></span>
-            </div>
-          </div>
-
-          <div class="field">
-            <div class="meta">
-              <label for="ftp-idle_timeout">空闲超时 <code>idle_timeout</code></label>
-              <p>连接无任何操作多久后自动断开（秒）。</p>
-            </div>
-            <div class="ctl">
-              <input type="number" id="ftp-idle_timeout" min="1" step="1" placeholder="15">
-              <span class="hint">单位：秒，默认 <code>15</code></span>
-            </div>
-          </div>
-
-          <div class="field">
-            <div class="meta">
-              <label for="ftp-hide_version_info">隐藏版本信息 <code>hide_version_info</code></label>
-              <p>不在欢迎信息中暴露 fftpd 的版本号，降低信息泄露风险。</p>
-            </div>
-            <div class="ctl">
-              <label class="switch"><input type="checkbox" id="ftp-hide_version_info"><span class="track"></span></label>
-              <span class="hint">默认关闭（显示版本）</span>
-            </div>
-          </div>
-
-          <div class="field">
-            <div class="meta">
-              <label for="ftp-pooled_listener_mode">池化被动监听 <code>pooled_listener_mode</code></label>
-              <p>预绑定并复用被动端口池，可降低高频短连接的开销。</p>
-            </div>
-            <div class="ctl">
-              <label class="switch"><input type="checkbox" id="ftp-pooled_listener_mode"><span class="track"></span></label>
-              <div class="note-warn">
-                <span>⚠</span>
-                <span><b>已知限制：</b>libunftp 0.23.1 停止后不释放预绑定的被动端口，运行期 restart 会失败（需重启 fftpd 进程），故默认关闭。</span>
-              </div>
-            </div>
-          </div>
-
-          <div class="field">
-            <div class="meta">
-              <label for="ftp-allow_nat_clients">允许 NAT 客户端 <code>allow_nat_clients</code></label>
-              <p>放宽对 NAT 后客户端地址不一致的校验。</p>
-            </div>
-            <div class="ctl">
-              <label class="switch"><input type="checkbox" id="ftp-allow_nat_clients"><span class="track"></span></label>
-              <span class="hint">默认开启</span>
-            </div>
-          </div>
-
-          <div class="field">
-            <div class="meta">
-              <label for="ftp-ftp_root">FTP 根目录 <code>ftp_root</code></label>
-              <p>全局根目录，所有用户被限制在其下。留空 = 各用户 home。</p>
-            </div>
-            <div class="ctl">
-              <input type="text" id="ftp-ftp_root" placeholder="留空 = 各用户 home" spellcheck="false">
-              <span class="hint">空串 = 各用户 home</span>
-            </div>
-          </div>
-
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
         </div>
       </section>
 
@@ -489,50 +289,10 @@
         </div>
         <div class="card">
 
-          <div class="field">
-            <div class="meta">
-              <label for="ftps-enabled">启用 FTPS <code>enabled</code></label>
-              <p>开启后 FTP 服务支持 AUTH TLS 显式加密。</p>
-            </div>
-            <div class="ctl">
-              <label class="switch"><input type="checkbox" id="ftps-enabled"><span class="track"></span></label>
-              <span class="hint">默认关闭</span>
-            </div>
-          </div>
-
-          <div class="field">
-            <div class="meta">
-              <label for="ftps-require_ssl">强制 SSL <code>require_ssl</code></label>
-              <p>拒绝未加密的明文连接，必须先完成 TLS 握手。</p>
-            </div>
-            <div class="ctl">
-              <label class="switch"><input type="checkbox" id="ftps-require_ssl"><span class="track"></span></label>
-              <span class="hint">默认关闭</span>
-            </div>
-          </div>
-
-          <div class="field">
-            <div class="meta">
-              <label for="ftps-cert_path">证书路径 <code>cert_path</code></label>
-              <p>X.509 证书文件（PEM）。留空 = 自动生成（rcgen 自签名）。</p>
-            </div>
-            <div class="ctl">
-              <input type="text" id="ftps-cert_path" placeholder="留空 = 自动生成" spellcheck="false">
-              <span class="hint">空串 = 自动生成</span>
-            </div>
-          </div>
-
-          <div class="field">
-            <div class="meta">
-              <label for="ftps-key_path">私钥路径 <code>key_path</code></label>
-              <p>与证书匹配的私钥文件（PEM）。留空 = 自动生成。</p>
-            </div>
-            <div class="ctl">
-              <input type="text" id="ftps-key_path" placeholder="留空 = 自动生成" spellcheck="false">
-              <span class="hint">空串 = 自动生成</span>
-            </div>
-          </div>
-
+          
+          
+          
+          
         </div>
       </section>
 
@@ -545,111 +305,15 @@
         </div>
         <div class="card">
 
-          <div class="field">
-            <div class="meta">
-              <label for="sftp-enabled">启用 SFTP <code>enabled</code></label>
-              <p>开启后监听 SSH 端口并提供 SFTP 子系统。</p>
-            </div>
-            <div class="ctl">
-              <label class="switch"><input type="checkbox" id="sftp-enabled"><span class="track"></span></label>
-              <span class="hint">默认开启</span>
-            </div>
-          </div>
-
-          <div class="field">
-            <div class="meta">
-              <label for="sftp-bind_ip">绑定地址 <code>bind_ip</code></label>
-              <p>SSH 监听所用的地址。</p>
-            </div>
-            <div class="ctl">
-              <input type="text" id="sftp-bind_ip" placeholder="0.0.0.0" spellcheck="false">
-              <span class="hint">默认 <code>0.0.0.0</code></span>
-            </div>
-          </div>
-
-          <div class="field">
-            <div class="meta">
-              <label for="sftp-port">监听端口 <code>port</code></label>
-              <p>SSH 服务端口，默认使用非 22 端口以避免与系统 sshd 冲突。</p>
-            </div>
-            <div class="ctl">
-              <input type="number" id="sftp-port" min="1" max="65535" step="1" placeholder="2222">
-              <span class="hint">默认 <code>2222</code></span>
-            </div>
-          </div>
-
-          <div class="field">
-            <div class="meta">
-              <label for="sftp-host_key_path">主机密钥路径 <code>host_key_path</code></label>
-              <p>ed25519 主机私钥文件。留空 = 首次启动自动生成到默认位置。</p>
-            </div>
-            <div class="ctl">
-              <input type="text" id="sftp-host_key_path" placeholder="留空 = 自动生成" spellcheck="false">
-              <span class="hint">空串 = <code>~/.local/state/fftpd/ssh_host_ed25519_key</code></span>
-            </div>
-          </div>
-
-          <div class="field">
-            <div class="meta">
-              <label for="sftp-max_auth_attempts">最大认证次数 <code>max_auth_attempts</code></label>
-              <p>单次连接允许的密码 / 公钥认证失败次数，超出即断开。</p>
-            </div>
-            <div class="ctl">
-              <input type="number" id="sftp-max_auth_attempts" min="1" step="1" placeholder="3">
-              <span class="hint">默认 <code>3</code></span>
-            </div>
-          </div>
-
-          <div class="field">
-            <div class="meta">
-              <label for="sftp-auth_timeout">认证超时 <code>auth_timeout</code></label>
-              <p>等待客户端完成认证的最长时间（秒）。</p>
-            </div>
-            <div class="ctl">
-              <input type="number" id="sftp-auth_timeout" min="1" step="1" placeholder="60">
-              <span class="hint">单位：秒，默认 <code>60</code></span>
-            </div>
-          </div>
-
-          <div class="field">
-            <div class="meta">
-              <label for="sftp-log_level">日志级别 <code>log_level</code></label>
-              <p>SFTP 子系统自身的日志详细程度。</p>
-            </div>
-            <div class="ctl">
-              <select id="sftp-log_level">
-                <option value="trace">trace</option>
-                <option value="debug">debug</option>
-                <option value="info">info</option>
-                <option value="warn">warn</option>
-                <option value="error">error</option>
-              </select>
-              <span class="hint">默认 <code>info</code></span>
-            </div>
-          </div>
-
-          <div class="field">
-            <div class="meta">
-              <label for="sftp-max_sessions_per_user">单用户最大会话数 <code>max_sessions_per_user</code></label>
-              <p>限制同一账号同时建立的 SFTP 会话数量。</p>
-            </div>
-            <div class="ctl">
-              <input type="number" id="sftp-max_sessions_per_user" min="1" step="1" placeholder="5">
-              <span class="hint">默认 <code>5</code></span>
-            </div>
-          </div>
-
-          <div class="field">
-            <div class="meta">
-              <label for="sftp-host_key_rotation_days">主机密钥轮换周期 <code>host_key_rotation_days</code></label>
-              <p>定期重新生成 SSH 主机密钥，单位为天。</p>
-            </div>
-            <div class="ctl">
-              <input type="number" id="sftp-host_key_rotation_days" min="0" step="1" placeholder="0">
-              <span class="hint"><code>0</code> = 不轮换（默认）</span>
-            </div>
-          </div>
-
+          
+          
+          
+          
+          
+          
+          
+          
+          
         </div>
       </section>
 
@@ -662,109 +326,15 @@
         </div>
         <div class="card">
 
-          <div class="field">
-            <div class="meta">
-              <label for="security-max_connections">最大连接总数 <code>max_connections</code></label>
-              <p>所有协议合计的同时在线连接上限。</p>
-            </div>
-            <div class="ctl">
-              <input type="number" id="security-max_connections" min="1" step="1" placeholder="100">
-              <span class="hint">默认 <code>100</code></span>
-            </div>
-          </div>
-
-          <div class="field">
-            <div class="meta">
-              <label for="security-max_connections_per_ip">单 IP 最大连接数 <code>max_connections_per_ip</code></label>
-              <p>限制单个来源 IP 的并发连接，防止单点占满连接池。</p>
-            </div>
-            <div class="ctl">
-              <input type="number" id="security-max_connections_per_ip" min="1" step="1" placeholder="10">
-              <span class="hint">默认 <code>10</code></span>
-            </div>
-          </div>
-
-          <div class="field">
-            <div class="meta">
-              <label for="security-allowed_ips">IP 白名单 <code>allowed_ips</code></label>
-              <p>仅允许列表内的 IP / CIDR 连接。输入后按回车添加。</p>
-            </div>
-            <div class="ctl">
-              <div class="tags" id="security-allowed_ips">
-                <input type="text" class="tag-entry" placeholder="如 192.168.1.0/24，回车添加" spellcheck="false">
-              </div>
-              <span class="hint">默认 <code>0.0.0.0/0</code>（允许所有 IPv4）</span>
-            </div>
-          </div>
-
-          <div class="field">
-            <div class="meta">
-              <label for="security-denied_ips">IP 黑名单 <code>denied_ips</code></label>
-              <p>拒绝列表内的 IP / CIDR 连接，优先级高于白名单。</p>
-            </div>
-            <div class="ctl">
-              <div class="tags" id="security-denied_ips">
-                <input type="text" class="tag-entry" placeholder="如 10.0.0.5，回车添加" spellcheck="false">
-              </div>
-              <span class="hint">默认空列表</span>
-            </div>
-          </div>
-
-          <div class="field">
-            <div class="meta">
-              <label for="security-fail2ban_enabled">启用 fail2ban 联动 <code>fail2ban_enabled</code></label>
-              <p>内置的失败计数封禁机制，达到阈值后临时拉黑来源 IP。</p>
-            </div>
-            <div class="ctl">
-              <label class="switch"><input type="checkbox" id="security-fail2ban_enabled"><span class="track"></span></label>
-              <span class="hint">默认关闭</span>
-            </div>
-          </div>
-
-          <div class="field">
-            <div class="meta">
-              <label for="security-fail2ban_threshold">封禁阈值 <code>fail2ban_threshold</code></label>
-              <p>同一 IP 在统计窗口内允许的失败次数，超出即封禁。</p>
-            </div>
-            <div class="ctl">
-              <input type="number" id="security-fail2ban_threshold" min="1" step="1" placeholder="5">
-              <span class="hint">默认 <code>5</code> 次</span>
-            </div>
-          </div>
-
-          <div class="field">
-            <div class="meta">
-              <label for="security-fail2ban_ban_time">封禁时长 <code>fail2ban_ban_time</code></label>
-              <p>命中阈值后拉黑该 IP 的持续时间。</p>
-            </div>
-            <div class="ctl">
-              <input type="number" id="security-fail2ban_ban_time" min="1" step="1" placeholder="3600">
-              <span class="hint">单位：秒，默认 <code>3600</code>（1 小时）</span>
-            </div>
-          </div>
-
-          <div class="field">
-            <div class="meta">
-              <label for="security-allow_symlinks">允许符号链接 <code>allow_symlinks</code></label>
-              <p>是否允许跟随符号链接。开启后可能突破根目录限制，请谨慎。</p>
-            </div>
-            <div class="ctl">
-              <label class="switch"><input type="checkbox" id="security-allow_symlinks"><span class="track"></span></label>
-              <span class="hint">默认关闭</span>
-            </div>
-          </div>
-
-          <div class="field">
-            <div class="meta">
-              <label for="security-max_login_attempts">最大登录尝试次数 <code>max_login_attempts</code></label>
-              <p>单连接允许的登录失败次数上限。</p>
-            </div>
-            <div class="ctl">
-              <input type="number" id="security-max_login_attempts" min="1" step="1" placeholder="5">
-              <span class="hint">默认 <code>5</code></span>
-            </div>
-          </div>
-
+          
+          
+          
+          
+          
+          
+          
+          
+          
         </div>
       </section>
 
@@ -777,78 +347,12 @@
         </div>
         <div class="card">
 
-          <div class="field">
-            <div class="meta">
-              <label for="logging-log_dir">日志目录 <code>log_dir</code></label>
-              <p>日志文件存放目录。留空 = 使用默认状态目录。</p>
-            </div>
-            <div class="ctl">
-              <input type="text" id="logging-log_dir" placeholder="留空 = ~/.local/state/fftpd/logs" spellcheck="false">
-              <span class="hint">空串 = <code>~/.local/state/fftpd/logs</code></span>
-            </div>
-          </div>
-
-          <div class="field">
-            <div class="meta">
-              <label for="logging-log_level">日志级别 <code>log_level</code></label>
-              <p>全局日志详细程度，级别越高输出越少。</p>
-            </div>
-            <div class="ctl">
-              <select id="logging-log_level">
-                <option value="trace">trace</option>
-                <option value="debug">debug</option>
-                <option value="info">info</option>
-                <option value="warn">warn</option>
-                <option value="error">error</option>
-              </select>
-              <span class="hint">默认 <code>info</code></span>
-            </div>
-          </div>
-
-          <div class="field">
-            <div class="meta">
-              <label for="logging-max_log_files">保留日志文件数 <code>max_log_files</code></label>
-              <p>滚动归档保留的最大文件数量，超出后删除最旧的。</p>
-            </div>
-            <div class="ctl">
-              <input type="number" id="logging-max_log_files" min="1" step="1" placeholder="10">
-              <span class="hint">默认 <code>10</code> 个</span>
-            </div>
-          </div>
-
-          <div class="field">
-            <div class="meta">
-              <label for="logging-max_log_size">单个日志大小上限 <code>max_log_size</code></label>
-              <p>单个日志文件达到该字节数后触发滚动。</p>
-            </div>
-            <div class="ctl">
-              <input type="number" id="logging-max_log_size" min="1024" step="1024" placeholder="10485760">
-              <span class="hint">单位：字节，默认 <code>10485760</code> ≈ 10 MiB</span>
-            </div>
-          </div>
-
-          <div class="field">
-            <div class="meta">
-              <label for="logging-enable_json">JSON 格式日志 <code>enable_json</code></label>
-              <p>以结构化 JSON 行输出，便于日志采集系统解析。</p>
-            </div>
-            <div class="ctl">
-              <label class="switch"><input type="checkbox" id="logging-enable_json"><span class="track"></span></label>
-              <span class="hint">默认关闭（纯文本）</span>
-            </div>
-          </div>
-
-          <div class="field">
-            <div class="meta">
-              <label for="logging-enable_gui_logging">GUI 日志输出 <code>enable_gui_logging</code></label>
-              <p>将日志同时推送到图形界面的日志面板。</p>
-            </div>
-            <div class="ctl">
-              <label class="switch"><input type="checkbox" id="logging-enable_gui_logging"><span class="track"></span></label>
-              <span class="hint">默认开启</span>
-            </div>
-          </div>
-
+          
+          
+          
+          
+          
+          
         </div>
       </section>
 
@@ -885,16 +389,13 @@
       port: 21,
       welcome_message: 'Welcome to fftpd',
       encoding: 'UTF-8',
-      default_transfer_mode: 'binary',
       connection_mode: 'passive_only',
       allow_anonymous: false,
       anonymous_home: '',
       passive_ports: [50000, 51000],
       max_speed_kbps: 0,
       masquerade_address: '',
-      connection_timeout: 15,
       idle_timeout: 15,
-      hide_version_info: false,
       pooled_listener_mode: false,
       allow_nat_clients: true,
       ftp_root: ''
@@ -1049,7 +550,6 @@
         port: numOf('ftp-port'),
         welcome_message: txt('ftp-welcome_message'),
         encoding: txt('ftp-encoding'),
-        default_transfer_mode: $('ftp-default_transfer_mode').value,
         connection_mode: $('ftp-connection_mode').value,
         allow_anonymous: chk('ftp-allow_anonymous'),
         anonymous_home: txt('ftp-anonymous_home'),
@@ -1059,9 +559,7 @@
         ],
         max_speed_kbps: numOf('ftp-max_speed_kbps'),
         masquerade_address: txt('ftp-masquerade_address'),
-        connection_timeout: numOf('ftp-connection_timeout'),
         idle_timeout: numOf('ftp-idle_timeout'),
-        hide_version_info: chk('ftp-hide_version_info'),
         pooled_listener_mode: chk('ftp-pooled_listener_mode'),
         allow_nat_clients: chk('ftp-allow_nat_clients'),
         ftp_root: txt('ftp-ftp_root')
@@ -1079,7 +577,6 @@
         host_key_path: txt('sftp-host_key_path'),
         max_auth_attempts: numOf('sftp-max_auth_attempts'),
         auth_timeout: numOf('sftp-auth_timeout'),
-        log_level: $('sftp-log_level').value,
         max_sessions_per_user: numOf('sftp-max_sessions_per_user'),
         host_key_rotation_days: numOf('sftp-host_key_rotation_days')
       },
@@ -1129,16 +626,13 @@
     L.push('port = ' + N(c.ftp.port));
     L.push('welcome_message = ' + Q(c.ftp.welcome_message));
     L.push('encoding = ' + Q(c.ftp.encoding));
-    L.push('default_transfer_mode = ' + Q(c.ftp.default_transfer_mode));
     L.push('connection_mode = ' + Q(c.ftp.connection_mode));
     L.push('allow_anonymous = ' + B(c.ftp.allow_anonymous));
     L.push('anonymous_home = ' + Q(c.ftp.anonymous_home));
     L.push('passive_ports = ' + A(c.ftp.passive_ports));
     L.push('max_speed_kbps = ' + N(c.ftp.max_speed_kbps));
     L.push('masquerade_address = ' + Q(c.ftp.masquerade_address));
-    L.push('connection_timeout = ' + N(c.ftp.connection_timeout));
     L.push('idle_timeout = ' + N(c.ftp.idle_timeout));
-    L.push('hide_version_info = ' + B(c.ftp.hide_version_info));
     L.push('pooled_listener_mode = ' + B(c.ftp.pooled_listener_mode));
     L.push('allow_nat_clients = ' + B(c.ftp.allow_nat_clients));
     L.push('ftp_root = ' + Q(c.ftp.ftp_root));
@@ -1158,7 +652,6 @@
     L.push('host_key_path = ' + Q(c.sftp.host_key_path));
     L.push('max_auth_attempts = ' + N(c.sftp.max_auth_attempts));
     L.push('auth_timeout = ' + N(c.sftp.auth_timeout));
-    L.push('log_level = ' + Q(c.sftp.log_level));
     L.push('max_sessions_per_user = ' + N(c.sftp.max_sessions_per_user));
     L.push('host_key_rotation_days = ' + N(c.sftp.host_key_rotation_days));
     L.push('');

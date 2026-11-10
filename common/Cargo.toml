@@ -18,7 +18,7 @@ tracing-appender = { workspace = true }
 tokio = { workspace = true }
 argon2 = { workspace = true }
 ipnet = { workspace = true }
-prometheus = "0.14"
+rand = { workspace = true }
 
 [target.'cfg(unix)'.dependencies]
 nix = { workspace = true }

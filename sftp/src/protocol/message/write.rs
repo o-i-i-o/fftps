@@ -1,6 +1,6 @@
 use bytes::Bytes;
 
-use super::{impl_packet_for, impl_request_id, Packet, RequestId, SSH_FXP_WRITE};
+use super::{Packet, RequestId, SSH_FXP_WRITE, impl_packet_for, impl_request_id};
 use crate::protocol::{error::Error, ser};
 
 /// Implementation for `SSH_FXP_WRITE`

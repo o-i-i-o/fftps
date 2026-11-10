@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-use super::{impl_packet_for, impl_request_id, File, Packet, RequestId};
+use super::{File, Packet, RequestId, impl_packet_for, impl_request_id};
 
 /// Implementation for `SSH_FXP_NAME`
 #[derive(Debug, Serialize, Deserialize)]

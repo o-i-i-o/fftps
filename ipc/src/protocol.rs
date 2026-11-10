@@ -22,9 +22,19 @@ pub const MAX_FRAME_SIZE: usize = 4 * 1024 * 1024;
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Message {
+    /// 握手：客户端在首帧提交共享令牌
+    Hello(Hello),
+    /// 握手成功应答（服务端在令牌校验通过后回送）
+    HelloAck,
     Request(Request),
     Response(Response),
     Notification(Notification),
+}
+
+/// 握手帧：本机 IPC 的共享令牌
+#[derive(Debug, Serialize, Deserialize)]
+pub struct Hello {
+    pub token: String,
 }
 
 /// 请求：`id` 由客户端分配，响应原样回带
@@ -89,9 +99,13 @@ pub struct Notification {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "event", rename_all = "snake_case")]
 pub enum Event {
-    Log { entry: LogEntry },
+    Log {
+        entry: LogEntry,
+    },
     /// 文件操作审计实时推送
-    FileOp { entry: FileOpLogEntry },
+    FileOp {
+        entry: FileOpLogEntry,
+    },
 }
 
 /// 控制命令面：wftpd.proto 全量操作 ∪ Windows reload 通道
@@ -100,21 +114,35 @@ pub enum Event {
 pub enum Command {
     // ---- 服务生命周期 ----
     GetStatus,
-    StartService { which: ServiceTarget },
-    StopService { which: ServiceTarget },
-    RestartService { which: ServiceTarget },
+    StartService {
+        which: ServiceTarget,
+    },
+    StopService {
+        which: ServiceTarget,
+    },
+    RestartService {
+        which: ServiceTarget,
+    },
     /// 停止守护进程自身
     Shutdown,
     // ---- 配置与用户 ----
     GetConfig,
-    SaveConfig { content: String },
+    SaveConfig {
+        content: String,
+    },
     GetUsers,
-    SaveUsers { content: String },
+    SaveUsers {
+        content: String,
+    },
     GetInitialState,
     // ---- 目录辅助（后端是配置/用户数据的唯一写入者） ----
     EnsureUserDirectories,
-    CreateUserDirectory { path: String },
-    SetupDirectoryPermissions { path: String },
+    CreateUserDirectory {
+        path: String,
+    },
+    SetupDirectoryPermissions {
+        path: String,
+    },
     // ---- 日志 ----
     GetRecentLogs {
         #[serde(default)]
@@ -132,9 +160,15 @@ pub enum Command {
     },
     UnsubscribeLogs,
     GetLogFiles,
-    GetLogFileContent { path: String, count: u32 },
+    GetLogFileContent {
+        path: String,
+        count: u32,
+    },
     GetFileOpLogFiles,
-    GetFileOpLogContent { path: String, count: u32 },
+    GetFileOpLogContent {
+        path: String,
+        count: u32,
+    },
     SaveLogConfig {
         log_dir: String,
         log_level: String,
@@ -160,7 +194,7 @@ pub enum ServiceTarget {
     Sftp,
 }
 
-/// 错误类别（序列化为 snake_case 字符串）
+/// 错误类别（序列化为 `snake_case` 字符串）
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ErrorCode {

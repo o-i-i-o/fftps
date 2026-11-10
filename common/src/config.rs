@@ -18,11 +18,7 @@ use crate::paths;
 
 /// 空串（含全空白）视为未设置，返回原始字符串
 fn non_empty(s: &str) -> Option<&str> {
-    if s.trim().is_empty() {
-        None
-    } else {
-        Some(s)
-    }
+    if s.trim().is_empty() { None } else { Some(s) }
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -63,8 +59,6 @@ pub struct FtpConfig {
     pub port: u16,
     pub welcome_message: String,
     pub encoding: String,
-    /// 传输模式（`binary` / `ascii`）
-    pub default_transfer_mode: String,
     pub connection_mode: ConnectionMode,
     pub allow_anonymous: bool,
     /// 匿名用户主目录，空串 = 未设置
@@ -75,16 +69,12 @@ pub struct FtpConfig {
     pub max_speed_kbps: u64,
     /// 被动模式对外通告地址，空串 = 使用实际连接地址
     pub masquerade_address: String,
-    /// 连接建立超时（秒）
-    pub connection_timeout: u64,
     /// 空闲超时（秒）
     pub idle_timeout: u64,
-    pub hide_version_info: bool,
-    /// 是否启用 libunftp 池化被动监听器
+    /// 是否启用 libunftp 池化被动监听器（兼容保留，当前版本忽略）
     ///
     /// 上游 libunftp 0.23.1 停止服务时不会关闭池化模式预绑定的被动端口，
-    /// 运行期重启会因端口被占用而失败（只能重启 fftpd 进程恢复），
-    /// 因此默认关闭，仅在确认无需运行期重启时才可显式开启。
+    /// 运行期重启会因端口被占用而失败，因此实现侧会忽略 true 并记录告警。
     pub pooled_listener_mode: bool,
     pub allow_nat_clients: bool,
     /// FTP 根目录，空串 = 各用户 home
@@ -100,16 +90,13 @@ impl Default for FtpConfig {
             port: 21,
             welcome_message: "Welcome to fftpd".to_string(),
             encoding: "UTF-8".to_string(),
-            default_transfer_mode: "binary".to_string(),
             connection_mode: ConnectionMode::PassiveOnly,
             allow_anonymous: false,
             anonymous_home: String::new(),
             passive_ports: (50000, 51000),
             max_speed_kbps: 0,
             masquerade_address: String::new(),
-            connection_timeout: 15,
             idle_timeout: 15,
-            hide_version_info: false,
             pooled_listener_mode: false,
             allow_nat_clients: true,
             ftp_root: String::new(),
@@ -176,7 +163,6 @@ pub struct SftpConfig {
     pub max_auth_attempts: u32,
     /// 认证超时（秒）
     pub auth_timeout: u64,
-    pub log_level: String,
     pub max_sessions_per_user: u32,
     /// 主机密钥轮换周期（天），0 = 不轮换
     pub host_key_rotation_days: u32,
@@ -191,7 +177,6 @@ impl Default for SftpConfig {
             host_key_path: String::new(),
             max_auth_attempts: 3,
             auth_timeout: 60,
-            log_level: "info".to_string(),
             max_sessions_per_user: 5,
             host_key_rotation_days: 0,
         }
@@ -202,8 +187,7 @@ impl SftpConfig {
     /// 解析后的主机密钥路径（空串时回退 [`paths::default_host_key_path`]）
     #[must_use]
     pub fn resolved_host_key_path(&self) -> PathBuf {
-        non_empty(&self.host_key_path)
-            .map_or_else(paths::default_host_key_path, PathBuf::from)
+        non_empty(&self.host_key_path).map_or_else(paths::default_host_key_path, PathBuf::from)
     }
 }
 
@@ -579,12 +563,10 @@ mod tests {
         assert_eq!(config.ftp.port, 21);
         assert_eq!(config.ftp.welcome_message, "Welcome to fftpd");
         assert_eq!(config.ftp.encoding, "UTF-8");
-        assert_eq!(config.ftp.default_transfer_mode, "binary");
         assert_eq!(config.ftp.connection_mode, ConnectionMode::PassiveOnly);
         assert_eq!(config.ftp.connection_mode.as_str(), "passive_only");
         assert!(!config.ftp.allow_anonymous);
         assert_eq!(config.ftp.passive_ports, (50000, 51000));
-        assert_eq!(config.ftp.connection_timeout, 15);
         assert_eq!(config.ftp.idle_timeout, 15);
         assert!(!config.ftp.pooled_listener_mode);
         assert!(config.ftp.allow_nat_clients);

@@ -6,12 +6,13 @@
 //! - [`fftp_common::config::Config`]：IP 黑白名单、匿名开关、FTP 根目录；
 //! - [`fftp_common::fail2ban::Fail2BanManager`]：失败统计与封禁；
 //! - [`fftp_common::rate_limit::ConnectionLimiter`]：并发连接数治理；
-//! - [`fftp_common::metrics`] / [`fftp_common::logging::Logging`]：指标与审计。
+//! - [`fftp_common::logging::Logging`]：审计与日志。
 //!
 //! 认证链顺序：用户名合法性 → IP 黑白名单 → fail2ban 封禁 → 连接数登记 →
 //! 匿名分支 / 用户名口令校验；成功登记会话并清零失败计数，失败注销连接登记、
 //! 累计失败并写审计。
 
+use fftp_common::sync::{MutexExt, RwLockExt};
 use std::collections::HashMap;
 use std::fmt;
 use std::path::{Path, PathBuf};
@@ -34,6 +35,7 @@ use fftp_common::{Config, Permissions, UserManager};
 use crate::path_safety::{path_starts_with_ignore_case, paths_equal_ignore_case};
 
 /// 匿名登录用户名（FTP 惯例两个别名）
+#[must_use]
 pub fn is_anonymous_name(username: &str) -> bool {
     username.eq_ignore_ascii_case("anonymous") || username.eq_ignore_ascii_case("ftp")
 }
@@ -113,7 +115,7 @@ impl RootMode {
     }
 }
 
-/// 会话跟踪：用户名 → 连接 IP 列表、trace_id → IP/用户名 反查
+/// 会话跟踪：用户名 → 连接 IP `列表、trace_id` → IP/用户名 反查
 ///
 /// libunftp 的 [`unftp_core`] 事件元数据只有 `trace_id`，审计与连接数注销需要
 /// 由登录时登记的映射反查客户端 IP。
@@ -133,7 +135,7 @@ impl SessionTracker {
 
     /// 登记一次认证成功（同用户多连接按先后入栈）
     pub fn register(&self, username: &str, client_ip: String) {
-        let mut sessions = self.sessions.lock().unwrap();
+        let mut sessions = self.sessions.lock_recover();
         sessions
             .entry(username.to_string())
             .or_default()
@@ -143,26 +145,24 @@ impl SessionTracker {
     /// 取用户最近一次登记的连接 IP
     #[must_use]
     pub fn get_ip_for_user(&self, username: &str) -> Option<String> {
-        let sessions = self.sessions.lock().unwrap();
+        let sessions = self.sessions.lock_recover();
         sessions.get(username).and_then(|ips| ips.last().cloned())
     }
 
-    /// 登记会话 trace_id 与 IP/用户名 的映射（登录事件回调时建立）
+    /// 登记会话 `trace_id` 与 IP/用户名 的映射（登录事件回调时建立）
     pub fn register_trace(&self, trace_id: String, username: &str, client_ip: String) {
         self.trace_to_ip
-            .lock()
-            .unwrap()
+            .lock_recover()
             .insert(trace_id.clone(), client_ip);
         self.trace_to_username
-            .lock()
-            .unwrap()
+            .lock_recover()
             .insert(trace_id, username.to_string());
     }
 
     /// 注销用户最近登记的一次连接，返回其 IP
     #[must_use]
     pub fn unregister(&self, username: &str) -> Option<String> {
-        let mut sessions = self.sessions.lock().unwrap();
+        let mut sessions = self.sessions.lock_recover();
         if let Some(ips) = sessions.get_mut(username)
             && !ips.is_empty()
         {
@@ -175,13 +175,13 @@ impl SessionTracker {
         None
     }
 
-    /// 按 trace_id 注销会话并同步清理用户名映射，返回其 IP
+    /// 按 `trace_id` 注销会话并同步清理用户名映射，返回其 IP
     #[must_use]
     pub fn unregister_by_trace(&self, trace_id: &str) -> Option<String> {
-        let client_ip = self.trace_to_ip.lock().unwrap().remove(trace_id);
-        let username = self.trace_to_username.lock().unwrap().remove(trace_id);
+        let client_ip = self.trace_to_ip.lock_recover().remove(trace_id);
+        let username = self.trace_to_username.lock_recover().remove(trace_id);
         if let (Some(ip), Some(user)) = (&client_ip, &username) {
-            let mut sessions = self.sessions.lock().unwrap();
+            let mut sessions = self.sessions.lock_recover();
             if let Some(ips) = sessions.get_mut(user)
                 && let Some(pos) = ips.iter().position(|x| x == ip)
             {
@@ -194,10 +194,10 @@ impl SessionTracker {
         client_ip
     }
 
-    /// 按 trace_id 反查客户端 IP
+    /// 按 `trace_id` 反查客户端 IP
     #[must_use]
     pub fn get_ip_by_trace(&self, trace_id: &str) -> Option<String> {
-        self.trace_to_ip.lock().unwrap().get(trace_id).cloned()
+        self.trace_to_ip.lock_recover().get(trace_id).cloned()
     }
 }
 
@@ -353,7 +353,7 @@ impl FtpAuthenticator {
         }
     }
 
-    /// 认证失败统一处理：注销连接登记、累计失败、写指标与审计
+    /// 认证失败统一处理：注销连接登记、累计失败、写审计
     ///
     /// `registered` 表示本次请求是否已通过连接数登记；未登记（用户名非法、
     /// IP 被拒、连接超限等）时不能注销，否则可被用来压低已有会话的计数。
@@ -368,7 +368,6 @@ impl FtpAuthenticator {
             self.connections.unregister(client_ip);
         }
         self.fail2ban.add_failure(client_ip).await;
-        fftp_common::metrics::record_auth_failure();
         self.logging.write_audit(
             username,
             "AUTH_FAIL",
@@ -379,11 +378,10 @@ impl FtpAuthenticator {
         AuthenticationError::BadPassword
     }
 
-    /// 认证成功统一处理：登记会话、清零失败计数、写指标与审计
+    /// 认证成功统一处理：登记会话、清零失败计数、写审计
     async fn accept(&self, username: &str, client_ip: &str) -> Principal {
         self.sessions.register(username, client_ip.to_string());
         self.fail2ban.reset_failures(client_ip).await;
-        fftp_common::metrics::record_auth_success();
         self.logging.write_audit(
             username,
             "LOGIN",
@@ -405,17 +403,15 @@ fn generate_dummy_hash() -> String {
     let params = Params::new(65536, 3, 4, Some(32)).unwrap_or_default();
     let argon2 = Argon2::new(argon2::Algorithm::Argon2id, argon2::Version::V0x13, params);
     argon2
-        .hash_password(b"dummy_password_for_constant_time_verification")
-        .map(|h| h.to_string())
-        .unwrap_or_else(|_| {
+        .hash_password(b"dummy_password_for_constant_time_verification").map_or_else(|_| {
             "$argon2id$v=19$m=65536,t=3,p=4$AAAAAAAAAAAAAAAAAAAAAA$AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA".to_string()
-        })
+        }, |h| h.to_string())
 }
 
 /// 对哑哈希执行一次等价校验（结果必然失败）
 fn dummy_verify(password: &str, dummy_hash: &str) {
-    use argon2::password_hash::{PasswordVerifier, phc::PasswordHash};
     use argon2::Argon2;
+    use argon2::password_hash::{PasswordVerifier, phc::PasswordHash};
 
     if let Ok(parsed) = PasswordHash::new(dummy_hash) {
         let _ = Argon2::default().verify_password(password.as_bytes(), &parsed);
@@ -440,13 +436,12 @@ impl Authenticator for FtpAuthenticator {
 
         // 2. IP 黑白名单（黑名单优先，见 Config::is_ip_allowed_for）
         {
-            let cfg = self.config.read().unwrap();
+            let cfg = self.config.read_recover();
             if !Config::is_ip_allowed_for(
                 &cfg.security.allowed_ips,
                 &cfg.security.denied_ips,
                 &client_ip,
             ) {
-                fftp_common::metrics::record_connection_rejected();
                 self.logging.write_audit(
                     username,
                     "IP_BLOCKED",
@@ -460,14 +455,12 @@ impl Authenticator for FtpAuthenticator {
 
         // 3. fail2ban 封禁
         if self.fail2ban.is_banned(&client_ip).await {
-            fftp_common::metrics::record_connection_rejected();
             tracing::warn!(ip = %client_ip, "FTP 连接来自被封禁 IP");
             return Err(AuthenticationError::IpDisallowed);
         }
 
         // 4. 并发连接数登记（注销在失败分支 / 登出事件中完成）
         if !self.connections.try_register(&client_ip) {
-            fftp_common::metrics::record_connection_rejected();
             tracing::warn!(ip = %client_ip, "FTP 并发连接数超限");
             return Err(AuthenticationError::IpDisallowed);
         }
@@ -475,16 +468,16 @@ impl Authenticator for FtpAuthenticator {
         // 5a. 匿名分支（先在同步作用域内完成校验，锁不可跨 await 持有）
         if is_anonymous_name(username) {
             let denied = {
-                let cfg = self.config.read().unwrap();
-                if !cfg.ftp.allow_anonymous {
-                    Some("匿名登录未开启".to_string())
-                } else {
+                let cfg = self.config.read_recover();
+                if cfg.ftp.allow_anonymous {
                     match cfg.ftp.anonymous_home_opt() {
                         Some(home) => UserManager::validate_anonymous_home(home)
                             .err()
                             .map(|e| format!("匿名目录非法: {e}")),
                         None => Some("未配置匿名目录".to_string()),
                     }
+                } else {
+                    Some("匿名登录未开启".to_string())
                 }
             };
             if let Some(reason) = denied {
@@ -505,17 +498,22 @@ impl Authenticator for FtpAuthenticator {
         let password_owned = password.to_string();
         let dummy_hash = self.dummy_hash.clone();
         let known = tokio::task::spawn_blocking(move || {
-            let mut users = users.lock().unwrap();
+            let mut users = users.lock_recover();
             if let Err(e) = users.reload(&fftp_common::paths::users_path()) {
                 tracing::warn!("重新加载用户库失败: {e}");
             }
             if users.get_user(&username_owned).is_some() {
-                users
+                let ok = users
                     .authenticate(&username_owned, &password_owned)
                     .unwrap_or_else(|e| {
                         tracing::error!("口令校验异常: {e}");
                         false
-                    })
+                    });
+                // authenticate 只改内存副本：在阻塞线程内原子写回 last_login/重哈希结果
+                if ok && let Err(e) = users.save(&fftp_common::paths::users_path()) {
+                    tracing::warn!("写回 users.json 失败（last_login 未持久化）: {e}");
+                }
+                ok
             } else {
                 // 未知用户：等价耗时的哑校验后按失败处理
                 dummy_verify(&password_owned, &dummy_hash);
@@ -537,7 +535,7 @@ impl Authenticator for FtpAuthenticator {
         }
     }
 
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "FtpAuthenticator"
     }
 }
@@ -575,7 +573,7 @@ impl UserDetailProvider for FtpUserDetailProvider {
 
         // 匿名用户：只读权限，home 取配置的匿名目录
         if is_anonymous_name(username) {
-            let cfg = self.config.read().unwrap();
+            let cfg = self.config.read_recover();
             let home = cfg
                 .ftp
                 .anonymous_home_opt()
@@ -600,7 +598,7 @@ impl UserDetailProvider for FtpUserDetailProvider {
         }
 
         let user = {
-            let mut users = self.users.lock().unwrap();
+            let mut users = self.users.lock_recover();
             if let Err(e) = users.reload(&fftp_common::paths::users_path()) {
                 tracing::warn!("重新加载用户库失败: {e}");
             }
@@ -717,7 +715,10 @@ mod tests {
         let tracker = SessionTracker::new();
         tracker.register("alice", "10.0.0.1".to_string());
         tracker.register("alice", "10.0.0.2".to_string());
-        assert_eq!(tracker.get_ip_for_user("alice").as_deref(), Some("10.0.0.2"));
+        assert_eq!(
+            tracker.get_ip_for_user("alice").as_deref(),
+            Some("10.0.0.2")
+        );
 
         tracker.register_trace("t1".to_string(), "alice", "10.0.0.1".to_string());
         assert_eq!(tracker.get_ip_by_trace("t1").as_deref(), Some("10.0.0.1"));
@@ -809,7 +810,7 @@ mod tests {
         // 旧 auth 测试中的 IP 分类回归（迁移保留）
         use crate::ip_utils::{IpAddressClass, classify_ip_address};
         assert_eq!(
-            classify_ip_address(&std::net::IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1))),
+            classify_ip_address(&std::net::IpAddr::V4(Ipv4Addr::LOCALHOST)),
             IpAddressClass::Loopback
         );
         assert_eq!(

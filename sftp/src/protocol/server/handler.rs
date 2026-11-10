@@ -1,8 +1,8 @@
 use std::{collections::HashMap, future::Future};
 
 use crate::protocol::{
-    message::{Attrs, Data, FileAttributes, Handle, Name, OpenFlags, Packet, Status, Version},
     StatusReply,
+    message::{Attrs, Data, FileAttributes, Handle, Name, OpenFlags, Packet, Status, Version},
 };
 
 /// Server handler for each client. This is `async_trait`

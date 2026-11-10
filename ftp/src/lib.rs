@@ -1,7 +1,7 @@
 //! fftp-ftp：fftps 的 FTP(FTPS) 服务端 crate
 //!
 //! 迁移整合自 wftpd-windows（libunftp 组装路线）与 wftpd-linux（认证/存储择优），
-//! 对接统一共享层 [`fftp_common`]（配置/用户/配额/限速/防护/指标/审计）。
+//! 对接统一共享层 [`fftp_common`]（配置/用户/配额/限速/防护/审计）。
 //!
 //! # 模块结构
 //! - [`service`]：服务组装与生命周期（[`FtpService`] / [`RunningFtpService`]）；
@@ -9,7 +9,7 @@
 //! - [`storage`]：存储封装层（路径 jail + 配额 + 限速）；
 //! - [`path_safety`]：虚拟路径净化与真实路径防逃逸；
 //! - [`cert_gen`]：FTPS 自签证书生成（rcgen）；
-//! - [`listeners`]：libunftp 数据/会话事件 → 审计与指标；
+//! - [`listeners`]：libunftp 数据/会话事件 → 审计；
 //! - [`active_mode`] / [`passive_mode`] / [`ip_utils`]：主动/被动模式策略与 IP 分类。
 //!
 //! # 存储栈组装（docs/design.md §4 Windows 组装路线）

@@ -35,7 +35,7 @@ pub fn is_private_ipv4(ip: &Ipv4Addr) -> bool {
     false
 }
 
-/// 是否为私有 IPv6（fc00::/7 唯一本地、fe80::/10 链路本地）
+/// 是否为私有 `IPv6（fc00::/7` `唯一本地、fe80::/10` 链路本地）
 #[must_use]
 pub fn is_private_ipv6(ip: &Ipv6Addr) -> bool {
     let segments = ip.segments();
@@ -107,7 +107,9 @@ mod tests {
     #[test]
     fn test_is_private_ip_and_loopback() {
         assert!(is_private_ip(&IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1))));
-        assert!(is_private_ip(&IpAddr::V6(Ipv6Addr::new(0xfc00, 0, 0, 0, 0, 0, 0, 1))));
+        assert!(is_private_ip(&IpAddr::V6(Ipv6Addr::new(
+            0xfc00, 0, 0, 0, 0, 0, 0, 1
+        ))));
         assert!(is_loopback_ip(&IpAddr::V4(Ipv4Addr::LOCALHOST)));
         assert!(is_loopback_ip(&IpAddr::V6(Ipv6Addr::LOCALHOST)));
         assert!(!is_loopback_ip(&IpAddr::V4(Ipv4Addr::new(8, 8, 8, 8))));
@@ -116,7 +118,7 @@ mod tests {
     #[test]
     fn test_classify_ip_address() {
         assert_eq!(
-            classify_ip_address(&IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1))),
+            classify_ip_address(&IpAddr::V4(Ipv4Addr::LOCALHOST)),
             IpAddressClass::Loopback
         );
         assert_eq!(

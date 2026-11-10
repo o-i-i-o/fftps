@@ -1,4 +1,4 @@
-use super::{impl_packet_for, impl_request_id, FileAttributes, Packet, RequestId};
+use super::{FileAttributes, Packet, RequestId, impl_packet_for, impl_request_id};
 
 /// Implementation for `SSH_FXP_FSETSTAT`
 #[derive(Debug, Serialize, Deserialize)]

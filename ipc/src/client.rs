@@ -7,12 +7,20 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
-use tokio::io::{split, AsyncRead, AsyncWrite, ReadHalf, WriteHalf};
-use tokio::sync::{broadcast, oneshot, Mutex};
+use tokio::io::{AsyncRead, AsyncWrite, ReadHalf, WriteHalf, split};
+use tokio::sync::{Mutex, broadcast, oneshot};
 use tokio::task::JoinHandle;
 
 use crate::framing;
-use crate::protocol::{Command, ErrorCode, Event, Message, Notification, OpResult, Request, Response};
+use crate::protocol::{
+    Command, ErrorCode, Event, Hello, Message, Notification, OpResult, Request, Response,
+};
+
+/// 单次请求等待响应的上限（须大于 fftpd 生命周期操作的 60s 内部超时）
+const REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(90);
+
+/// 握手等待上限
+const HANDSHAKE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 
 type Pending = Arc<Mutex<HashMap<u64, oneshot::Sender<Response>>>>;
 
@@ -36,13 +44,25 @@ pub struct RequestError {
 }
 
 impl Client {
-    /// 连接服务端
+    /// 连接服务端并完成令牌握手
     ///
     /// # Errors
-    /// 连接失败时返回错误
+    /// 连接失败、令牌文件不可读、握手超时或服务端拒绝时返回错误
     pub async fn connect() -> Result<Self> {
-        let conn = crate::transport::connect().await?;
-        Ok(Self::from_duplex(conn))
+        let mut conn = crate::transport::connect().await?;
+        let token =
+            fftp_common::paths::load_or_create_ipc_token().context("读取 IPC 握手令牌失败")?;
+        framing::write_frame(&mut conn, &Message::Hello(Hello { token }))
+            .await
+            .context("发送 IPC 握手失败")?;
+
+        match tokio::time::timeout(HANDSHAKE_TIMEOUT, framing::read_frame(&mut conn)).await {
+            Ok(Ok(Some(Message::HelloAck))) => Ok(Self::from_duplex(conn)),
+            Ok(Ok(Some(other))) => anyhow::bail!("IPC 握手失败：服务端返回了非预期消息 {other:?}"),
+            Ok(Ok(None)) => anyhow::bail!("IPC 握手失败：服务端关闭了连接"),
+            Ok(Err(e)) => Err(e.context("读取 IPC 握手应答失败")),
+            Err(_) => anyhow::bail!("IPC 握手超时（{}s）", HANDSHAKE_TIMEOUT.as_secs()),
+        }
     }
 
     /// 从任意双工流构造客户端（测试/自定义传输用）
@@ -94,15 +114,22 @@ impl Client {
             return Err(ClientError::Disconnected(e.to_string()));
         }
 
-        match rx.await {
-            Ok(resp) => match resp.result {
+        match tokio::time::timeout(REQUEST_TIMEOUT, rx).await {
+            Ok(Ok(resp)) => match resp.result {
                 OpResult::Ok { data } => Ok(data),
-                OpResult::Error { code, message } => Err(ClientError::Request(RequestError {
-                    code,
-                    message,
-                })),
+                OpResult::Error { code, message } => {
+                    Err(ClientError::Request(RequestError { code, message }))
+                }
             },
-            Err(_) => Err(ClientError::Disconnected("连接已断开，未收到响应".into())),
+            Ok(Err(_)) => Err(ClientError::Disconnected("连接已断开，未收到响应".into())),
+            Err(_) => {
+                // 超时后清理挂起项，避免后续迟到响应误配
+                self.pending.lock().await.remove(&id);
+                Err(ClientError::Disconnected(format!(
+                    "请求超时（{}s）",
+                    REQUEST_TIMEOUT.as_secs()
+                )))
+            }
         }
     }
 }
@@ -116,11 +143,8 @@ pub enum ClientError {
     Request(#[from] RequestError),
 }
 
-async fn read_loop<R>(
-    mut reader: ReadHalf<R>,
-    pending: Pending,
-    events: broadcast::Sender<Event>,
-) where
+async fn read_loop<R>(mut reader: ReadHalf<R>, pending: Pending, events: broadcast::Sender<Event>)
+where
     R: AsyncRead + AsyncWrite + Unpin + Send + 'static,
 {
     loop {

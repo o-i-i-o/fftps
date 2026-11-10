@@ -1,4 +1,4 @@
-use super::{impl_packet_for, impl_request_id, Packet, RequestId};
+use super::{Packet, RequestId, impl_packet_for, impl_request_id};
 use crate::protocol::{de::data_deserialize, ser::data_serialize};
 
 /// Implementation for `SSH_FXP_EXTENDED`

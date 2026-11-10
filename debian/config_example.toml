@@ -11,7 +11,6 @@ bind_ip = "0.0.0.0"
 port = 21
 welcome_message = "Welcome to fftpd"
 encoding = "UTF-8"
-default_transfer_mode = "binary"
 # passive_only | active_only | active_and_passive
 connection_mode = "passive_only"
 allow_anonymous = false
@@ -23,11 +22,8 @@ passive_ports = [50000, 51000]
 max_speed_kbps = 0
 # 被动模式对外通告地址，空 = 使用实际连接地址
 masquerade_address = ""
-connection_timeout = 15
 idle_timeout = 15
-hide_version_info = false
-# 池化被动监听模式：libunftp 0.23.1 停止后不释放预绑定的被动端口，
-# 运行期 restart 会失败（需重启 fftpd 进程），默认关闭
+# 池化被动监听模式：上游 libunftp 0.23.1 停止后不释放端口，当前实现忽略此选项
 pooled_listener_mode = false
 allow_nat_clients = true
 # FTP 根目录，空 = 各用户 home
@@ -48,7 +44,6 @@ port = 2222
 host_key_path = ""
 max_auth_attempts = 3
 auth_timeout = 60
-log_level = "info"
 max_sessions_per_user = 5
 # 主机密钥轮换周期（天），0 = 不轮换
 host_key_rotation_days = 0

@@ -35,6 +35,17 @@ impl Action {
         }
     }
 
+    /// 稳定标识（审计/日志用）
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Install => "install",
+            Self::Uninstall => "uninstall",
+            Self::AutostartOn => "autostart-on",
+            Self::AutostartOff => "autostart-off",
+        }
+    }
+
     /// 成功提示
     #[must_use]
     pub fn ok_text(self) -> &'static str {

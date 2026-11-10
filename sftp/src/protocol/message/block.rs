@@ -1,4 +1,4 @@
-use super::{impl_packet_for, impl_request_id, Packet, RequestId};
+use super::{Packet, RequestId, impl_packet_for, impl_request_id};
 
 /// Implementation for `SSH_FXP_BLOCK`（LOCK，draft-ietf-secsh-filexfer §6.6）
 ///

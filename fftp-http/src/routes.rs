@@ -12,11 +12,11 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 
 use axum::extract::{ConnectInfo, Path, Query, State};
-use axum::http::header::{CACHE_CONTROL, CONTENT_TYPE, SET_COOKIE};
 use axum::http::StatusCode;
+use axum::http::header::{CACHE_CONTROL, CONTENT_TYPE, SET_COOKIE};
 use axum::response::{IntoResponse, Redirect, Response};
 use axum::routing::{get, post, put};
-use axum::{middleware, Json, Router};
+use axum::{Json, Router, middleware};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -195,7 +195,10 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         .route("/api/config", get(get_config).put(put_config))
         .route("/api/users", get(get_users).put(put_users))
         .route("/api/user-hash", post(user_hash))
-        .route("/api/admin-users", get(get_admin_users).put(put_admin_users))
+        .route(
+            "/api/admin-users",
+            get(get_admin_users).put(put_admin_users),
+        )
         .route("/api/initial", get(get_initial))
         .route("/api/user-directories/ensure", post(ensure_user_dirs))
         .route("/api/user-directories/suggest", post(suggest_user_dirs))
@@ -291,12 +294,10 @@ async fn do_setup(
     match crate::setup::read_token() {
         Some(expected) if auth::ct_eq(expected.as_str(), body.token.trim()) => {}
         Some(_) => {
-            return ApiError::forbidden("引导令牌无效，请从桌面快捷方式重新打开")
-                .into_response();
+            return ApiError::forbidden("引导令牌无效，请从桌面快捷方式重新打开").into_response();
         }
         None => {
-            return ApiError::bad_request("引导令牌缺失，请重启 fftp-http 后重试")
-                .into_response();
+            return ApiError::bad_request("引导令牌缺失，请重启 fftp-http 后重试").into_response();
         }
     }
 
@@ -309,24 +310,39 @@ async fn do_setup(
             .chars()
             .any(|c| c.is_whitespace() || c.is_control() || "/\\\"'".contains(c))
     {
-        return ApiError::bad_request(
-            "用户名含非法字符（空白/引号/路径分隔符）或超过 64 字符",
-        )
-        .into_response();
+        return ApiError::bad_request("用户名含非法字符（空白/引号/路径分隔符）或超过 64 字符")
+            .into_response();
     }
     if body.password.chars().count() < 8 {
         return ApiError::bad_request("口令至少 8 个字符").into_response();
     }
-    let hash = match fftp_common::users::UserManager::hash_password(&body.password) {
-        Ok(hash) => hash,
-        Err(e) => return ApiError::internal(format!("口令哈希失败: {e:#}")).into_response(),
+    let hash = match tokio::task::spawn_blocking(move || {
+        fftp_common::users::UserManager::hash_password(&body.password)
+    })
+    .await
+    {
+        Ok(Ok(hash)) => hash,
+        Ok(Err(e)) => return ApiError::internal(format!("口令哈希失败: {e:#}")).into_response(),
+        Err(e) => return ApiError::internal(format!("口令哈希任务失败: {e}")).into_response(),
     };
     let users = vec![crate::config::AdminUser {
         username: name.to_string(),
         password_hash: hash.clone(),
     }];
-    if let Err(e) = crate::config::HttpConfig::save_admin_users(&state.http_config_path, &users) {
-        return ApiError::internal(format!("写入管理员配置失败: {e:#}")).into_response();
+    let config_path = state.http_config_path.clone();
+    let users_for_save = users.clone();
+    let save_result = tokio::task::spawn_blocking(move || {
+        crate::config::HttpConfig::save_admin_users(&config_path, &users_for_save)
+    })
+    .await;
+    match save_result {
+        Ok(Ok(())) => {}
+        Ok(Err(e)) => {
+            return ApiError::internal(format!("写入管理员配置失败: {e:#}")).into_response();
+        }
+        Err(e) => {
+            return ApiError::internal(format!("写入管理员配置任务失败: {e}")).into_response();
+        }
     }
 
     state.set_admins(users);
@@ -334,7 +350,12 @@ async fn do_setup(
     let token = state.sessions.create(name, &hash);
     let cookie = auth::session_cookie(&state, &token);
     state
-        .audit(name, "setup", "fftp-http.toml", "首次设置完成，已创建管理员")
+        .audit(
+            name,
+            "setup",
+            "fftp-http.toml",
+            "首次设置完成，已创建管理员",
+        )
         .await;
     tracing::info!("首次设置完成，管理员账户: {name}");
     (
@@ -374,7 +395,7 @@ async fn get_me(user: AuthedUser) -> Json<Value> {
     Json(serde_json::json!({ "username": user.0 }))
 }
 
-/// GET /api/status → GetStatus
+/// GET /api/status → `GetStatus`
 async fn get_status(State(state): State<Arc<AppState>>) -> ApiResult<Json<ServerStatus>> {
     let data = state.daemon.request(Command::GetStatus).await?;
     Ok(Json(parse_data(data)?))
@@ -476,10 +497,7 @@ async fn heartbeat(
 }
 
 /// POST /api/self-shutdown → 手动关闭 fftp-http（不关闭 fftpd）
-async fn self_shutdown(
-    State(state): State<Arc<AppState>>,
-    user: AuthedUser,
-) -> Json<Value> {
+async fn self_shutdown(State(state): State<Arc<AppState>>, user: AuthedUser) -> Json<Value> {
     state
         .audit(&user.0, "self_shutdown", "fftp-http", "Web 服务手动关闭")
         .await;
@@ -504,13 +522,30 @@ async fn system_service_status() -> ApiResult<Json<system_service::ServiceStatus
 
 /// POST /api/system-service/{install|uninstall|autostart-on|autostart-off}
 async fn system_service_action(
-    _user: AuthedUser,
+    State(state): State<Arc<AppState>>,
+    user: AuthedUser,
     Path(action): Path<String>,
 ) -> ApiResult<Json<Value>> {
     let action = system_service::Action::parse(&action).ok_or_else(ApiError::not_found)?;
-    let output = system_service::perform(action)
-        .await
-        .map_err(|e| ApiError::new(StatusCode::BAD_GATEWAY, "system_service", e))?;
+    let result = system_service::perform(action).await;
+    match &result {
+        Ok(_) => {
+            state
+                .audit(&user.0, "system_service", action.as_str(), action.ok_text())
+                .await;
+        }
+        Err(e) => {
+            state
+                .audit(
+                    &user.0,
+                    "system_service_failed",
+                    action.as_str(),
+                    &e.clone(),
+                )
+                .await;
+        }
+    }
+    let output = result.map_err(|e| ApiError::new(StatusCode::BAD_GATEWAY, "system_service", e))?;
     Ok(Json(serde_json::json!({
         "ok": true,
         "message": action.ok_text(),
@@ -520,13 +555,13 @@ async fn system_service_action(
 
 // ---------- 配置与用户 ----------
 
-/// GET /api/config → GetConfig
+/// GET /api/config → `GetConfig`
 async fn get_config(State(state): State<Arc<AppState>>) -> ApiResult<Json<TextContent>> {
     let data = state.daemon.request(Command::GetConfig).await?;
     Ok(Json(parse_data(data)?))
 }
 
-/// PUT /api/config，body `{"content": "..."}` → SaveConfig
+/// PUT /api/config，body `{"content": "..."}` → `SaveConfig`
 async fn put_config(
     State(state): State<Arc<AppState>>,
     user: AuthedUser,
@@ -534,22 +569,32 @@ async fn put_config(
 ) -> ApiResult<Json<Value>> {
     let result = state
         .daemon
-        .request(Command::SaveConfig { content: body.content.clone() })
+        .request(Command::SaveConfig {
+            content: body.content.clone(),
+        })
         .await;
     match &result {
-        Ok(_) => state.audit(&user.0, "save_config", "config.toml", "配置已保存").await,
-        Err(e) => state.audit(&user.0, "save_config_failed", "config.toml", &e.to_string()).await,
+        Ok(_) => {
+            state
+                .audit(&user.0, "save_config", "config.toml", "配置已保存")
+                .await;
+        }
+        Err(e) => {
+            state
+                .audit(&user.0, "save_config_failed", "config.toml", &e.to_string())
+                .await;
+        }
     }
     Ok(Json(result?))
 }
 
-/// GET /api/users → GetUsers
+/// GET /api/users → `GetUsers`
 async fn get_users(State(state): State<Arc<AppState>>) -> ApiResult<Json<TextContent>> {
     let data = state.daemon.request(Command::GetUsers).await?;
     Ok(Json(parse_data(data)?))
 }
 
-/// PUT /api/users，body `{"content": "..."}` → SaveUsers
+/// PUT /api/users，body `{"content": "..."}` → `SaveUsers`
 async fn put_users(
     State(state): State<Arc<AppState>>,
     user: AuthedUser,
@@ -557,21 +602,28 @@ async fn put_users(
 ) -> ApiResult<Json<Value>> {
     let result = state
         .daemon
-        .request(Command::SaveUsers { content: body.content.clone() })
+        .request(Command::SaveUsers {
+            content: body.content.clone(),
+        })
         .await;
     match &result {
-        Ok(_) => state.audit(&user.0, "save_users", "users.json", "用户库已保存").await,
-        Err(e) => state.audit(&user.0, "save_users_failed", "users.json", &e.to_string()).await,
+        Ok(_) => {
+            state
+                .audit(&user.0, "save_users", "users.json", "用户库已保存")
+                .await;
+        }
+        Err(e) => {
+            state
+                .audit(&user.0, "save_users_failed", "users.json", &e.to_string())
+                .await;
+        }
     }
     Ok(Json(result?))
 }
 
 /// POST /api/user-hash，body `{"password": "..."}` → Argon2id PHC 哈希
 /// （新增用户时前端本地调用，与 fftpd 口令校验同策略参数）
-async fn user_hash(
-    _user: AuthedUser,
-    Json(body): Json<UserHashBody>,
-) -> ApiResult<Json<Value>> {
+async fn user_hash(_user: AuthedUser, Json(body): Json<UserHashBody>) -> ApiResult<Json<Value>> {
     if body.password.is_empty() {
         return Err(ApiError::new(
             axum::http::StatusCode::BAD_REQUEST,
@@ -579,8 +631,12 @@ async fn user_hash(
             "口令不能为空",
         ));
     }
-    let hash = fftp_common::users::UserManager::hash_password(&body.password)
-        .map_err(|e| ApiError::internal(format!("口令哈希失败: {e:#}")))?;
+    let hash = tokio::task::spawn_blocking(move || {
+        fftp_common::users::UserManager::hash_password(&body.password)
+    })
+    .await
+    .map_err(|e| ApiError::internal(format!("口令哈希任务失败: {e}")))?
+    .map_err(|e| ApiError::internal(format!("口令哈希失败: {e:#}")))?;
     Ok(Json(serde_json::json!({ "hash": hash })))
 }
 
@@ -598,7 +654,10 @@ async fn get_admin_users(State(state): State<Arc<AppState>>) -> Json<AdminUsersB
         users: state
             .admins()
             .iter()
-            .map(|u| AdminUserEntry { username: u.username.clone(), password: String::new() })
+            .map(|u| AdminUserEntry {
+                username: u.username.clone(),
+                password: String::new(),
+            })
             .collect(),
     })
 }
@@ -623,7 +682,11 @@ async fn put_admin_users(
         if name.is_empty() {
             return Err(ApiError::bad_request("用户名不能为空"));
         }
-        if name.len() > 64 || name.chars().any(|c| c.is_whitespace() || c.is_control() || "/\\\"'".contains(c)) {
+        if name.len() > 64
+            || name
+                .chars()
+                .any(|c| c.is_whitespace() || c.is_control() || "/\\\"'".contains(c))
+        {
             return Err(ApiError::bad_request(format!(
                 "用户名 {name:?} 含非法字符（空白/引号/路径分隔符）或超过 64 字符"
             )));
@@ -636,12 +699,15 @@ async fn put_admin_users(
                 .iter()
                 .find(|u| u.username == name)
                 .map(|u| u.password_hash.clone())
-                .ok_or_else(|| {
-                    ApiError::bad_request(format!("新用户 {name} 必须提供口令"))
-                })?
+                .ok_or_else(|| ApiError::bad_request(format!("新用户 {name} 必须提供口令")))?
         } else {
-            fftp_common::users::UserManager::hash_password(&entry.password)
-                .map_err(|e| ApiError::internal(format!("口令哈希失败: {e:#}")))?
+            let password = entry.password.clone();
+            tokio::task::spawn_blocking(move || {
+                fftp_common::users::UserManager::hash_password(&password)
+            })
+            .await
+            .map_err(|e| ApiError::internal(format!("口令哈希任务失败: {e}")))?
+            .map_err(|e| ApiError::internal(format!("口令哈希失败: {e:#}")))?
         };
         new_users.push(crate::config::AdminUser {
             username: name.to_string(),
@@ -654,11 +720,22 @@ async fn put_admin_users(
     }
 
     // 先落盘（校验通过才写），成功后再更新运行期列表
-    crate::config::HttpConfig::save_admin_users(&state.http_config_path, &new_users)?;
+    let config_path = state.http_config_path.clone();
+    let users_for_save = new_users.clone();
+    tokio::task::spawn_blocking(move || {
+        crate::config::HttpConfig::save_admin_users(&config_path, &users_for_save)
+    })
+    .await
+    .map_err(|e| ApiError::internal(format!("写入管理员配置任务失败: {e}")))??;
     let count = new_users.len();
     state.set_admins(new_users);
     state
-        .audit(&user.0, "save_admin_users", "fftp-http.toml", &format!("管理员共 {count} 名"))
+        .audit(
+            &user.0,
+            "save_admin_users",
+            "fftp-http.toml",
+            &format!("管理员共 {count} 名"),
+        )
         .await;
     Ok(Json(AdminUsersBody {
         users: body.users, // 原样回显（password 字段已被 skip_serializing 剔除）
@@ -703,7 +780,11 @@ fn suggested_dirs(username: &str) -> Vec<String> {
                     dirs.push(path.to_string_lossy().into_owned());
                 }
             }
-            dirs.push(base.join(format!("ftp-{name}")).to_string_lossy().into_owned());
+            dirs.push(
+                base.join(format!("ftp-{name}"))
+                    .to_string_lossy()
+                    .into_owned(),
+            );
         }
         dirs.push(format!("C:\\ftp\\{name}"));
     }
@@ -718,7 +799,11 @@ fn suggested_dirs(username: &str) -> Vec<String> {
                     dirs.push(path.to_string_lossy().into_owned());
                 }
             }
-            dirs.push(base.join(format!("ftp-{name}")).to_string_lossy().into_owned());
+            dirs.push(
+                base.join(format!("ftp-{name}"))
+                    .to_string_lossy()
+                    .into_owned(),
+            );
         }
         dirs.push(format!("/srv/ftp/{name}"));
         dirs.push(format!("/var/ftp/{name}"));
@@ -729,13 +814,13 @@ fn suggested_dirs(username: &str) -> Vec<String> {
     dirs
 }
 
-/// POST /api/user-directories/ensure → EnsureUserDirectories
+/// POST /api/user-directories/ensure → `EnsureUserDirectories`
 async fn ensure_user_dirs(State(state): State<Arc<AppState>>) -> ApiResult<Json<Value>> {
     let data = state.daemon.request(Command::EnsureUserDirectories).await?;
     Ok(Json(data))
 }
 
-/// POST /api/user-directory，body `{"path": "..."}` → CreateUserDirectory
+/// POST /api/user-directory，body `{"path": "..."}` → `CreateUserDirectory`
 async fn create_user_dir(
     State(state): State<Arc<AppState>>,
     user: AuthedUser,
@@ -743,13 +828,17 @@ async fn create_user_dir(
 ) -> ApiResult<Json<Value>> {
     let data = state
         .daemon
-        .request(Command::CreateUserDirectory { path: body.path.clone() })
+        .request(Command::CreateUserDirectory {
+            path: body.path.clone(),
+        })
         .await?;
-    state.audit(&user.0, "create_dir", &body.path, "创建用户主目录").await;
+    state
+        .audit(&user.0, "create_dir", &body.path, "创建用户主目录")
+        .await;
     Ok(Json(data))
 }
 
-/// POST /api/directory-permissions，body `{"path": "..."}` → SetupDirectoryPermissions
+/// POST /api/directory-permissions，body `{"path": "..."}` → `SetupDirectoryPermissions`
 async fn setup_dir_perms(
     State(state): State<Arc<AppState>>,
     user: AuthedUser,
@@ -757,15 +846,19 @@ async fn setup_dir_perms(
 ) -> ApiResult<Json<Value>> {
     let data = state
         .daemon
-        .request(Command::SetupDirectoryPermissions { path: body.path.clone() })
+        .request(Command::SetupDirectoryPermissions {
+            path: body.path.clone(),
+        })
         .await?;
-    state.audit(&user.0, "setup_permissions", &body.path, "设置目录权限").await;
+    state
+        .audit(&user.0, "setup_permissions", &body.path, "设置目录权限")
+        .await;
     Ok(Json(data))
 }
 
 // ---------- 日志 ----------
 
-/// GET /api/logs?count=200 → GetRecentLogs
+/// GET /api/logs?count=200 → `GetRecentLogs`
 async fn recent_logs(
     State(state): State<Arc<AppState>>,
     Query(q): Query<CountQuery>,
@@ -777,25 +870,28 @@ async fn recent_logs(
     Ok(Json(data))
 }
 
-/// GET /api/logs/files → GetLogFiles
+/// GET /api/logs/files → `GetLogFiles`
 async fn log_files(State(state): State<Arc<AppState>>) -> ApiResult<Json<Value>> {
     let data = state.daemon.request(Command::GetLogFiles).await?;
     Ok(Json(data))
 }
 
-/// POST /api/logs/content，body `{"path": "...", "count": 200}` → GetLogFileContent
+/// POST /api/logs/content，body `{"path": "...", "count": 200}` → `GetLogFileContent`
 async fn log_content(
     State(state): State<Arc<AppState>>,
     Json(body): Json<PathCountBody>,
 ) -> ApiResult<Json<Value>> {
     let data = state
         .daemon
-        .request(Command::GetLogFileContent { path: body.path, count: body.count })
+        .request(Command::GetLogFileContent {
+            path: body.path,
+            count: body.count,
+        })
         .await?;
     Ok(Json(data))
 }
 
-/// PUT /api/log-config → SaveLogConfig
+/// PUT /api/log-config → `SaveLogConfig`
 async fn put_log_config(
     State(state): State<Arc<AppState>>,
     user: AuthedUser,
@@ -812,28 +908,39 @@ async fn put_log_config(
         })
         .await;
     match &result {
-        Ok(_) => state.audit(&user.0, "save_log_config", "logging", "日志配置已保存").await,
-        Err(e) => state.audit(&user.0, "save_log_config_failed", "logging", &e.to_string()).await,
+        Ok(_) => {
+            state
+                .audit(&user.0, "save_log_config", "logging", "日志配置已保存")
+                .await;
+        }
+        Err(e) => {
+            state
+                .audit(&user.0, "save_log_config_failed", "logging", &e.to_string())
+                .await;
+        }
     }
     Ok(Json(result?))
 }
 
 // ---------- 文件操作日志 ----------
 
-/// GET /api/fileop/files → GetFileOpLogFiles
+/// GET /api/fileop/files → `GetFileOpLogFiles`
 async fn fileop_files(State(state): State<Arc<AppState>>) -> ApiResult<Json<Value>> {
     let data = state.daemon.request(Command::GetFileOpLogFiles).await?;
     Ok(Json(data))
 }
 
-/// POST /api/fileop/content，body `{"path": "...", "count": 200}` → GetFileOpLogContent
+/// POST /api/fileop/content，body `{"path": "...", "count": 200}` → `GetFileOpLogContent`
 async fn fileop_content(
     State(state): State<Arc<AppState>>,
     Json(body): Json<PathCountBody>,
 ) -> ApiResult<Json<Value>> {
     let data = state
         .daemon
-        .request(Command::GetFileOpLogContent { path: body.path, count: body.count })
+        .request(Command::GetFileOpLogContent {
+            path: body.path,
+            count: body.count,
+        })
         .await?;
     Ok(Json(data))
 }

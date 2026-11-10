@@ -11,5 +11,5 @@ pub mod server;
 pub mod transport;
 
 pub use client::{Client, ClientError, RequestError};
-pub use protocol::{Command, ErrorCode, Event, Message, ServiceTarget};
-pub use server::{serve, Handler, HandlerError};
+pub use protocol::{Command, ErrorCode, Event, Hello, Message, ServiceTarget};
+pub use server::{Handler, HandlerError, serve};

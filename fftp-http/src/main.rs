@@ -30,12 +30,19 @@ use std::sync::Arc;
 use anyhow::{Context, Result};
 use axum::body::Body;
 use axum::extract::ConnectInfo;
-use hyper_util::rt::{TokioExecutor, TokioIo};
-use tokio::sync::watch;
+use hyper_util::rt::{TokioExecutor, TokioIo, TokioTimer};
+use tokio::sync::{Semaphore, watch};
 use tokio_rustls::TlsAcceptor;
 use tower::ServiceExt;
 
 use idle::ShutdownReason;
+
+/// Web 管理面并发连接上限（含 SSE / 静态资源 / API）
+const MAX_CONNECTIONS: usize = 256;
+/// TLS 握手超时：防止慢速握手长期占用连接
+const TLS_HANDSHAKE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+/// HTTP 请求头读取超时：防止 slowloris 持续占用连接
+const HEADER_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 
 fn main() -> Result<()> {
     // Windows 下先尝试服务方式（`--service` 或 SCM 自动检测），
@@ -57,9 +64,9 @@ fn main() -> Result<()> {
         Some("launch") => launch::run()?,
         // 前台服务（显式 `serve` 或省略子命令）
         Some("serve") | None => run()?,
-        Some(other) => anyhow::bail!(
-            "未知子命令: {other}\n用法: fftp-http [serve|launch|hash <口令>]"
-        ),
+        Some(other) => {
+            anyhow::bail!("未知子命令: {other}\n用法: fftp-http [serve|launch|hash <口令>]")
+        }
     }
     Ok(())
 }
@@ -121,15 +128,19 @@ async fn serve(
     };
     let scheme = if acceptor.is_some() { "https" } else { "http" };
 
-    let addr: SocketAddr = format!("{}:{}", state.config.listen.address, state.config.listen.port)
-        .parse()
-        .context("监听地址解析失败")?;
+    let addr: SocketAddr = format!(
+        "{}:{}",
+        state.config.listen.address, state.config.listen.port
+    )
+    .parse()
+    .context("监听地址解析失败")?;
     let listener = tokio::net::TcpListener::bind(addr)
         .await
         .with_context(|| format!("绑定 {addr} 失败"))?;
     tracing::info!("Web 管理界面监听 {scheme}://{addr}");
 
     let mut service_stop = service_stop;
+    let conn_limit = Arc::new(Semaphore::new(MAX_CONNECTIONS));
     loop {
         tokio::select! {
             accepted = listener.accept() => {
@@ -140,7 +151,17 @@ async fn serve(
                         continue;
                     }
                 };
-                tokio::spawn(handle_conn(app.clone(), acceptor.clone(), tcp, peer));
+                let Ok(permit) = conn_limit.clone().try_acquire_owned() else {
+                    tracing::warn!("连接数达到上限（{MAX_CONNECTIONS}），拒绝 {peer}");
+                    drop(tcp);
+                    continue;
+                };
+                let app = app.clone();
+                let acceptor = acceptor.clone();
+                tokio::spawn(async move {
+                    handle_conn(app, acceptor, tcp, peer).await;
+                    drop(permit);
+                });
             }
             _ = tokio::signal::ctrl_c() => {
                 tracing::info!("收到中断信号，退出");
@@ -161,9 +182,7 @@ async fn serve(
 }
 
 /// 空闲/手动关停信号；无信号时永不触发
-async fn wait_shutdown(
-    rx: &mut watch::Receiver<Option<ShutdownReason>>,
-) -> Option<ShutdownReason> {
+async fn wait_shutdown(rx: &mut watch::Receiver<Option<ShutdownReason>>) -> Option<ShutdownReason> {
     loop {
         if let Some(reason) = *rx.borrow() {
             return Some(reason);
@@ -202,20 +221,30 @@ async fn handle_conn(
         let app = app.clone();
         async move { app.oneshot(req.map(Body::new)).await }
     });
-    let builder = hyper_util::server::conn::auto::Builder::new(TokioExecutor::new());
+    let mut builder = hyper_util::server::conn::auto::Builder::new(TokioExecutor::new());
+    builder
+        .http1()
+        .timer(TokioTimer::new())
+        .header_read_timeout(Some(HEADER_READ_TIMEOUT));
 
     let result = match acceptor {
-        Some(acceptor) => match acceptor.accept(tcp).await {
-            Ok(stream) => {
-                builder
-                    .serve_connection_with_upgrades(TokioIo::new(stream), svc)
-                    .await
+        Some(acceptor) => {
+            match tokio::time::timeout(TLS_HANDSHAKE_TIMEOUT, acceptor.accept(tcp)).await {
+                Ok(Ok(stream)) => {
+                    builder
+                        .serve_connection_with_upgrades(TokioIo::new(stream), svc)
+                        .await
+                }
+                Ok(Err(e)) => {
+                    tracing::debug!("TLS 握手失败（{peer}）: {e}");
+                    return;
+                }
+                Err(_) => {
+                    tracing::warn!("TLS 握手超时（{peer}），断开连接");
+                    return;
+                }
             }
-            Err(e) => {
-                tracing::debug!("TLS 握手失败（{peer}）: {e}");
-                return;
-            }
-        },
+        }
         None => {
             builder
                 .serve_connection_with_upgrades(TokioIo::new(tcp), svc)
@@ -241,7 +270,12 @@ mod tests {
         let hash = fftp_common::users::UserManager::hash_password("test-pass").unwrap();
         assert!(hash.starts_with("$argon2id$"));
         assert!(hash.contains("m=65536,t=3,p=4"));
-        assert!(fftp_common::users::UserManager::verify_password("test-pass", &hash));
-        assert!(!fftp_common::users::UserManager::verify_password("wrong", &hash));
+        assert!(fftp_common::users::UserManager::verify_password(
+            "test-pass",
+            &hash
+        ));
+        assert!(!fftp_common::users::UserManager::verify_password(
+            "wrong", &hash
+        ));
     }
 }

@@ -2,7 +2,7 @@
 //!
 //! - tracing 初始化：控制台 / 程序日志文件 / file-ops 审计文件三层；
 //!   程序日志支持 JSON 与文本两种格式（[`LoggingConfig::enable_json`]），审计日志恒为 JSON 行；
-//!   两类文件均按天轮转（tracing-appender），保留 [`LoggingConfig::max_log_files`] 份；
+//!   两类文件均按「日期 + 单文件大小」轮转，保留 [`LoggingConfig::max_log_files`] 份；
 //! - 内存环形缓冲（[`RingBuffer`]）：程序日志经常驻的 [`MemoryLogLayer`] 捕获
 //!   （逐条按 `enable_gui_logging` 判断，运行期切换即时生效），审计条目由
 //!   [`Logging::write_file_op`] 直接写入，供 IPC 拉取（`recent`）与订阅（`subscribe`）；
@@ -19,18 +19,22 @@
 //! | [`FileOpLogEntry`] | `FileOpLogEntry`：`timestamp/username/client_ip/operation/file_path/file_size/protocol/success/message` |
 //! | [`LogFileInfo`] | `LogFileInfo`：`name/path` |
 
+use crate::sync::MutexExt;
 use anyhow::{Context, Result, bail};
+use chrono::Local;
 use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
-use std::path::Path;
+use std::fs::{File, OpenOptions};
+use std::io::{self, Write};
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex as StdMutex, OnceLock};
 use tracing::field::Visit;
 use tracing::{Event, Subscriber};
-use tracing_appender::{non_blocking, rolling};
+use tracing_appender::non_blocking;
 use tracing_subscriber::filter::{LevelFilter, Targets};
+use tracing_subscriber::fmt::time::ChronoLocal;
 use tracing_subscriber::layer::{Context as LayerContext, Layer, SubscriberExt};
 use tracing_subscriber::reload::{self, Handle};
-use tracing_subscriber::fmt::time::ChronoLocal;
 use tracing_subscriber::{Registry, fmt};
 
 use crate::config::LoggingConfig;
@@ -134,10 +138,10 @@ impl<T: Clone> RingBuffer<T> {
     /// 追加一条记录到环形缓冲（满时淘汰最旧一条），并广播给订阅者
     ///
     /// # Panics
-    /// 内部互斥锁中毒（持有线程 panic）时 panic
+    /// 内部互斥锁中毒时自动恢复（见 [`crate::sync`]）
     pub fn push(&self, entry: T) {
         {
-            let mut entries = self.inner.entries.lock().unwrap();
+            let mut entries = self.inner.entries.lock_recover();
             if entries.len() >= self.inner.capacity {
                 entries.pop_front();
             }
@@ -150,10 +154,10 @@ impl<T: Clone> RingBuffer<T> {
     /// 最近 `count` 条记录，按时间正序返回（最旧→最新）
     ///
     /// # Panics
-    /// 内部互斥锁中毒（持有线程 panic）时 panic
+    /// 内部互斥锁中毒时自动恢复（见 [`crate::sync`]）
     #[must_use]
     pub fn recent(&self, count: usize) -> Vec<T> {
-        let entries = self.inner.entries.lock().unwrap();
+        let entries = self.inner.entries.lock_recover();
         let skip = entries.len().saturating_sub(count);
         entries.iter().skip(skip).cloned().collect()
     }
@@ -167,10 +171,10 @@ impl<T: Clone> RingBuffer<T> {
     /// 当前缓冲中的条目数
     ///
     /// # Panics
-    /// 内部互斥锁中毒（持有线程 panic）时 panic
+    /// 内部互斥锁中毒时自动恢复（见 [`crate::sync`]）
     #[must_use]
     pub fn len(&self) -> usize {
-        self.inner.entries.lock().unwrap().len()
+        self.inner.entries.lock_recover().len()
     }
 
     /// 缓冲是否为空
@@ -222,7 +226,7 @@ struct MemoryLogLayer {
 
 impl<S: Subscriber> Layer<S> for MemoryLogLayer {
     fn on_event(&self, event: &Event<'_>, _ctx: LayerContext<'_, S>) {
-        if !self.live_config.lock().unwrap().enable_gui_logging {
+        if !self.live_config.lock_recover().enable_gui_logging {
             return;
         }
         let metadata = event.metadata();
@@ -285,7 +289,11 @@ impl Logging {
     /// 日志目录创建失败、滚动 appender 构建失败，或全局 subscriber 已被初始化时返回错误
     pub fn init(config: &LoggingConfig) -> Result<Self> {
         let logging = Self::new(config);
-        install_subscriber(config, &logging.log_buffer, Arc::clone(&logging.live_config))?;
+        install_subscriber(
+            config,
+            &logging.log_buffer,
+            Arc::clone(&logging.live_config),
+        )?;
         Ok(logging)
     }
 
@@ -297,7 +305,7 @@ impl Logging {
     /// 当前生效的日志参数（初始化参数经 [`Self::update_config`] 热更新后的值）
     #[must_use]
     pub fn live_config(&self) -> LoggingConfig {
-        self.live_config.lock().unwrap().clone()
+        self.live_config.lock_recover().clone()
     }
 
     /// 热更新日志参数（新增钩子，供守护进程 `SaveLogConfig` 后调用）
@@ -307,7 +315,7 @@ impl Logging {
     /// 日志级别另经 [`set_log_level`] 动态调整；
     /// 文件 appender 的目录/格式在 `init` 时确定，变更需重启进程完整生效。
     pub fn update_config(&self, config: LoggingConfig) {
-        *self.live_config.lock().unwrap() = config;
+        *self.live_config.lock_recover() = config;
     }
 
     /// 程序日志环形缓冲
@@ -410,6 +418,159 @@ impl Logging {
     }
 }
 
+/// 按「日期 + 单文件大小」轮转的日志文件写入器
+///
+/// `tracing_appender` 的 rolling appender 只支持时间轮转；`max_log_size`
+/// 需要额外的体积上限，故由本类型实现：
+/// - 文件名 `<prefix>.<YYYY-MM-DD>.<NNNN>.log`（序号零填充，保证字典序即时间序）；
+/// - 单文件达到 `max_log_size` 后切到同日后继序号；跨天自动切新日期；
+/// - 只保留最新 `max_log_files` 份（与列表/读取接口的截断口径一致）。
+struct SizeRotatingFile {
+    dir: PathBuf,
+    prefix: String,
+    max_size: u64,
+    max_files: usize,
+    date: String,
+    seq: u32,
+    size: u64,
+    file: File,
+}
+
+impl SizeRotatingFile {
+    fn new(dir: &Path, prefix: &str, max_size: u64, max_files: usize) -> io::Result<Self> {
+        std::fs::create_dir_all(dir)?;
+        let dir = dir.to_path_buf();
+        let prefix = prefix.to_string();
+        let date = Local::now().format("%Y-%m-%d").to_string();
+
+        // 续写当日最新的未满文件；否则创建下一个序号
+        let (seq, path) = Self::next_slot(&dir, &prefix, &date, max_size)?;
+        let file = OpenOptions::new().create(true).append(true).open(&path)?;
+        let size = file.metadata()?.len();
+
+        let writer = Self {
+            dir,
+            prefix,
+            max_size,
+            max_files: max_files.max(1),
+            date,
+            seq,
+            size,
+            file,
+        };
+        writer.prune()?;
+        Ok(writer)
+    }
+
+    /// 选择写入文件：优先当日最新且未超限的文件，否则下一个序号
+    fn next_slot(
+        dir: &Path,
+        prefix: &str,
+        date: &str,
+        max_size: u64,
+    ) -> io::Result<(u32, PathBuf)> {
+        let mut latest: Option<(u32, PathBuf, u64)> = None;
+        if let Ok(entries) = std::fs::read_dir(dir) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
+                    continue;
+                };
+                let Some(rest) = name
+                    .strip_prefix(&format!("{prefix}.{date}."))
+                    .and_then(|r| r.strip_suffix(".log"))
+                else {
+                    continue;
+                };
+                let Ok(seq) = rest.parse::<u32>() else {
+                    continue;
+                };
+                let size = entry.metadata().map_or(0, |m| m.len());
+                if latest.as_ref().is_none_or(|(s, _, _)| seq >= *s) {
+                    latest = Some((seq, path, size));
+                }
+            }
+        }
+
+        match latest {
+            Some((seq, path, size)) if max_size == 0 || size < max_size => Ok((seq, path)),
+            Some((seq, _, _)) => {
+                let next = seq
+                    .checked_add(1)
+                    .ok_or_else(|| io::Error::other("日志文件序号耗尽"))?;
+                Ok((next, dir.join(format!("{prefix}.{date}.{next:04}.log"))))
+            }
+            None => Ok((0, dir.join(format!("{prefix}.{date}.0000.log")))),
+        }
+    }
+
+    fn rotate(&mut self) -> io::Result<()> {
+        let today = Local::now().format("%Y-%m-%d").to_string();
+        let next_date = if today == self.date {
+            self.date.clone()
+        } else {
+            self.date = today.clone();
+            today
+        };
+
+        let next = self
+            .seq
+            .checked_add(1)
+            .ok_or_else(|| io::Error::other("日志文件序号耗尽"))?;
+        let path = self
+            .dir
+            .join(format!("{}.{}.{:04}.log", self.prefix, next_date, next));
+        let file = OpenOptions::new().create(true).append(true).open(&path)?;
+        self.file = file;
+        self.size = 0;
+        self.seq = next;
+        self.date = next_date;
+        self.prune()
+    }
+
+    /// 删除超出 `max_files` 的最旧文件（按文件名时间序）
+    fn prune(&self) -> io::Result<()> {
+        let Ok(entries) = std::fs::read_dir(&self.dir) else {
+            return Ok(());
+        };
+        let mut files: Vec<PathBuf> = entries
+            .flatten()
+            .map(|entry| entry.path())
+            .filter(|path| {
+                path.extension()
+                    .is_some_and(|ext| ext.eq_ignore_ascii_case("log"))
+                    && path
+                        .file_name()
+                        .and_then(|n| n.to_str())
+                        .is_some_and(|n| n.starts_with(&self.prefix))
+            })
+            .collect();
+        files.sort();
+        let excess = files.len().saturating_sub(self.max_files);
+        for path in files.into_iter().take(excess) {
+            if let Err(e) = std::fs::remove_file(&path) {
+                tracing::warn!("清理旧日志文件失败 {}: {e}", path.display());
+            }
+        }
+        Ok(())
+    }
+}
+
+impl Write for SizeRotatingFile {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        if self.max_size > 0 && self.size > 0 && self.size + buf.len() as u64 > self.max_size {
+            self.rotate()?;
+        }
+        let written = self.file.write(buf)?;
+        self.size += written as u64;
+        Ok(written)
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        self.file.flush()
+    }
+}
+
 fn install_subscriber(
     config: &LoggingConfig,
     log_buffer: &LogBuffer,
@@ -420,20 +581,22 @@ fn install_subscriber(
 
     let filter = parse_log_level(&config.log_level);
 
-    let program_appender = rolling::RollingFileAppender::builder()
-        .rotation(rolling::Rotation::DAILY)
-        .filename_prefix(PROGRAM_LOG_PREFIX)
-        .filename_suffix("log")
-        .max_log_files(config.max_log_files)
-        .build(&log_dir)?;
+    let program_appender = SizeRotatingFile::new(
+        &log_dir,
+        PROGRAM_LOG_PREFIX,
+        config.max_log_size,
+        config.max_log_files,
+    )
+    .context("创建程序日志文件失败")?;
     let (non_blocking_program, guard_program) = non_blocking(program_appender);
 
-    let audit_appender = rolling::RollingFileAppender::builder()
-        .rotation(rolling::Rotation::DAILY)
-        .filename_prefix(FILE_OP_LOG_PREFIX)
-        .filename_suffix("log")
-        .max_log_files(config.max_log_files)
-        .build(&log_dir)?;
+    let audit_appender = SizeRotatingFile::new(
+        &log_dir,
+        FILE_OP_LOG_PREFIX,
+        config.max_log_size,
+        config.max_log_files,
+    )
+    .context("创建审计日志文件失败")?;
     let (non_blocking_audit, guard_audit) = non_blocking(audit_appender);
 
     let (reload_filter, reload_handle) = reload::Layer::new(filter.clone());
@@ -607,7 +770,7 @@ fn tail_lines(path: &Path, count: usize, max_bytes: u64) -> Vec<String> {
         return Vec::new();
     };
 
-    let file_len = file.metadata().map(|m| m.len()).unwrap_or(0);
+    let file_len = file.metadata().map_or(0, |m| m.len());
     if max_bytes > 0 && file_len > max_bytes {
         let start = file_len - max_bytes;
         let _ = file.seek(SeekFrom::Start(start));
@@ -853,7 +1016,10 @@ mod tests {
             success: true,
             message: "ok".into(),
         });
-        assert!(logging.file_op_buffer().is_empty(), "关闭 GUI 日志时只记文件不进缓冲");
+        assert!(
+            logging.file_op_buffer().is_empty(),
+            "关闭 GUI 日志时只记文件不进缓冲"
+        );
     }
 
     // ---- 行解析 ----
@@ -915,11 +1081,7 @@ mod tests {
     fn list_files_caps_at_max_files() {
         let dir = tempfile::tempdir().unwrap();
         for day in 1..=5 {
-            std::fs::write(
-                dir.path().join(format!("fftpd.2026-09-0{day}.log")),
-                "x",
-            )
-            .unwrap();
+            std::fs::write(dir.path().join(format!("fftpd.2026-09-0{day}.log")), "x").unwrap();
         }
         let files = list_log_files_in(dir.path(), PROGRAM_LOG_PREFIX, 2);
         assert_eq!(files.len(), 2);

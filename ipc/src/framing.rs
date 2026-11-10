@@ -2,10 +2,10 @@
 //!
 //! 与传输无关，任何 `AsyncRead`/`AsyncWrite` 双工流均可承载。
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
-use crate::protocol::{Message, MAX_FRAME_SIZE};
+use crate::protocol::{MAX_FRAME_SIZE, Message};
 
 /// 读一帧；流正常结束返回 `None`
 ///
@@ -48,10 +48,7 @@ pub async fn write_frame<W: AsyncWrite + Unpin>(writer: &mut W, msg: &Message) -
         .write_all(&(payload.len() as u32).to_be_bytes())
         .await
         .context("写入帧长度失败")?;
-    writer
-        .write_all(&payload)
-        .await
-        .context("写入帧载荷失败")?;
+    writer.write_all(&payload).await.context("写入帧载荷失败")?;
     writer.flush().await.context("冲刷连接失败")?;
     Ok(())
 }

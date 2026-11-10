@@ -12,6 +12,7 @@
 //! `Fail2BanConfig::find_time` 未进入统一 schema，失败计数窗口取其旧默认值
 //! （[`FAILURE_WINDOW_SECS`]）作为常量。
 
+use crate::sync::MutexExt;
 use chrono::{DateTime, Duration, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
@@ -35,7 +36,7 @@ pub enum BanEvent {
 /// 封禁/解封回调
 pub type BanCallback = dyn Fn(&str, BanEvent) + Send + Sync;
 
-/// 单 IP 失败统计（合并 Linux `login_tracker.rs` 的 count / first_attempt 字段）
+/// 单 IP 失败统计（合并 Linux `login_tracker.rs` 的 count / `first_attempt` 字段）
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct FailureRecord {
     /// 窗口内的失败时刻（同一时间戳去重，计数 = len）
@@ -90,7 +91,7 @@ pub struct Fail2BanManager {
 
 impl fmt::Debug for Fail2BanManager {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let callback_count = self.callbacks.lock().unwrap().len();
+        let callback_count = self.callbacks.lock_recover().len();
         f.debug_struct("Fail2BanManager")
             .field("state", &self.state)
             .field("config", &self.config)
@@ -131,33 +132,33 @@ impl Fail2BanManager {
     /// 注册封禁/解封回调
     ///
     /// # Panics
-    /// 内部互斥锁中毒时 panic
+    /// 内部互斥锁中毒时自动恢复（见 [`crate::sync`]）
     pub fn register_callback(&self, callback: Arc<BanCallback>) {
-        self.callbacks.lock().unwrap().push(callback);
+        self.callbacks.lock_recover().push(callback);
     }
 
     /// 配置热更新（对应 IPC `save_config` 后的生效路径）
     ///
     /// # Panics
-    /// 内部互斥锁中毒时 panic
+    /// 内部互斥锁中毒时自动恢复（见 [`crate::sync`]）
     pub fn update_config(&self, security: &SecurityConfig) {
-        *self.config.lock().unwrap() = security.clone();
+        *self.config.lock_recover() = security.clone();
         tracing::info!("Fail2Ban: Configuration updated");
     }
 
     /// 当前生效的安全配置
     ///
     /// # Panics
-    /// 内部互斥锁中毒时 panic
+    /// 内部互斥锁中毒时自动恢复（见 [`crate::sync`]）
     #[must_use]
     pub fn get_config(&self) -> SecurityConfig {
-        self.config.lock().unwrap().clone()
+        self.config.lock_recover().clone()
     }
 
     /// # Panics
-    /// 内部互斥锁中毒时 panic
+    /// 内部互斥锁中毒时自动恢复（见 [`crate::sync`]）
     fn trigger_callbacks(&self, ip: &str, event: BanEvent) {
-        for callback in self.callbacks.lock().unwrap().iter() {
+        for callback in self.callbacks.lock_recover().iter() {
             callback(ip, event);
         }
     }
@@ -165,10 +166,10 @@ impl Fail2BanManager {
     /// 落盘封禁清单（失败仅告警，不影响内存态）
     ///
     /// # Panics
-    /// 内部互斥锁中毒时 panic
+    /// 内部互斥锁中毒时自动恢复（见 [`crate::sync`]）
     fn persist_bans(&self) {
         let list = BanList {
-            banned: self.state.lock().unwrap().banned_ips.clone(),
+            banned: self.state.lock_recover().banned_ips.clone(),
         };
         let content = match serde_json::to_string_pretty(&list) {
             Ok(content) => content,
@@ -191,7 +192,7 @@ impl Fail2BanManager {
     /// 记录一次认证失败；达到 [`SecurityConfig::fail2ban_threshold`] 时封禁并返回 `true`
     pub async fn add_failure(&self, ip: &str) -> bool {
         let (threshold, ban_time, enabled) = {
-            let cfg = self.config.lock().unwrap();
+            let cfg = self.config.lock_recover();
             (
                 cfg.fail2ban_threshold,
                 cfg.fail2ban_ban_time,
@@ -205,7 +206,7 @@ impl Fail2BanManager {
         let threshold = usize::try_from(threshold).unwrap_or(usize::MAX);
 
         let now = Utc::now();
-        let mut state = self.state.lock().unwrap();
+        let mut state = self.state.lock_recover();
 
         let record = state
             .failed_attempts
@@ -234,7 +235,7 @@ impl Fail2BanManager {
     /// IP 是否处于封禁期（封禁过期时顺带解封并触发回调）
     pub async fn is_banned(&self, ip: &str) -> bool {
         let now = Utc::now();
-        let mut state = self.state.lock().unwrap();
+        let mut state = self.state.lock_recover();
 
         if let Some(&ban_until) = state.banned_ips.get(ip) {
             if now < ban_until {
@@ -251,7 +252,7 @@ impl Fail2BanManager {
 
     /// 手动解封
     pub async fn unban_ip(&self, ip: &str) {
-        let existed = self.state.lock().unwrap().banned_ips.remove(ip).is_some();
+        let existed = self.state.lock_recover().banned_ips.remove(ip).is_some();
 
         if existed {
             self.persist_bans();
@@ -263,20 +264,19 @@ impl Fail2BanManager {
     /// 清除 IP 的失败记录（登录成功后调用）
     ///
     /// # Panics
-    /// 内部互斥锁中毒时 panic
+    /// 内部互斥锁中毒时自动恢复（见 [`crate::sync`]）
     pub async fn reset_failures(&self, ip: &str) {
-        self.state.lock().unwrap().failed_attempts.remove(ip);
+        self.state.lock_recover().failed_attempts.remove(ip);
     }
 
     /// 窗口内的失败次数
     ///
     /// # Panics
-    /// 内部互斥锁中毒时 panic
+    /// 内部互斥锁中毒时自动恢复（见 [`crate::sync`]）
     #[must_use]
     pub async fn get_failure_count(&self, ip: &str) -> usize {
         self.state
-            .lock()
-            .unwrap()
+            .lock_recover()
             .failed_attempts
             .get(ip)
             .map_or(0, FailureRecord::count)
@@ -285,12 +285,11 @@ impl Fail2BanManager {
     /// 首次失败时间（Linux `login_tracker` 统计字段）
     ///
     /// # Panics
-    /// 内部互斥锁中毒时 panic
+    /// 内部互斥锁中毒时自动恢复（见 [`crate::sync`]）
     #[must_use]
     pub async fn get_first_attempt(&self, ip: &str) -> Option<DateTime<Utc>> {
         self.state
-            .lock()
-            .unwrap()
+            .lock_recover()
             .failed_attempts
             .get(ip)
             .map(|r| r.first_attempt)
@@ -299,35 +298,43 @@ impl Fail2BanManager {
     /// 剩余可尝试次数（按 [`SecurityConfig::max_login_attempts`]，封禁中为 0）
     ///
     /// # Panics
-    /// 内部互斥锁中毒时 panic
+    /// 内部互斥锁中毒时自动恢复（见 [`crate::sync`]）
     #[must_use]
     pub async fn get_remaining_attempts(&self, ip: &str) -> u32 {
-        let max_attempts = self.config.lock().unwrap().max_login_attempts;
-        let state = self.state.lock().unwrap();
+        let max_attempts = self.config.lock_recover().max_login_attempts;
+        let state = self.state.lock_recover();
         if state.banned_ips.contains_key(ip) {
             return 0;
         }
-        let count = state.failed_attempts.get(ip).map_or(0, FailureRecord::count);
+        let count = state
+            .failed_attempts
+            .get(ip)
+            .map_or(0, FailureRecord::count);
         max_attempts.saturating_sub(u32::try_from(count).unwrap_or(u32::MAX))
     }
 
     /// 当前被封禁的 IP 列表
     ///
     /// # Panics
-    /// 内部互斥锁中毒时 panic
+    /// 内部互斥锁中毒时自动恢复（见 [`crate::sync`]）
     #[must_use]
     pub async fn get_banned_ips(&self) -> Vec<String> {
-        self.state.lock().unwrap().banned_ips.keys().cloned().collect()
+        self.state
+            .lock_recover()
+            .banned_ips
+            .keys()
+            .cloned()
+            .collect()
     }
 
     /// 清理：解除到期封禁（触发回调）、丢弃窗口外的失败记录
     ///
     /// # Panics
-    /// 内部互斥锁中毒时 panic
+    /// 内部互斥锁中毒时自动恢复（见 [`crate::sync`]）
     pub async fn cleanup(&self) {
         let now = Utc::now();
 
-        let mut state = self.state.lock().unwrap();
+        let mut state = self.state.lock_recover();
 
         let expired_bans: Vec<String> = state
             .banned_ips
@@ -508,7 +515,11 @@ mod tests {
         manager.unban_ip("1.2.3.4").await;
         manager.add_failure("5.5.5.5").await;
         manager.cleanup().await;
-        assert_eq!(manager.get_failure_count("5.5.5.5").await, 1, "1 小时内记录应保留");
+        assert_eq!(
+            manager.get_failure_count("5.5.5.5").await,
+            1,
+            "1 小时内记录应保留"
+        );
     }
 
     #[tokio::test]
@@ -556,7 +567,7 @@ mod tests {
         let (_dir, manager) = manager(5, 60);
         let now = Utc::now();
         {
-            let mut state = manager.state.lock().unwrap();
+            let mut state = manager.state.lock_recover();
             let mut record = FailureRecord::new(now);
             record.attempts.insert(now);
             record.attempts.insert(now);

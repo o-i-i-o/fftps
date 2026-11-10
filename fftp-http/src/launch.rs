@@ -297,8 +297,7 @@ fn wait_ready(cfg: &HttpConfig) -> Option<Health> {
 fn acquire_lock() -> Result<Option<LaunchLock>> {
     // Unix 下运行时目录先以 0700 创建并校验属主，锁文件不跟随符号链接
     #[cfg(unix)]
-    fftp_common::paths::ensure_runtime_dir()
-        .context("创建/校验运行时目录失败")?;
+    fftp_common::paths::ensure_runtime_dir().context("创建/校验运行时目录失败")?;
 
     let path = lock_path();
     #[cfg(not(unix))]
@@ -307,17 +306,11 @@ fn acquire_lock() -> Result<Option<LaunchLock>> {
     }
 
     let mut options = std::fs::OpenOptions::new();
-    options
-        .create(true)
-        .truncate(false)
-        .read(true)
-        .write(true);
+    options.create(true).truncate(false).read(true).write(true);
     #[cfg(unix)]
     {
         use std::os::unix::fs::OpenOptionsExt;
-        options
-            .mode(0o600)
-            .custom_flags(nix::libc::O_NOFOLLOW);
+        options.mode(0o600).custom_flags(nix::libc::O_NOFOLLOW);
     }
     let file = options
         .open(&path)

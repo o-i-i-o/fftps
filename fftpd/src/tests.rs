@@ -7,6 +7,7 @@
 //! 环境变量（`FFTPD_CONFIG_DIR`/`FFTPD_STATE_DIR`）为进程级共享，
 //! 统一经 [`ENV_LOCK`] 串行化；日志用 `Logging::new`（不安装全局 subscriber）。
 
+use fftp_common::sync::MutexExt;
 use std::path::Path;
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
@@ -28,7 +29,9 @@ use crate::state::AppState;
 static ENV_LOCK: Mutex<()> = Mutex::new(());
 
 fn env_lock() -> MutexGuard<'static, ()> {
-    ENV_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+    ENV_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
 /// 测试环境：临时目录（配置/状态/日志隔离）+ 已装配的命令处理器
@@ -161,13 +164,22 @@ async fn get_status_and_initial_state_shapes() {
         .await
         .expect("GetInitialState");
     assert!(
-        data["config"].as_str().is_some_and(|s| s.contains("welcome_message")),
+        data["config"]
+            .as_str()
+            .is_some_and(|s| s.contains("welcome_message")),
         "InitialState.config 应为 TOML 原文"
     );
-    assert!(data["users"].as_str().is_some(), "InitialState.users 应为 JSON 原文");
+    assert!(
+        data["users"].as_str().is_some(),
+        "InitialState.users 应为 JSON 原文"
+    );
 
     let data = env.call(Command::GetConfig).await.expect("GetConfig");
-    assert!(data["content"].as_str().is_some_and(|s| s.contains("welcome_message")));
+    assert!(
+        data["content"]
+            .as_str()
+            .is_some_and(|s| s.contains("welcome_message"))
+    );
 }
 
 // ---- 配置保存与校验 ----
@@ -220,7 +232,9 @@ async fn save_config_persists_and_applies() {
         .await
         .expect("合法配置应保存成功");
     assert!(
-        data["content"].as_str().is_some_and(|s| s.contains("hello-fftpd")),
+        data["content"]
+            .as_str()
+            .is_some_and(|s| s.contains("hello-fftpd")),
         "应返回规范化后的配置内容"
     );
 
@@ -271,17 +285,18 @@ async fn save_users_persists_and_hot_reloads() {
         .expect("合法用户库应保存成功");
     assert_eq!(data["content"], json!(content), "应原样回显用户库内容");
 
+    assert!(fftp_common::paths::users_path().is_file(), "用户库应落盘");
     assert!(
-        fftp_common::paths::users_path().is_file(),
-        "用户库应落盘"
-    );
-    assert!(
-        env.state.users.lock().unwrap().get_user("alice").is_some(),
+        env.state.users.lock_recover().get_user("alice").is_some(),
         "共享 UserManager 应热重载到新用户"
     );
 
     let data = env.call(Command::GetUsers).await.expect("GetUsers");
-    assert!(data["content"].as_str().is_some_and(|s| s.contains("alice")));
+    assert!(
+        data["content"]
+            .as_str()
+            .is_some_and(|s| s.contains("alice"))
+    );
 }
 
 // ---- 日志读取（防逃逸） ----
@@ -645,7 +660,7 @@ async fn shutdown_signals_process_exit() {
 async fn ensure_user_directories_creates_missing_dirs_once() {
     let env = TestEnv::new();
     let home = env.dir.path().join("homes").join("carol");
-    *env.state.users.lock().unwrap() =
+    *env.state.users.lock_recover() =
         serde_json::from_str(&sample_users_json(&home)).expect("解析用户库");
 
     let data = env

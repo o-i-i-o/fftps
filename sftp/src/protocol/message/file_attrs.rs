@@ -1,4 +1,4 @@
-use serde::{de::Visitor, ser::SerializeStruct, Deserialize, Deserializer, Serialize};
+use serde::{Deserialize, Deserializer, Serialize, de::Visitor, ser::SerializeStruct};
 #[cfg(unix)]
 use std::os::unix::fs::MetadataExt;
 use std::{

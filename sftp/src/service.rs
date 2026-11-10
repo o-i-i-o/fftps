@@ -5,10 +5,11 @@
 //! [`RunningService`] 运行句柄（地址查询、优雅停止）。配置变更时可
 //! `stop()` 后重新 `start()`。
 
+use fftp_common::sync::RwLockExt;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Mutex as StdMutex;
+use std::sync::{Mutex as StdMutex, RwLock as StdRwLock};
 
 use anyhow::{Result, anyhow};
 use chrono::{DateTime, Utc};
@@ -23,7 +24,7 @@ use fftp_common::quota::QuotaManager;
 use fftp_common::rate_limit::ConnectionLimiter;
 use fftp_common::users::UserManager;
 
-use crate::handler::{SftpHandler, SessionTracker};
+use crate::handler::{SessionTracker, SftpHandler};
 use crate::host_key;
 
 /// SFTP 服务描述（尚未启动）
@@ -32,7 +33,7 @@ use crate::host_key;
 /// 按配置与 `state_dir` 自动创建），可用 `with_*` 注入 fftpd 统一持有的
 /// 共享实例（例如与 FTP 共用同一 `Fail2Ban`）。
 pub struct SftpService {
-    config: Arc<StdMutex<Config>>,
+    config: Arc<StdRwLock<Config>>,
     user_manager: Arc<StdMutex<UserManager>>,
     logging: Option<Arc<Logging>>,
     quota_manager: Arc<QuotaManager>,
@@ -51,15 +52,12 @@ impl SftpService {
     /// # Panics
     /// 内部配置互斥锁中毒时 panic（`fftp-common` 语义）
     #[must_use]
-    pub fn new(config: Arc<StdMutex<Config>>, user_manager: Arc<StdMutex<UserManager>>) -> Self {
+    pub fn new(config: Arc<StdRwLock<Config>>, user_manager: Arc<StdMutex<UserManager>>) -> Self {
         let (quota_manager, fail2ban, connection_limiter) = {
-            let cfg = config.lock().unwrap();
+            let cfg = config.read_recover();
             let data_dir = fftp_common::paths::state_dir();
             let fail2ban = if cfg.security.fail2ban_enabled {
-                Some(Arc::new(Fail2BanManager::new(
-                    &data_dir,
-                    &cfg.security,
-                )))
+                Some(Arc::new(Fail2BanManager::new(&data_dir, &cfg.security)))
             } else {
                 None
             };
@@ -134,7 +132,7 @@ impl SftpService {
             max_sessions_per_user,
             allow_symlinks,
         ) = {
-            let cfg = self.config.lock().unwrap();
+            let cfg = self.config.read_recover();
             cfg.validate()?;
             (
                 cfg.sftp.bind_ip.clone(),
@@ -147,6 +145,17 @@ impl SftpService {
                 cfg.security.allow_symlinks,
             )
         };
+
+        // 热重载：安全策略（并发上限、封禁阈值）随 start() 快照同步更新
+        {
+            let cfg = self.config.read_recover();
+            if let Some(fail2ban) = &self.fail2ban {
+                fail2ban.update_config(&cfg.security);
+            }
+            if let Some(limiter) = &self.connection_limiter {
+                limiter.update_config(&cfg.security);
+            }
+        }
 
         tracing::info!("SFTP server starting on {bind_ip}:{sftp_port}");
 
@@ -216,13 +225,12 @@ impl SftpService {
                                         "SFTP connection rejected from {client_ip}: \
                                          IP is banned by Fail2Ban"
                                     );
-                                    fftp_common::metrics::record_connection_rejected();
                                     continue;
                                 }
 
                                 // IP 黑白名单
                                 let ip_allowed = {
-                                    let cfg = config.lock().unwrap();
+                                    let cfg = config.read_recover();
                                     cfg.is_ip_allowed(&client_ip)
                                 };
                                 if !ip_allowed {
@@ -230,7 +238,6 @@ impl SftpService {
                                         "SFTP connection rejected from {client_ip}: \
                                          IP not allowed by blacklist/whitelist"
                                     );
-                                    fftp_common::metrics::record_connection_rejected();
                                     continue;
                                 }
 
@@ -242,7 +249,6 @@ impl SftpService {
                                         "SFTP connection rejected from {client_ip}: \
                                          connection limit exceeded"
                                     );
-                                    fftp_common::metrics::record_connection_rejected();
                                     continue;
                                 }
 

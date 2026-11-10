@@ -3,7 +3,7 @@
 //! - 既有 users.json 中的旧参数 PHC 哈希（如 argon2 默认 `m=19456,t=2,p=1`）
 //!   仍可校验，格式与旧版（argon2 0.5 + SaltString）一致；
 //! - 登录成功后旧参数哈希惰性重哈希到当前策略
-//!   （Argon2id `m=65536,t=3,p=4,len=32`）并落盘。
+//!   （Argon2id `m=65536,t=3,p=4,len=32`），由调用方写回用户库。
 
 use argon2::{
     Argon2,
@@ -67,7 +67,7 @@ fn phc_format_unchanged_explicit_salt() {
 fn login_upgrades_old_params_hash() {
     let _guard = ENV_LOCK.lock().unwrap_or_else(PoisonError::into_inner);
     let config_dir = tempfile::tempdir().unwrap();
-    // 认证成功会把用户库落盘到 paths::users_path()，重定向到临时目录避免污染真实用户配置。
+    // 写回用户库时使用 paths::users_path()，重定向到临时目录避免污染真实用户配置。
     // SAFETY: 持有 ENV_LOCK，同进程内不存在并发读写该环境变量的用例
     unsafe {
         std::env::set_var("FFTPD_CONFIG_DIR", config_dir.path());
@@ -90,6 +90,8 @@ fn login_upgrades_old_params_hash() {
 
     let mut manager = UserManager::load(&users_file).unwrap();
     assert!(manager.authenticate("alice", "secret-pass").unwrap());
+    // authenticate 只更新内存副本，调用方负责写回
+    manager.save(&users_file).unwrap();
 
     // 登录成功后哈希已按当前策略重算
     let new_hash = manager.get_user("alice").unwrap().password_hash.clone();

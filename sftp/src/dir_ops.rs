@@ -6,9 +6,9 @@
 use std::path::{Path, PathBuf};
 
 use crate::path_resolve::{path_starts_with_ignore_case, to_ftp_path};
-use crate::protocol::{File, FileAttributes, Handle, Name, Status, StatusReply, StatusCode};
+use crate::protocol::{File, FileAttributes, Handle, Name, Status, StatusCode, StatusReply};
 use crate::state::{SftpState, status_err, status_ok};
-use crate::types::{SftpFileHandle, MAX_HANDLES, MAX_READDIR_ENTRIES};
+use crate::types::{MAX_HANDLES, MAX_READDIR_ENTRIES, SftpFileHandle};
 
 impl SftpState {
     /// `SSH_FXP_OPENDIR`：打开目录句柄
@@ -17,7 +17,10 @@ impl SftpState {
     /// 权限不足、句柄超限、路径越狱或目标不是目录时返回错误应答
     pub fn opendir(&mut self, id: u32, path: &str) -> Result<Handle, StatusReply> {
         if !self.check_permission(|p| p.can_list) {
-            return Err(status_err(StatusCode::PermissionDenied, "Permission denied"));
+            return Err(status_err(
+                StatusCode::PermissionDenied,
+                "Permission denied",
+            ));
         }
 
         if self.handles.len() >= MAX_HANDLES {
@@ -131,7 +134,10 @@ impl SftpState {
     /// 权限不足、路径越狱或删除失败时返回错误应答
     pub async fn remove(&mut self, id: u32, filename: String) -> Result<Status, StatusReply> {
         if !self.check_permission(|p| p.can_delete) {
-            return Err(status_err(StatusCode::PermissionDenied, "Permission denied"));
+            return Err(status_err(
+                StatusCode::PermissionDenied,
+                "Permission denied",
+            ));
         }
 
         // 末段不跟随符号链接：删除链接本身，而不是链接指向的目标
@@ -141,7 +147,11 @@ impl SftpState {
         let file_size = tokio::fs::symlink_metadata(&full_path)
             .await
             .map_or(0, |m| {
-                if m.file_type().is_symlink() { 0 } else { m.len() }
+                if m.file_type().is_symlink() {
+                    0
+                } else {
+                    m.len()
+                }
             });
 
         if tokio::fs::remove_file(&full_path).await.is_ok() {
@@ -168,7 +178,10 @@ impl SftpState {
         _attrs: FileAttributes,
     ) -> Result<Status, StatusReply> {
         if !self.check_permission(|p| p.can_mkdir) {
-            return Err(status_err(StatusCode::PermissionDenied, "Permission denied"));
+            return Err(status_err(
+                StatusCode::PermissionDenied,
+                "Permission denied",
+            ));
         }
 
         let full_path = self.resolve_path_or_err(&path)?;
@@ -199,7 +212,10 @@ impl SftpState {
     /// 权限不足、路径越狱、目录非空或删除失败时返回错误应答
     pub async fn rmdir(&mut self, id: u32, path: String) -> Result<Status, StatusReply> {
         if !self.check_permission(|p| p.can_rmdir) {
-            return Err(status_err(StatusCode::PermissionDenied, "Permission denied"));
+            return Err(status_err(
+                StatusCode::PermissionDenied,
+                "Permission denied",
+            ));
         }
 
         let full_path = self.resolve_path_or_err(&path)?;
@@ -251,7 +267,10 @@ impl SftpState {
                 "SFTP RENAME denied: no permission for user {:?}",
                 self.username
             );
-            return Err(status_err(StatusCode::PermissionDenied, "Permission denied"));
+            return Err(status_err(
+                StatusCode::PermissionDenied,
+                "Permission denied",
+            ));
         }
 
         // 末段不跟随符号链接：重命名/移动链接本身，而不是其目标
@@ -286,7 +305,10 @@ impl SftpState {
                 old_full.display(),
                 new_full.display()
             );
-            return Err(status_err(StatusCode::PermissionDenied, "Permission denied"));
+            return Err(status_err(
+                StatusCode::PermissionDenied,
+                "Permission denied",
+            ));
         }
 
         self.check_symlink_in_home(&old_full).await?;
@@ -369,11 +391,10 @@ impl SftpState {
             full_path
         };
 
-        let path_str = to_ftp_path(&resolved, Path::new(&self.home_dir))
-            .map_err(|e| {
-                tracing::error!("REALPATH failed: {e}");
-                status_err(StatusCode::NoSuchFile, &e.to_string())
-            })?;
+        let path_str = to_ftp_path(&resolved, Path::new(&self.home_dir)).map_err(|e| {
+            tracing::error!("REALPATH failed: {e}");
+            status_err(StatusCode::NoSuchFile, &e.to_string())
+        })?;
 
         tracing::debug!(
             client_ip = %self.client_ip,
@@ -480,7 +501,11 @@ mod tests {
         for path in ["/", ".", ""] {
             let mut env = crate::test_util::setup();
             let err = env.state.rmdir(1, path.to_string()).await.unwrap_err();
-            assert_eq!(err.status_code, StatusCode::PermissionDenied, "path={path:?}");
+            assert_eq!(
+                err.status_code,
+                StatusCode::PermissionDenied,
+                "path={path:?}"
+            );
             assert!(env.dir.path().exists());
         }
     }
@@ -517,7 +542,11 @@ mod tests {
         assert_eq!(err.status_code, StatusCode::PermissionDenied);
 
         let mut env = crate::test_util::setup();
-        let err = env.state.remove(2, "/missing.txt".to_string()).await.unwrap_err();
+        let err = env
+            .state
+            .remove(2, "/missing.txt".to_string())
+            .await
+            .unwrap_err();
         assert_eq!(err.status_code, StatusCode::Failure);
     }
 

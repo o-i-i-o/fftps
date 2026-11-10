@@ -26,7 +26,7 @@
 └─────────────────────────────┘
                │
       fftp-common（共享）
-      配置/用户/路径/日志/配额/限速/防护/指标
+      配置/用户/路径/日志/配额/限速/防护
 ```
 
 - 前后端**物理分离**（独立二进制），Web 前端经 fftp-ipc 与 fftpd 通信；fftpd 是配置与用户数据的唯一写入者（沿用 wftpd.proto 的 "backend is the single writer" 原则），fftp-http 经 IPC 读写。
@@ -40,8 +40,8 @@
 ```
 fftps/
 ├── Cargo.toml              # workspace（resolver=3, edition=2024）
-├── common/                 # fftp-common：配置/用户/路径/日志/配额/限速/防护/指标
-│   └── src/{config,users,paths,logging,quota,rate_limit,fail2ban,metrics}.rs
+├── common/                 # fftp-common：配置/用户/路径/日志/配额/限速/防护
+│   └── src/{config,users,paths,logging,quota,rate_limit,fail2ban}.rs
 ├── ipc/                    # fftp-ipc：协议 + 传输 + client/server 骨架
 │   └── src/{protocol,framing,transport/{unix,named_pipe},client,server}.rs
 ├── ftp/                    # fftp-ftp：FTP(FTPS) 服务端（libunftp 组装）
@@ -112,7 +112,6 @@ pub trait Transport { type Stream; async fn accept(); async fn connect(); }
 | 日志 | **Linux** tracing_logger 架构（JSON/文本 + 按天轮转 + file-ops 审计分离 + 内存环形缓冲） | 环形缓冲 + IPC 订阅推送给 Web 前端，比 Windows "GUI 自己 tail 文件" 的耦合更干净；Windows 的 LogEntry 字段并入 |
 | 防护 | **Windows** fail2ban.rs（含持久化）+ 连接数治理（ServerConfig 计数器） | 比 Linux login_tracker 功能全；Linux 的登录统计字段并入 |
 | 限速/配额 | **Windows** rate_limiter.rs / quota.rs 为基础，吸收 Linux speed_limiter 的接口 | Windows 实现更完整（383/496 行，多层级） |
-| 指标 | **Windows** metrics.rs（prometheus） | Linux 无此模块 |
 | 服务集成 | **两套并存**，平台 gating：Linux debian/ + systemd --user；Windows windows-service + 安装脚本 | 无法互相替代 |
 | 管理前端 | **Web 版 fftp-http**（axum + 原生 JS，浏览器访问）：服务/配置/用户/日志/文件日志/关于 | 单一实现覆盖 Linux/Windows，无 GUI 框架依赖 |
 | 集成测试 | **Windows** wftpd-test-go 移植为 `tests/`（或保留 Go 套件跨平台跑） | 覆盖 FTP/SFTP/边界/安全/性能；Linux 单元测试随模块并入 |
@@ -128,17 +127,14 @@ bind_ip = "0.0.0.0"
 port = 21
 welcome_message = "Welcome to fftpd"
 encoding = "UTF-8"
-default_transfer_mode = "binary"
 connection_mode = "passive_only"        # passive_only | active_only | active_and_passive
 allow_anonymous = false
 anonymous_home = ""
 passive_ports = [50000, 51000]          # 由 (u16,u16) 改为元组兼容两侧格式
 max_speed_kbps = 0
 masquerade_address = ""
-connection_timeout = 15
 idle_timeout = 15
-hide_version_info = false
-pooled_listener_mode = false           # 池化被动监听；上游 0.23.1 停止不释放端口，默认关闭
+pooled_listener_mode = false           # 兼容保留；上游 0.23.1 停止不释放端口，当前实现忽略 true
 allow_nat_clients = true
 ftp_root = ""                           # 空 = 各用户 home
 [ftp.ftps]
@@ -154,7 +150,6 @@ port = 2222
 host_key_path = ""                      # 空 = paths::default_host_key_path()
 max_auth_attempts = 3
 auth_timeout = 60
-log_level = "info"
 max_sessions_per_user = 5
 host_key_rotation_days = 0
 
@@ -214,7 +209,7 @@ enable_gui_logging = true
 | **1a** | workspace 骨架 + fftp-common（paths/config/users 全量 schema） | `cargo test` 过（含哈希升级测试） |
 | **1b** | fftp-ipc（协议+framing+UDS/NamedPipe 传输+client/server）+ fftpd 骨架（IPC dispatch：status/config/users/日志占位） | Linux 实机：fftpd 启动、IPC 往返通 |
 | **1c** | fftp-http Web 前端（认证/服务/配置/用户/日志页可用 + SSE 订阅日志） | Linux 实机运行，浏览器与 fftpd 联通 |
-| **2** | 功能迁移：FTP(Windows 组装线)、SFTP(手写实现)、日志、fail2ban/限速/配额/指标、完整命令面 | 两侧单测 + Go 集成测试通过 |
+| **2** | 功能迁移：FTP(Windows 组装线)、SFTP(手写实现)、日志、fail2ban/限速/配额、完整命令面 | 两侧单测 + Go 集成测试通过 |
 | **3** | 交叉编译脚本、debian/systemd、Windows 服务与安装器、CI | 全目标矩阵产物可构建 |
 
 阶段 1 结束后旧项目（wftpd-linux/、wftpd-windows/）保留为迁移参照，全部迁移完成后删除。

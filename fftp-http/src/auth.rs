@@ -4,7 +4,7 @@
 //! 1. `Authorization: Bearer <api_token>`——静态 token（配置于 `[auth]`），
 //!    供脚本/程序化访问；常量时间比较；
 //! 2. 会话 Cookie `fftp_session`——`POST /api/login` 校验管理员口令后签发，
-//!    HttpOnly + SameSite=Strict（TLS 下追加 Secure）。
+//!    `HttpOnly` + SameSite=Strict（TLS 下追加 Secure）。
 //!
 //! 路由保护采用结构化中间件（[`auth_middleware`]）：校验通过后把
 //! [`AuthedUser`] 注入 extensions，handler 经 extractor 取回操作者身份。
@@ -13,12 +13,12 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+use axum::Json;
 use axum::extract::{ConnectInfo, State};
 use axum::http::header::SET_COOKIE;
 use axum::http::{HeaderMap, Request, StatusCode};
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
-use axum::Json;
 use serde::Deserialize;
 use serde_json::json;
 
@@ -149,7 +149,11 @@ async fn cleanup_loop(inner: Arc<Mutex<HashMap<String, Session>>>) {
 
 /// 生成 256bit 会话 token（两个 u128 十六进制拼接）
 fn new_token() -> String {
-    format!("{:032x}{:032x}", rand::random::<u128>(), rand::random::<u128>())
+    format!(
+        "{:032x}{:032x}",
+        rand::random::<u128>(),
+        rand::random::<u128>()
+    )
 }
 
 /// 常量时间字符串比较（防时序侧信道；长度不等立即失败，仅泄露长度）
@@ -197,16 +201,15 @@ pub async fn auth_middleware(
     }
 }
 
-/// 认证判定：Bearer api_token 优先，其次会话 Cookie
+/// 认证判定：Bearer `api_token` 优先，其次会话 Cookie
 fn authenticate(state: &AppState, req: &Request<axum::body::Body>) -> Option<String> {
-    if let Some(v) = req.headers().get(axum::http::header::AUTHORIZATION) {
-        if let Ok(s) = v.to_str() {
-            if let Some(token) = s.strip_prefix("Bearer ") {
-                let configured = &state.config.auth.api_token;
-                if !configured.is_empty() && ct_eq(token.trim(), configured) {
-                    return Some("api_token".into());
-                }
-            }
+    if let Some(v) = req.headers().get(axum::http::header::AUTHORIZATION)
+        && let Ok(s) = v.to_str()
+        && let Some(token) = s.strip_prefix("Bearer ")
+    {
+        let configured = &state.config.auth.api_token;
+        if !configured.is_empty() && ct_eq(token.trim(), configured) {
+            return Some("api_token".into());
         }
     }
     let token = session_token_from_cookie(req.headers())?;
@@ -305,7 +308,11 @@ pub struct LoginRequest {
 /// 构造会话 Cookie（HttpOnly + SameSite=Strict；TLS 下追加 Secure）
 #[must_use]
 pub fn session_cookie(state: &AppState, token: &str) -> String {
-    let secure = if state.config.tls.enabled { "; Secure" } else { "" };
+    let secure = if state.config.tls.enabled {
+        "; Secure"
+    } else {
+        ""
+    };
     format!("{SESSION_COOKIE}={token}; HttpOnly; SameSite=Strict; Path=/{secure}")
 }
 
@@ -386,20 +393,23 @@ pub async fn login(
 }
 
 /// 登出：撤销会话并清除 Cookie
-pub async fn logout(
-    State(state): State<Arc<AppState>>,
-    headers: HeaderMap,
-) -> Response {
+pub async fn logout(State(state): State<Arc<AppState>>, headers: HeaderMap) -> Response {
     if let Some(token) = session_token_from_cookie(&headers) {
         state.sessions.remove(&token);
     }
     let cookie = format!("{SESSION_COOKIE}=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0");
-    (StatusCode::OK, [(SET_COOKIE, cookie)], Json(json!({"ok": true}))).into_response()
+    (
+        StatusCode::OK,
+        [(SET_COOKIE, cookie)],
+        Json(json!({"ok": true})),
+    )
+        .into_response()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use fftp_common::sync::MutexExt;
 
     #[tokio::test]
     async fn session_lifecycle() {
@@ -415,7 +425,7 @@ mod tests {
         let store = SessionStore::new(1);
         let token = store.create("admin", "hash-v1");
         // 直接注入过期会话，避免真实等待
-        store.inner.lock().unwrap().get_mut(&token).unwrap().expires = Instant::now();
+        store.inner.lock_recover().get_mut(&token).unwrap().expires = Instant::now();
         assert_eq!(store.get(&token), None);
     }
 
@@ -471,7 +481,10 @@ mod tests {
             axum::http::header::COOKIE,
             "other=x; fftp_session=token123; y=z".parse().unwrap(),
         );
-        assert_eq!(session_token_from_cookie(&headers).as_deref(), Some("token123"));
+        assert_eq!(
+            session_token_from_cookie(&headers).as_deref(),
+            Some("token123")
+        );
 
         let headers = HeaderMap::new();
         assert_eq!(session_token_from_cookie(&headers), None);

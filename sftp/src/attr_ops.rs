@@ -5,7 +5,7 @@
 
 use std::path::Path;
 
-use crate::protocol::{Attrs, FileAttributes, Status, StatusReply, StatusCode};
+use crate::protocol::{Attrs, FileAttributes, Status, StatusCode, StatusReply};
 use crate::state::{SftpState, status_err, status_ok};
 use crate::types::SftpFileHandle;
 
@@ -16,7 +16,10 @@ impl SftpState {
     /// 权限不足、路径越狱或目标不存在时返回错误应答
     pub async fn stat(&mut self, id: u32, path: String) -> Result<Attrs, StatusReply> {
         if !self.check_permission(|p| p.can_read || p.can_list) {
-            return Err(status_err(StatusCode::PermissionDenied, "Permission denied"));
+            return Err(status_err(
+                StatusCode::PermissionDenied,
+                "Permission denied",
+            ));
         }
 
         let full_path = self.resolve_path_or_err(&path)?;
@@ -39,7 +42,10 @@ impl SftpState {
     /// 权限不足、路径越狱或目标不存在时返回错误应答
     pub async fn lstat(&mut self, id: u32, path: String) -> Result<Attrs, StatusReply> {
         if !self.check_permission(|p| p.can_read || p.can_list) {
-            return Err(status_err(StatusCode::PermissionDenied, "Permission denied"));
+            return Err(status_err(
+                StatusCode::PermissionDenied,
+                "Permission denied",
+            ));
         }
 
         // 不跟随符号链接：末段文件名保留，符号链接自身可被 LSTAT
@@ -100,7 +106,10 @@ impl SftpState {
         attrs: FileAttributes,
     ) -> Result<Status, StatusReply> {
         if !self.check_permission(|p| p.can_write) {
-            return Err(status_err(StatusCode::PermissionDenied, "Permission denied"));
+            return Err(status_err(
+                StatusCode::PermissionDenied,
+                "Permission denied",
+            ));
         }
 
         let full_path = self.resolve_path_or_err(&path)?;
@@ -123,7 +132,10 @@ impl SftpState {
             if growth > 0
                 && let Some(quota) = quota_mb
             {
-                if !self.quota_manager.try_reserve_quota(&username, growth, quota) {
+                if !self
+                    .quota_manager
+                    .try_reserve_quota(&username, growth, quota)
+                {
                     return Err(status_err(StatusCode::Failure, "Quota exceeded"));
                 }
                 reserved = growth;
@@ -177,7 +189,10 @@ impl SftpState {
         attrs: FileAttributes,
     ) -> Result<Status, StatusReply> {
         if !self.check_permission(|p| p.can_write) {
-            return Err(status_err(StatusCode::PermissionDenied, "Permission denied"));
+            return Err(status_err(
+                StatusCode::PermissionDenied,
+                "Permission denied",
+            ));
         }
 
         let path = match self.handles.get(&handle) {
@@ -208,7 +223,10 @@ impl SftpState {
             if growth > 0
                 && let Some(quota) = quota_mb
             {
-                if !self.quota_manager.try_reserve_quota(&username, growth, quota) {
+                if !self
+                    .quota_manager
+                    .try_reserve_quota(&username, growth, quota)
+                {
                     return Err(status_err(StatusCode::Failure, "Quota exceeded"));
                 }
                 reserved = growth;
@@ -340,7 +358,11 @@ mod tests {
         assert_eq!(attrs.id, 1);
         assert_eq!(attrs.attrs.size, Some(5));
 
-        let err = env.state.stat(2, "/missing.txt".to_string()).await.unwrap_err();
+        let err = env
+            .state
+            .stat(2, "/missing.txt".to_string())
+            .await
+            .unwrap_err();
         assert_eq!(err.status_code, StatusCode::NoSuchFile);
     }
 
@@ -427,7 +449,12 @@ mod tests {
             ..FileAttributes::default()
         };
         env.state.fsetstat(2, handle.clone(), attrs).await.unwrap();
-        assert_eq!(std::fs::metadata(env.dir.path().join("f.txt")).unwrap().len(), 2);
+        assert_eq!(
+            std::fs::metadata(env.dir.path().join("f.txt"))
+                .unwrap()
+                .len(),
+            2
+        );
 
         let err = env
             .state

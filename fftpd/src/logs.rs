@@ -5,7 +5,7 @@
 //! `broadcast::Sender<Event>`，供 `SubscribeLogs` 订阅者收到 `Event::Log`
 //! （程序日志）与 `Event::FileOp`（文件操作审计）实时推送。
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use serde_json::{Value, json};
@@ -77,11 +77,7 @@ pub fn log_files(state: &AppState) -> Value {
 ///
 /// # Errors
 /// `path` 不存在返回 `NotFound`，位于日志目录之外返回 `Validation`
-pub fn log_file_content(
-    state: &AppState,
-    path: &str,
-    count: u32,
-) -> Result<Value, HandlerError> {
+pub fn log_file_content(state: &AppState, path: &str, count: u32) -> Result<Value, HandlerError> {
     let path = check_log_path(state, path)?;
     let entries: Vec<fftp_ipc::protocol::LogEntry> = state
         .logging
@@ -137,9 +133,8 @@ fn check_log_path(state: &AppState, path: &str) -> Result<PathBuf, HandlerError>
             path.display()
         )));
     }
-    logging::ensure_path_in_dir(&path, &state.logging.live_config().resolved_log_dir()).map_err(
-        |e| HandlerError::validation(format!("日志路径越权访问: {e:#}")),
-    )?;
+    logging::ensure_path_in_dir(&path, &state.logging.live_config().resolved_log_dir())
+        .map_err(|e| HandlerError::validation(format!("日志路径越权访问: {e:#}")))?;
     Ok(path)
 }
 
@@ -156,11 +151,14 @@ pub fn save_log_config(
     enable_gui_logging: bool,
 ) -> Result<Value, HandlerError> {
     if !is_valid_log_level(&log_level) {
-        return Err(HandlerError::validation(format!("非法日志级别: {log_level}")));
+        return Err(HandlerError::validation(format!(
+            "非法日志级别: {log_level}"
+        )));
     }
     if max_log_files == 0 {
         return Err(HandlerError::validation("max_log_files 至少为 1"));
     }
+    validate_log_dir(&log_dir)?;
 
     let mut config = state.current_config();
     config.logging = LoggingConfig {
@@ -171,6 +169,11 @@ pub fn save_log_config(
         enable_json: config.logging.enable_json, // 命令面未覆盖，沿用现值
         enable_gui_logging,
     };
+
+    // 落盘前跑完整校验，避免把非法目录/匿名配置等写进配置文件
+    config
+        .validate()
+        .map_err(|e| HandlerError::validation(format!("配置校验失败: {e:#}")))?;
 
     config
         .save(&fftp_common::paths::config_path())
@@ -195,10 +198,7 @@ pub fn save_log_config(
 ///
 /// # Errors
 /// 日志目录创建或级别更新失败时返回错误
-pub fn apply_logging_config(
-    logging: &Logging,
-    config: &LoggingConfig,
-) -> Result<(), HandlerError> {
+pub fn apply_logging_config(logging: &Logging, config: &LoggingConfig) -> Result<(), HandlerError> {
     let log_dir = config.resolved_log_dir();
     std::fs::create_dir_all(&log_dir).map_err(|e| {
         HandlerError::internal(format!("创建日志目录 {} 失败: {e}", log_dir.display()))
@@ -213,6 +213,46 @@ pub fn apply_logging_config(
         config.log_level,
         config.enable_gui_logging
     );
+    Ok(())
+}
+
+/// 校验日志目录：空串用默认目录；否则必须是无 `..` 的绝对路径且位于用户主目录下
+///
+/// `SaveLogConfig` 会据此 `create_dir_all`，若不限制范围，Web 侧可借管理接口
+/// 在任意位置创建目录。用户态服务只允许写入自己的主目录。
+fn validate_log_dir(log_dir: &str) -> Result<(), HandlerError> {
+    let trimmed = log_dir.trim();
+    if trimmed.is_empty() {
+        return Ok(());
+    }
+
+    let path = Path::new(trimmed);
+    if !path.is_absolute() {
+        return Err(HandlerError::validation(format!(
+            "日志目录必须是绝对路径: {trimmed}"
+        )));
+    }
+    if path
+        .components()
+        .any(|c| matches!(c, std::path::Component::ParentDir))
+    {
+        return Err(HandlerError::validation(format!(
+            "日志目录不能包含 ..: {trimmed}"
+        )));
+    }
+
+    let home = fftp_common::paths::home_dir();
+    // 单元测试使用临时目录（HOME 未指向测试目录），仅在测试构建放开
+    #[cfg(test)]
+    let allowed = path.starts_with(&home) || path.starts_with(std::env::temp_dir());
+    #[cfg(not(test))]
+    let allowed = path.starts_with(&home);
+    if !allowed {
+        return Err(HandlerError::validation(format!(
+            "日志目录必须位于用户主目录 {} 下: {trimmed}",
+            home.display()
+        )));
+    }
     Ok(())
 }
 
@@ -232,9 +272,7 @@ pub fn write_audit_log(
     target: &str,
     details: &str,
 ) -> Value {
-    state
-        .logging
-        .write_audit(user, action, target, details);
+    state.logging.write_audit(user, action, target, details);
     json!({ "recorded": true })
 }
 

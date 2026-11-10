@@ -19,6 +19,7 @@
 //! 路径解析语义：rooter 把会话根（`FtpUser::session_root`）拼到虚拟路径前，
 //! 因此本层校验的真实根 = `base_root`（unftp-sbe-fs 的 Filesystem 根）+ 会话根。
 
+use fftp_common::sync::RwLockExt;
 use std::fmt::Debug;
 use std::path::{Component, Path, PathBuf};
 use std::pin::Pin;
@@ -65,10 +66,7 @@ impl<R: AsyncRead + Unpin> AsyncRead for QuotaReservingReader<R> {
                 if read > 0
                     && let Some(quota_mb) = this.quota_mb
                 {
-                    if !this
-                        .quota
-                        .try_reserve_quota(&this.username, read, quota_mb)
-                    {
+                    if !this.quota.try_reserve_quota(&this.username, read, quota_mb) {
                         this.denied.store(true, Ordering::Relaxed);
                         return Poll::Ready(Err(std::io::Error::other("配额超限")));
                     }
@@ -125,12 +123,12 @@ impl<Delegate> JailFilesystem<Delegate> {
 
     /// 全局单连接限速（KB/s，0 = 不限速）
     fn global_speed_kbps(&self) -> u64 {
-        self.config.read().unwrap().ftp.max_speed_kbps
+        self.config.read_recover().ftp.max_speed_kbps
     }
 
     /// 符号链接策略
     fn allow_symlinks(&self) -> bool {
-        self.config.read().unwrap().security.allow_symlinks
+        self.config.read_recover().security.allow_symlinks
     }
 
     /// 净化虚拟路径并做真实路径防逃逸检查
@@ -246,18 +244,12 @@ where
         let seek_growth = start_pos.saturating_sub(existing_size);
         if seek_growth > 0
             && let Some(quota) = quota_mb
-            && !self
-                .quota
-                .try_reserve_quota(username, seek_growth, quota)
+            && !self.quota.try_reserve_quota(username, seek_growth, quota)
         {
             tracing::warn!(username, "上传被配额超限拦截（REST 偏移）");
             return Err(quota_exceeded());
         }
-        let upfront_reserved = if quota_mb.is_some() {
-            seek_growth
-        } else {
-            0
-        };
+        let upfront_reserved = if quota_mb.is_some() { seek_growth } else { 0 };
 
         // 流式预留：每读取一批数据就按增量检查配额
         let streamed = Arc::new(AtomicU64::new(0));
@@ -354,11 +346,10 @@ where
         let username = user.username.as_str();
 
         // 目录体积按真实路径统计（旧实现误用会话虚拟路径，迁移时修正）
-        let total_size = tokio::task::spawn_blocking(move || {
-            fftp_common::quota::dir_size(&real).unwrap_or(0)
-        })
-        .await
-        .map_err(|e| Error::new(ErrorKind::LocalError, std::io::Error::other(e)))?;
+        let total_size =
+            tokio::task::spawn_blocking(move || fftp_common::quota::dir_size(&real).unwrap_or(0))
+                .await
+                .map_err(|e| Error::new(ErrorKind::LocalError, std::io::Error::other(e)))?;
 
         self.inner.rmd(user, &virt).await?;
 
@@ -504,7 +495,10 @@ mod tests {
         let fs = make_fs(base.path(), quota_dir.path());
         let user = make_user(base.path(), ".");
 
-        let err = fs.metadata(&user, Path::new("/../etc/passwd")).await.unwrap_err();
+        let err = fs
+            .metadata(&user, Path::new("/../etc/passwd"))
+            .await
+            .unwrap_err();
         assert_eq!(err.kind(), ErrorKind::PermissionDenied);
 
         let err = fs.metadata(&user, Path::new("/..")).await.unwrap_err();
@@ -518,7 +512,10 @@ mod tests {
         let fs = make_fs(base.path(), quota_dir.path());
         let user = make_user(base.path(), ".");
 
-        let err = fs.metadata(&user, Path::new("/bad:name")).await.unwrap_err();
+        let err = fs
+            .metadata(&user, Path::new("/bad:name"))
+            .await
+            .unwrap_err();
         assert_eq!(err.kind(), ErrorKind::FileNameNotAllowedError);
     }
 

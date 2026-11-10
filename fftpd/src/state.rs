@@ -6,10 +6,10 @@
 //! `ThreadRng` 跨 await），无法在 IPC 分发的 `Send` future 中直接 await，
 //! 故生命周期操作统一在该线程的专用运行时内执行，外部只做请求/应答。
 //!
-//! 配置句柄说明：`FtpService` 要求 `RwLock<Config>`、`SftpService` 要求
-//! `Mutex<Config>`，故同时持有两个句柄；[`AppState::store_config`] 双写，
-//! 保证两侧读到同一份配置。
+//! 配置句柄由 FTP/SFTP 共同持有同一份 `RwLock<Config>`；配额、Fail2Ban、
+//! 连接数治理也各只创建一个实例并注入两个协议，使统计口径/封禁状态一致。
 
+use fftp_common::sync::RwLockExt;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex as StdMutex, RwLock as StdRwLock};
@@ -17,7 +17,10 @@ use std::sync::{Arc, Mutex as StdMutex, RwLock as StdRwLock};
 use tokio::sync::{mpsc, oneshot, watch};
 
 use fftp_common::config::Config;
+use fftp_common::fail2ban::Fail2BanManager;
 use fftp_common::logging::Logging;
+use fftp_common::quota::QuotaManager;
+use fftp_common::rate_limit::ConnectionLimiter;
 use fftp_common::users::UserManager;
 use fftp_ftp::{FtpService, RunningFtpService};
 use fftp_ipc::protocol::ServiceTarget;
@@ -42,7 +45,7 @@ enum LifecycleRequest {
     },
     /// 配置热重载：只重启在跑的服务，使监听参数变更生效
     Reload {
-        reply: oneshot::Sender<()>,
+        reply: oneshot::Sender<Result<(), String>>,
     },
     /// 查询真实运行状态（服务自身标志）并回写状态字段
     Status {
@@ -50,12 +53,13 @@ enum LifecycleRequest {
     },
 }
 
+/// 生命周期请求的应答超时：服务重启卡住时避免后续管理请求无限挂起
+const LIFECYCLE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
+
 /// 守护进程共享状态
 pub struct AppState {
-    /// 统一配置（与 [`FtpService`] 共享；SFTP 侧见 [`Self::sftp_config`] 镜像）
+    /// 统一配置（FTP/SFTP 共享同一句柄）
     pub config: Arc<StdRwLock<Config>>,
-    /// SFTP 服务持有的配置句柄（与 `config` 双写保持一致）
-    pub sftp_config: Arc<StdMutex<Config>>,
     /// 用户库（认证时热加载；`SaveUsers` 后整体替换）
     pub users: Arc<StdMutex<UserManager>>,
     /// 日志设施（环形缓冲 + 文件管理 + 审计写入）
@@ -80,14 +84,12 @@ impl AppState {
         shutdown_tx: watch::Sender<bool>,
     ) -> Arc<Self> {
         let config = Arc::new(StdRwLock::new(config));
-        let sftp_config = Arc::new(StdMutex::new(config.read().unwrap().clone()));
         let users = Arc::new(StdMutex::new(users));
         let ftp_running = Arc::new(AtomicBool::new(false));
         let sftp_running = Arc::new(AtomicBool::new(false));
 
         let lifecycle = spawn_lifecycle_thread(
             Arc::clone(&config),
-            Arc::clone(&sftp_config),
             Arc::clone(&users),
             Arc::clone(&logging),
             Arc::clone(&ftp_running),
@@ -96,7 +98,6 @@ impl AppState {
 
         Arc::new(Self {
             config,
-            sftp_config,
             users,
             logging,
             users_path: fftp_common::paths::users_path(),
@@ -115,13 +116,12 @@ impl AppState {
     /// 当前配置快照
     #[must_use]
     pub fn current_config(&self) -> Config {
-        self.config.read().unwrap().clone()
+        self.config.read_recover().clone()
     }
 
-    /// 写入新配置：同步两个配置句柄（FTP `RwLock` / SFTP `Mutex` 镜像）
+    /// 写入新配置（FTP/SFTP 共享同一句柄，一次写入即两侧可见）
     pub fn store_config(&self, config: Config) {
-        *self.config.write().unwrap() = config.clone();
-        *self.sftp_config.lock().unwrap() = config;
+        *self.config.write_recover() = config;
     }
 
     /// 运行状态（以服务自身标志为准，并回写 `ftp_running`/`sftp_running`）
@@ -151,12 +151,15 @@ impl AppState {
     /// `which = all` 时逐个尝试，已成功启动的保持运行，错误合并返回
     pub async fn start_service(&self, which: ServiceTarget) -> Result<(), String> {
         let (reply, rx) = oneshot::channel();
-        self.lifecycle
-            .send(LifecycleRequest::Start { which, reply })
-            .await
-            .map_err(|_| "服务生命周期线程已退出".to_string())?;
-        rx.await
-            .map_err(|_| "服务生命周期线程未应答".to_string())?
+        tokio::time::timeout(LIFECYCLE_TIMEOUT, async {
+            self.lifecycle
+                .send(LifecycleRequest::Start { which, reply })
+                .await
+                .map_err(|_| "服务生命周期线程已退出".to_string())?;
+            rx.await.map_err(|_| "服务生命周期线程未应答".to_string())?
+        })
+        .await
+        .map_err(|_| "服务生命周期线程响应超时".to_string())?
     }
 
     /// 停止指定服务（未运行时幂等成功）
@@ -165,12 +168,15 @@ impl AppState {
     /// 生命周期线程不可用时返回错误文本
     pub async fn stop_service(&self, which: ServiceTarget) -> Result<(), String> {
         let (reply, rx) = oneshot::channel();
-        self.lifecycle
-            .send(LifecycleRequest::Stop { which, reply })
-            .await
-            .map_err(|_| "服务生命周期线程已退出".to_string())?;
-        rx.await
-            .map_err(|_| "服务生命周期线程未应答".to_string())
+        tokio::time::timeout(LIFECYCLE_TIMEOUT, async {
+            self.lifecycle
+                .send(LifecycleRequest::Stop { which, reply })
+                .await
+                .map_err(|_| "服务生命周期线程已退出".to_string())?;
+            rx.await.map_err(|_| "服务生命周期线程未应答".to_string())
+        })
+        .await
+        .map_err(|_| "服务生命周期线程响应超时".to_string())?
     }
 
     /// 重启指定服务：先停后启（未运行时等价于直接启动）
@@ -179,25 +185,32 @@ impl AppState {
     /// 启动失败或生命周期线程不可用时返回错误文本
     pub async fn restart_service(&self, which: ServiceTarget) -> Result<(), String> {
         let (reply, rx) = oneshot::channel();
-        self.lifecycle
-            .send(LifecycleRequest::Restart { which, reply })
-            .await
-            .map_err(|_| "服务生命周期线程已退出".to_string())?;
-        rx.await
-            .map_err(|_| "服务生命周期线程未应答".to_string())?
+        tokio::time::timeout(LIFECYCLE_TIMEOUT, async {
+            self.lifecycle
+                .send(LifecycleRequest::Restart { which, reply })
+                .await
+                .map_err(|_| "服务生命周期线程已退出".to_string())?;
+            rx.await.map_err(|_| "服务生命周期线程未应答".to_string())?
+        })
+        .await
+        .map_err(|_| "服务生命周期线程响应超时".to_string())?
     }
 
     /// 配置热重载：重启在跑的协议服务（`SaveConfig` 落盘后调用）
-    pub async fn reload_services(&self) {
+    ///
+    /// # Errors
+    /// 生命周期线程不可用，或任一服务按新配置重启失败时返回错误文本
+    pub async fn reload_services(&self) -> Result<(), String> {
         let (reply, rx) = oneshot::channel();
-        if self
-            .lifecycle
-            .send(LifecycleRequest::Reload { reply })
-            .await
-            .is_ok()
-        {
-            let _ = rx.await;
-        }
+        tokio::time::timeout(LIFECYCLE_TIMEOUT, async {
+            self.lifecycle
+                .send(LifecycleRequest::Reload { reply })
+                .await
+                .map_err(|_| "服务生命周期线程已退出".to_string())?;
+            rx.await.map_err(|_| "服务生命周期线程未应答".to_string())?
+        })
+        .await
+        .map_err(|_| "服务生命周期线程响应超时".to_string())?
     }
 
     /// 启动流程：按配置启动启用的协议服务（单个服务失败不致命，仅记 error）
@@ -245,14 +258,31 @@ struct ServiceRuntime {
 impl ServiceRuntime {
     fn new(
         config: Arc<StdRwLock<Config>>,
-        sftp_config: Arc<StdMutex<Config>>,
         users: Arc<StdMutex<UserManager>>,
         logging: Arc<Logging>,
         ftp_running: Arc<AtomicBool>,
         sftp_running: Arc<AtomicBool>,
     ) -> Self {
-        let ftp = FtpService::new(config, Arc::clone(&users), Arc::clone(&logging));
-        let sftp = SftpService::new(sftp_config, users).with_logging(logging);
+        // 共享治理组件：同一实例注入两种协议，避免各自维护一份连接/封禁/配额状态
+        let data_dir = fftp_common::paths::state_dir();
+        let security = config.read_recover().security.clone();
+        let quota = Arc::new(QuotaManager::new(&data_dir));
+        let fail2ban = Arc::new(Fail2BanManager::new(&data_dir, &security));
+        let connections = Arc::new(ConnectionLimiter::new(&security));
+
+        let ftp = FtpService::new(
+            Arc::clone(&config),
+            Arc::clone(&users),
+            Arc::clone(&logging),
+        )
+        .with_quota(Arc::clone(&quota))
+        .with_fail2ban(Arc::clone(&fail2ban))
+        .with_connection_limiter(Arc::clone(&connections));
+        let sftp = SftpService::new(config, users)
+            .with_logging(logging)
+            .with_quota(quota)
+            .with_fail2ban(fail2ban)
+            .with_connection_limiter(connections);
         Self {
             ftp,
             sftp,
@@ -302,19 +332,27 @@ impl ServiceRuntime {
     }
 
     /// 配置热重载：只重启在跑的服务
-    async fn reload(&mut self) {
+    async fn reload(&mut self) -> Result<(), String> {
         let (ftp_on, sftp_on) = self.status();
+        let mut errors = Vec::new();
         if ftp_on {
             self.stop_ftp().await;
             if let Err(e) = self.start_ftp().await {
                 tracing::error!("FTP 服务按新配置重启失败: {e}");
+                errors.push(format!("FTP: {e}"));
             }
         }
         if sftp_on {
             self.stop_sftp().await;
             if let Err(e) = self.start_sftp().await {
                 tracing::error!("SFTP 服务按新配置重启失败: {e}");
+                errors.push(format!("SFTP: {e}"));
             }
+        }
+        if errors.is_empty() {
+            Ok(())
+        } else {
+            Err(errors.join("; "))
         }
     }
 
@@ -331,7 +369,11 @@ impl ServiceRuntime {
     }
 
     async fn start_ftp(&mut self) -> Result<(), String> {
-        if self.ftp_handle.as_ref().is_some_and(RunningFtpService::is_running) {
+        if self
+            .ftp_handle
+            .as_ref()
+            .is_some_and(RunningFtpService::is_running)
+        {
             self.ftp_running.store(true, Ordering::SeqCst);
             return Ok(()); // 已在运行：幂等成功
         }
@@ -351,7 +393,11 @@ impl ServiceRuntime {
     }
 
     async fn start_sftp(&mut self) -> Result<(), String> {
-        if self.sftp_handle.as_ref().is_some_and(RunningService::is_running) {
+        if self
+            .sftp_handle
+            .as_ref()
+            .is_some_and(RunningService::is_running)
+        {
             self.sftp_running.store(true, Ordering::SeqCst);
             return Ok(());
         }
@@ -388,7 +434,6 @@ impl ServiceRuntime {
 /// 拉起服务生命周期线程：专用 current-thread 运行时驱动非 `Send` 的服务 future
 fn spawn_lifecycle_thread(
     config: Arc<StdRwLock<Config>>,
-    sftp_config: Arc<StdMutex<Config>>,
     users: Arc<StdMutex<UserManager>>,
     logging: Arc<Logging>,
     ftp_running: Arc<AtomicBool>,
@@ -403,14 +448,8 @@ fn spawn_lifecycle_thread(
                 .build()
                 .expect("构建服务生命周期运行时失败");
             runtime.block_on(async move {
-                let mut services = ServiceRuntime::new(
-                    config,
-                    sftp_config,
-                    users,
-                    logging,
-                    ftp_running,
-                    sftp_running,
-                );
+                let mut services =
+                    ServiceRuntime::new(config, users, logging, ftp_running, sftp_running);
                 while let Some(req) = rx.recv().await {
                     match req {
                         LifecycleRequest::Start { which, reply } => {
@@ -424,8 +463,7 @@ fn spawn_lifecycle_thread(
                             let _ = reply.send(services.restart(which).await);
                         }
                         LifecycleRequest::Reload { reply } => {
-                            services.reload().await;
-                            let _ = reply.send(());
+                            let _ = reply.send(services.reload().await);
                         }
                         LifecycleRequest::Status { reply } => {
                             let _ = reply.send(services.status());

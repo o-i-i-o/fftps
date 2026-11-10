@@ -10,7 +10,7 @@
 
 use std::path::{Path, PathBuf};
 
-use crate::protocol::{File, Name, Status, StatusReply, StatusCode};
+use crate::protocol::{File, Name, Status, StatusCode, StatusReply};
 use crate::state::{SftpState, status_err, status_ok};
 
 impl SftpState {
@@ -20,7 +20,10 @@ impl SftpState {
     /// 权限不足、路径越狱或目标不是符号链接时返回错误应答
     pub async fn readlink(&mut self, id: u32, path: String) -> Result<Name, StatusReply> {
         if !self.check_permission(|p| p.can_read || p.can_list) {
-            return Err(status_err(StatusCode::PermissionDenied, "Permission denied"));
+            return Err(status_err(
+                StatusCode::PermissionDenied,
+                "Permission denied",
+            ));
         }
 
         // 不跟随符号链接：末段文件名保留，读取链接自身的目标
@@ -37,7 +40,10 @@ impl SftpState {
             Err(e) => {
                 tracing::debug!("SFTP READLINK failed for {full_path:?}: {e}");
                 if e.kind() == std::io::ErrorKind::PermissionDenied {
-                    Err(status_err(StatusCode::PermissionDenied, "Permission denied"))
+                    Err(status_err(
+                        StatusCode::PermissionDenied,
+                        "Permission denied",
+                    ))
                 } else {
                     Err(status_err(StatusCode::NoSuchFile, "No such file"))
                 }
@@ -56,7 +62,10 @@ impl SftpState {
         link_path: &str,
     ) -> Result<Status, StatusReply> {
         if !self.check_permission(|p| p.can_write) {
-            return Err(status_err(StatusCode::PermissionDenied, "Permission denied"));
+            return Err(status_err(
+                StatusCode::PermissionDenied,
+                "Permission denied",
+            ));
         }
 
         // 未开启符号链接支持时禁止创建，避免为后续访问埋下逃逸面
@@ -69,9 +78,7 @@ impl SftpState {
 
         // 绝对目标会把宿主绝对路径写入链接；jail 语义下只允许相对目标
         if Path::new(target).is_absolute() {
-            tracing::warn!(
-                "SFTP SYMLINK denied: absolute target not allowed - {target:?}"
-            );
+            tracing::warn!("SFTP SYMLINK denied: absolute target not allowed - {target:?}");
             return Err(status_err(
                 StatusCode::PermissionDenied,
                 "Permission denied: absolute symlink target not allowed",
@@ -87,7 +94,7 @@ impl SftpState {
 
         // 相对目标按链接父目录拼接
         let link_parent = full_link.parent().unwrap_or(Path::new(&self.home_dir));
-        let resolved_target = link_parent.join(&target);
+        let resolved_target = link_parent.join(target);
 
         // 词法校验：`..` 归一化后仍须落在 home 内（悬空链接目标也必须安全）
         if crate::path_resolve::build_safe_path(&home_canon, &resolved_target, "symlink target")
@@ -173,7 +180,7 @@ impl SftpState {
             }
         }
 
-        match create_symlink(&target, &full_link, &resolved_target) {
+        match create_symlink(target, &full_link, &resolved_target) {
             Ok(()) => {
                 self.audit_file_op_pair(
                     "SYMLINK",
@@ -202,11 +209,7 @@ impl SftpState {
 ///
 /// Windows 按已知目标类型选 file/dir 链接（目标不存在时按后缀猜测为文件链接）；
 /// Unix 统一走 `std::os::unix::fs::symlink`。
-fn create_symlink(
-    target: &str,
-    link_path: &Path,
-    resolved_target: &Path,
-) -> std::io::Result<()> {
+fn create_symlink(target: &str, link_path: &Path, resolved_target: &Path) -> std::io::Result<()> {
     #[cfg(unix)]
     {
         let _ = resolved_target;
@@ -243,9 +246,20 @@ mod tests {
 
         // 业务参数序：target 在前、link_path 在后
         env.state.symlink(1, "target.txt", "/link.txt").unwrap();
-        assert!(env.dir.path().join("link.txt").symlink_metadata().unwrap().is_symlink());
+        assert!(
+            env.dir
+                .path()
+                .join("link.txt")
+                .symlink_metadata()
+                .unwrap()
+                .is_symlink()
+        );
 
-        let name = env.state.readlink(2, "/link.txt".to_string()).await.unwrap();
+        let name = env
+            .state
+            .readlink(2, "/link.txt".to_string())
+            .await
+            .unwrap();
         assert_eq!(name.files[0].filename, "target.txt");
 
         // READLINK 不跟随链接：LSTAT 语义下链接自身可查
@@ -261,7 +275,10 @@ mod tests {
         assert_eq!(err.status_code, StatusCode::PermissionDenied);
 
         env.state.allow_symlinks = true;
-        let err = env.state.symlink(2, "/etc/passwd", "/link.txt").unwrap_err();
+        let err = env
+            .state
+            .symlink(2, "/etc/passwd", "/link.txt")
+            .unwrap_err();
         assert_eq!(err.status_code, StatusCode::PermissionDenied);
         assert!(!env.dir.path().join("link.txt").exists());
     }
@@ -272,10 +289,18 @@ mod tests {
         let mut env = crate::test_util::setup();
         std::fs::write(env.dir.path().join("plain.txt"), b"p").unwrap();
 
-        let err = env.state.readlink(1, "/plain.txt".to_string()).await.unwrap_err();
+        let err = env
+            .state
+            .readlink(1, "/plain.txt".to_string())
+            .await
+            .unwrap_err();
         assert_eq!(err.status_code, StatusCode::NoSuchFile);
 
-        let err = env.state.readlink(2, "/missing.txt".to_string()).await.unwrap_err();
+        let err = env
+            .state
+            .readlink(2, "/missing.txt".to_string())
+            .await
+            .unwrap_err();
         assert_eq!(err.status_code, StatusCode::NoSuchFile);
     }
 

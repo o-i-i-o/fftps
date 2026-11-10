@@ -1,7 +1,7 @@
 //! libunftp 事件监听器（迁移自 wftpd-windows `ftp_server/listeners.rs`）
 //!
 //! - [`FtpDataListener`]：数据事件 → 文件操作审计（[`Logging::write_file_op`]）
-//!   + 传输字节指标；
+//!   + 传输字节审计；
 //! - [`FtpPresenceListener`]：登录/登出事件 → 会话 trace 映射、连接数注销、审计。
 
 use std::fmt;
@@ -15,7 +15,7 @@ use fftp_common::rate_limit::ConnectionLimiter;
 
 use crate::auth::SessionTracker;
 
-/// 数据事件监听器：文件操作审计 + 传输指标
+/// 数据事件监听器：文件操作审计 + 传输字节统计
 pub struct FtpDataListener {
     sessions: Arc<SessionTracker>,
     logging: Arc<Logging>,
@@ -60,11 +60,9 @@ impl DataListener for FtpDataListener {
     async fn receive_data_event(&self, event: DataEvent, meta: EventMeta) {
         match event {
             DataEvent::Put { path, bytes } => {
-                fftp_common::metrics::record_upload_bytes("FTP", bytes);
                 self.audit(&meta, "UPLOAD", path, bytes);
             }
             DataEvent::Got { path, bytes } => {
-                fftp_common::metrics::record_download_bytes("FTP", bytes);
                 self.audit(&meta, "DOWNLOAD", path, bytes);
             }
             DataEvent::Deleted { path } => self.audit(&meta, "DELETE", path, 0),
@@ -87,7 +85,8 @@ pub struct FtpPresenceListener {
 impl fmt::Debug for FtpPresenceListener {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         // 共享层组件（Logging）无 Debug，仅给出类型标识
-        f.debug_struct("FtpPresenceListener").finish_non_exhaustive()
+        f.debug_struct("FtpPresenceListener")
+            .finish_non_exhaustive()
     }
 }
 
@@ -116,11 +115,8 @@ impl PresenceListener for FtpPresenceListener {
                 // 用户名（ftp/ANONYMOUS），必须归一到同一键
                 let username = crate::auth::canonical_username(&meta.username);
                 if let Some(client_ip) = self.sessions.get_ip_for_user(username) {
-                    self.sessions.register_trace(
-                        meta.trace_id.clone(),
-                        username,
-                        client_ip,
-                    );
+                    self.sessions
+                        .register_trace(meta.trace_id.clone(), username, client_ip);
                 }
                 self.logging.write_audit(
                     &meta.username,

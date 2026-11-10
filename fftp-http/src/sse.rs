@@ -17,14 +17,17 @@
 use std::collections::VecDeque;
 use std::convert::Infallible;
 use std::pin::Pin;
+use std::sync::Arc;
 use std::task::{Context, Poll};
 
-use axum::extract::Query;
+use axum::extract::{Query, State};
+use axum::http::StatusCode;
 use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{IntoResponse, Response};
 use serde::Deserialize;
-use tokio_stream::wrappers::{errors::BroadcastStreamRecvError, BroadcastStream};
+use tokio::sync::OwnedSemaphorePermit;
 use tokio_stream::Stream;
+use tokio_stream::wrappers::{BroadcastStream, errors::BroadcastStreamRecvError};
 
 use fftp_ipc::client::Client;
 use fftp_ipc::protocol::{Command, Event as IpcEvent, FileOpLogEntry};
@@ -32,6 +35,20 @@ use fftp_ipc::protocol::{Command, Event as IpcEvent, FileOpLogEntry};
 use crate::auth::AuthedUser;
 use crate::error::ApiError;
 use crate::routes::TailQuery;
+use crate::state::{AppState, MAX_SSE_STREAMS};
+
+/// 尝试占用一个 SSE 流配额；超限返回 429
+fn acquire_slot(state: &AppState) -> Result<OwnedSemaphorePermit, ApiError> {
+    Arc::clone(&state.sse_slots)
+        .try_acquire_owned()
+        .map_err(|_| {
+            ApiError::new(
+                StatusCode::TOO_MANY_REQUESTS,
+                "too_many_streams",
+                format!("SSE 日志流数量已达上限（{MAX_SSE_STREAMS}）"),
+            )
+        })
+}
 
 /// GET /api/logs/stream → 程序日志 SSE 流（事件 `log`）
 ///
@@ -39,8 +56,10 @@ use crate::routes::TailQuery;
 /// 连接 fftpd 失败或订阅失败时返回错误
 pub async fn logs_stream(
     _user: AuthedUser,
+    State(state): State<Arc<AppState>>,
     Query(q): Query<TailQuery>,
 ) -> Result<Response, ApiError> {
+    let permit = acquire_slot(&state)?;
     // 专用连接（独占订阅，见模块注释）
     let client = Client::connect()
         .await
@@ -53,14 +72,13 @@ pub async fn logs_stream(
         .await
         .map_err(ApiError::from)?;
 
-    Ok(sse_response(
-        EventStream {
-            inner: BroadcastStream::new(events),
-            client: Some(client),
-            pending: VecDeque::new(),
-            fileop: false,
-        },
-    ))
+    Ok(sse_response(EventStream {
+        inner: BroadcastStream::new(events),
+        client: Some(client),
+        pending: VecDeque::new(),
+        fileop: false,
+        _permit: permit,
+    }))
 }
 
 /// GET /api/fileop/stream → 文件操作审计 SSE 流（事件 `fileop`）
@@ -69,8 +87,10 @@ pub async fn logs_stream(
 /// 连接 fftpd 失败时返回错误；历史读取失败仅告警并降级为只推实时条目
 pub async fn fileop_stream(
     _user: AuthedUser,
+    State(state): State<Arc<AppState>>,
     Query(q): Query<TailQuery>,
 ) -> Result<Response, ApiError> {
+    let permit = acquire_slot(&state)?;
     let client = Client::connect()
         .await
         .map_err(|e| ApiError::internal(format!("连接 fftpd 失败: {e:#}")))?;
@@ -78,7 +98,10 @@ pub async fn fileop_stream(
     // 先取广播接收端再取历史：间隙条目经广播补上（可能与历史重复，少见可接受）
     let events = client.subscribe_events();
     let pending = if q.tail > 0 {
-        match client.request(Command::GetRecentFileOps { count: q.tail }).await {
+        match client
+            .request(Command::GetRecentFileOps { count: q.tail })
+            .await
+        {
             Ok(data) => match serde_json::from_value::<FileOpEntries>(data) {
                 Ok(parsed) => parsed.entries,
                 Err(e) => {
@@ -95,18 +118,19 @@ pub async fn fileop_stream(
         Vec::new()
     };
 
-    Ok(sse_response(
-        EventStream {
-            inner: BroadcastStream::new(events),
-            client: Some(client),
-            pending: pending.into(),
-            fileop: true,
-        },
-    ))
+    Ok(sse_response(EventStream {
+        inner: BroadcastStream::new(events),
+        client: Some(client),
+        pending: pending.into(),
+        fileop: true,
+        _permit: permit,
+    }))
 }
 
 fn sse_response(stream: EventStream) -> Response {
-    Sse::new(stream).keep_alive(KeepAlive::default()).into_response()
+    Sse::new(stream)
+        .keep_alive(KeepAlive::default())
+        .into_response()
 }
 
 /// `GetRecentFileOps` 响应
@@ -125,6 +149,8 @@ struct EventStream {
     pending: VecDeque<FileOpLogEntry>,
     /// true = 文件操作审计流（转发 `Event::FileOp`），false = 程序日志流（`Event::Log`）
     fileop: bool,
+    /// 流存活期间持有的并发配额（drop 时归还）
+    _permit: OwnedSemaphorePermit,
 }
 
 impl EventStream {
@@ -178,9 +204,7 @@ impl Stream for EventStream {
                     // 广播通道积压丢弃：告知客户端缺口
                     let msg = format!("接收落后，丢弃 {n} 条日志");
                     tracing::warn!("{msg}");
-                    return Poll::Ready(Some(Ok(
-                        Event::default().event("notice").data(msg)
-                    )));
+                    return Poll::Ready(Some(Ok(Event::default().event("notice").data(msg))));
                 }
                 None => {
                     self.release();

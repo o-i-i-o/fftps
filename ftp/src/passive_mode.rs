@@ -183,9 +183,7 @@ pub fn get_local_ip_addresses() -> LocalIpAddress {
 /// 把绑定地址与端口格式化为人类可读的监听地址描述
 #[must_use]
 pub fn format_listen_addresses(bind_ip: &str, port: u16) -> String {
-    let bind_addr: IpAddr = bind_ip
-        .parse()
-        .unwrap_or(IpAddr::V4(Ipv4Addr::UNSPECIFIED));
+    let bind_addr: IpAddr = bind_ip.parse().unwrap_or(IpAddr::V4(Ipv4Addr::UNSPECIFIED));
 
     if is_wildcard_bind(&bind_addr) {
         let local_ips = get_local_ip_addresses();
@@ -198,7 +196,10 @@ pub fn format_listen_addresses(bind_ip: &str, port: u16) -> String {
             addresses.push(format!("[{ip}]:{port}"));
         }
 
-        format!("0.0.0.0:{port} / [::]:{port}（全部接口: {}）", addresses.join(", "))
+        format!(
+            "0.0.0.0:{port} / [::]:{port}（全部接口: {}）",
+            addresses.join(", ")
+        )
     } else {
         match bind_addr {
             IpAddr::V4(ip) => format!("{ip}:{port}"),
@@ -214,7 +215,7 @@ mod tests {
     #[test]
     fn test_classify_bind_address_wildcard_v4() {
         assert_eq!(
-            classify_bind_address(&IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0))),
+            classify_bind_address(&IpAddr::V4(Ipv4Addr::UNSPECIFIED)),
             BindAddressType::Wildcard
         );
     }
@@ -246,7 +247,7 @@ mod tests {
     #[test]
     fn test_classify_connection_source_loopback() {
         assert_eq!(
-            classify_connection_source(&IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1))),
+            classify_connection_source(&IpAddr::V4(Ipv4Addr::LOCALHOST)),
             ConnectionSource::Loopback
         );
         assert_eq!(
@@ -281,7 +282,7 @@ mod tests {
 
     #[test]
     fn test_is_wildcard_bind() {
-        assert!(is_wildcard_bind(&IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0))));
+        assert!(is_wildcard_bind(&IpAddr::V4(Ipv4Addr::UNSPECIFIED)));
         assert!(is_wildcard_bind(&IpAddr::V6(Ipv6Addr::UNSPECIFIED)));
         assert!(!is_wildcard_bind(&IpAddr::V4(Ipv4Addr::new(
             192, 168, 1, 1
@@ -311,16 +312,13 @@ mod tests {
     fn test_local_ip_addresses_non_empty() {
         let ips = get_local_ip_addresses();
         assert!(!ips.is_empty());
-        assert!(!ips.ipv4.is_empty());
-        assert!(!ips.format_for_log().is_empty());
+        assert_ne!(ips.ipv4, [] as [std::net::Ipv4Addr; 0]);
+        assert_ne!(ips.format_for_log(), "");
     }
 
     #[test]
     fn test_format_listen_addresses_specific() {
-        assert_eq!(
-            format_listen_addresses("192.168.1.1", 21),
-            "192.168.1.1:21"
-        );
+        assert_eq!(format_listen_addresses("192.168.1.1", 21), "192.168.1.1:21");
         assert_eq!(format_listen_addresses("::1", 21), "[::1]:21");
     }
 

@@ -1,8 +1,8 @@
 //! fftp-sftp：fftps SFTP 服务端（russh 传输层 + 并入的 russh-sftp 协议层）
 //!
 //! 对接 `fftp-common` 共享层：认证走 [`fftp_common::users::UserManager`]，
-//! 配置走 [`fftp_common::config::Config`]，防护/限速/配额/指标/审计分别接
-//! `fail2ban` / `rate_limit` / `quota` / `metrics` / `logging`，本 crate 不重复实现这些能力。
+//! 配置走 [`fftp_common::config::Config`]，防护/限速/配额/审计分别接
+//! `fail2ban` / `rate_limit` / `quota` / `logging`，本 crate 不重复实现这些能力。
 //!
 //! # 模块结构
 //! - [`service`]：服务组装与生命周期（[`SftpService`] / [`RunningService`]）
@@ -17,13 +17,13 @@
 //!
 //! # 使用示例
 //! ```no_run
-//! use std::sync::{Arc, Mutex};
+//! use std::sync::{Arc, Mutex, RwLock};
 //! use fftp_common::config::Config;
 //! use fftp_common::users::UserManager;
 //! use fftp_sftp::SftpService;
 //!
 //! # async fn demo() -> anyhow::Result<()> {
-//! let config = Arc::new(Mutex::new(Config::default()));
+//! let config = Arc::new(RwLock::new(Config::default()));
 //! let users = Arc::new(Mutex::new(UserManager::new()));
 //! let service = SftpService::new(config, users);
 //! let running = service.start().await?;
@@ -60,7 +60,7 @@ pub mod state;
 mod test_util;
 pub mod types;
 
-pub use handler::{SftpHandler, SessionTracker};
+pub use handler::{SessionTracker, SftpHandler};
 pub use protocol::message::OpenFlags;
 pub use service::{RunningService, SftpService};
 pub use session::Session;

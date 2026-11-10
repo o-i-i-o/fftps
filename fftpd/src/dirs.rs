@@ -7,6 +7,7 @@ use std::path::{Path, PathBuf};
 
 use serde_json::{Value, json};
 
+use fftp_common::sync::MutexExt;
 use fftp_ipc::server::HandlerError;
 
 use crate::state::AppState;
@@ -25,7 +26,7 @@ pub fn ensure_user_directories(state: &AppState) -> Result<Value, HandlerError> 
         fftp_common::paths::keys_dir(),
     ];
 
-    let users = state.users.lock().unwrap();
+    let users = state.users.lock_recover();
     for user in users.get_users().values() {
         if !user.home_dir.trim().is_empty() {
             candidates.push(PathBuf::from(&user.home_dir));
@@ -51,10 +52,7 @@ pub fn ensure_user_directories(state: &AppState) -> Result<Value, HandlerError> 
 /// # Errors
 /// 路径为空或创建失败时返回错误
 pub fn create_user_directory(path: &str) -> Result<Value, HandlerError> {
-    let dir = PathBuf::from(path);
-    if path.trim().is_empty() {
-        return Err(HandlerError::validation("目录路径不能为空"));
-    }
+    let dir = validate_directory_path(path)?;
     if !dir.is_dir() {
         create_dir(&dir)?;
         set_owner_and_mode(&dir)?;
@@ -69,10 +67,7 @@ pub fn create_user_directory(path: &str) -> Result<Value, HandlerError> {
 /// # Errors
 /// 路径为空、目录不存在或权限设置失败时返回错误
 pub fn setup_directory_permissions(path: &str) -> Result<Value, HandlerError> {
-    let dir = PathBuf::from(path);
-    if path.trim().is_empty() {
-        return Err(HandlerError::validation("目录路径不能为空"));
-    }
+    let dir = validate_directory_path(path)?;
     if !dir.is_dir() {
         return Err(HandlerError::not_found(format!(
             "目录不存在: {}",
@@ -86,11 +81,62 @@ pub fn setup_directory_permissions(path: &str) -> Result<Value, HandlerError> {
     }))
 }
 
+/// 校验并规范化目录路径
+///
+/// 目录创建/权限接口会 `create_dir_all` 并 `chown`/`chmod 0700`，若接受任意
+/// 绝对路径，管理端可对系统目录动手。用户态服务限定：绝对路径、无 `..`、
+/// 位于当前用户主目录下，且既有的目标必须是真实目录而非符号链接。
+fn validate_directory_path(path: &str) -> Result<PathBuf, HandlerError> {
+    if path.trim().is_empty() {
+        return Err(HandlerError::validation("目录路径不能为空"));
+    }
+
+    let dir = PathBuf::from(path);
+    if !dir.is_absolute() {
+        return Err(HandlerError::validation(format!(
+            "目录路径必须是绝对路径: {path}"
+        )));
+    }
+    if dir
+        .components()
+        .any(|c| matches!(c, std::path::Component::ParentDir))
+    {
+        return Err(HandlerError::validation(format!(
+            "目录路径不能包含 ..: {path}"
+        )));
+    }
+
+    let home = fftp_common::paths::home_dir();
+    // 单元测试使用临时目录（HOME 未指向测试目录），仅在测试构建放开
+    #[cfg(test)]
+    let allowed = dir.starts_with(&home) || dir.starts_with(std::env::temp_dir());
+    #[cfg(not(test))]
+    let allowed = dir.starts_with(&home);
+    if !allowed {
+        return Err(HandlerError::validation(format!(
+            "目录必须位于用户主目录 {} 下: {path}",
+            home.display()
+        )));
+    }
+
+    if let Ok(meta) = std::fs::symlink_metadata(&dir) {
+        if meta.file_type().is_symlink() {
+            return Err(HandlerError::validation(format!(
+                "不允许操作符号链接目录: {path}"
+            )));
+        }
+        if !meta.is_dir() {
+            return Err(HandlerError::validation(format!("路径不是目录: {path}")));
+        }
+    }
+
+    Ok(dir)
+}
+
 /// 创建目录（含父目录）
 fn create_dir(dir: &Path) -> Result<(), HandlerError> {
-    std::fs::create_dir_all(dir).map_err(|e| {
-        HandlerError::internal(format!("创建目录 {} 失败: {e}", dir.display()))
-    })
+    std::fs::create_dir_all(dir)
+        .map_err(|e| HandlerError::internal(format!("创建目录 {} 失败: {e}", dir.display())))
 }
 
 /// Linux：属主设为当前用户、权限 `0700`；Windows：空实现（合理简化）
@@ -102,16 +148,10 @@ fn set_owner_and_mode(dir: &Path) -> Result<(), HandlerError> {
         let uid = nix::unistd::Uid::current();
         let gid = nix::unistd::Gid::current();
         nix::unistd::chown(dir, Some(uid), Some(gid)).map_err(|e| {
-            HandlerError::internal(format!(
-                "设置目录 {} 属主失败: {e}",
-                dir.display()
-            ))
+            HandlerError::internal(format!("设置目录 {} 属主失败: {e}", dir.display()))
         })?;
         std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700)).map_err(|e| {
-            HandlerError::internal(format!(
-                "设置目录 {} 权限失败: {e}",
-                dir.display()
-            ))
+            HandlerError::internal(format!("设置目录 {} 权限失败: {e}", dir.display()))
         })?;
     }
     #[cfg(windows)]

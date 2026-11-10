@@ -46,7 +46,7 @@ pub fn ensure_token() -> Result<String> {
             return Ok(token);
         }
         // 并发/残留文件：以磁盘上的令牌为准，避免调用方拿到未落盘的值
-        return read_token().context("setup 令牌文件已存在但无法安全读取");
+        read_token().context("setup 令牌文件已存在但无法安全读取")
     }
 
     #[cfg(windows)]
@@ -89,9 +89,7 @@ fn write_token_unix(token: &str) -> Result<bool> {
             Ok(true)
         }
         Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => Ok(false),
-        Err(e) => {
-            Err(e).with_context(|| format!("创建 setup 令牌失败: {}", path.display()))
-        }
+        Err(e) => Err(e).with_context(|| format!("创建 setup 令牌失败: {}", path.display())),
     }
 }
 
@@ -104,9 +102,7 @@ pub fn read_token() -> Option<String> {
         use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 
         let mut options = std::fs::OpenOptions::new();
-        options
-            .read(true)
-            .custom_flags(nix::libc::O_NOFOLLOW);
+        options.read(true).custom_flags(nix::libc::O_NOFOLLOW);
         let mut file = options.open(token_path()).ok()?;
         // 旧版本可能以宽松权限创建，读取时顺手收紧
         let _ = file.set_permissions(std::fs::Permissions::from_mode(0o600));

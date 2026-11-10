@@ -125,11 +125,7 @@ mod tests {
         let cert_path = dir.path().join("ftps-cert.pem");
         let key_path = dir.path().join("ftps-key.pem");
 
-        generate_self_signed_cert(
-            cert_path.to_str().unwrap(),
-            key_path.to_str().unwrap(),
-        )
-        .unwrap();
+        generate_self_signed_cert(cert_path.to_str().unwrap(), key_path.to_str().unwrap()).unwrap();
 
         let cert_pem = std::fs::read_to_string(&cert_path).unwrap();
         let key_pem = std::fs::read_to_string(&key_path).unwrap();
@@ -151,9 +147,13 @@ mod tests {
         let key_path = dir.path().join("certs/ftps-key.pem");
 
         // 首次：生成
-        assert!(ensure_cert_exists(cert_path.to_str().unwrap(), key_path.to_str().unwrap()).unwrap());
+        assert!(
+            ensure_cert_exists(cert_path.to_str().unwrap(), key_path.to_str().unwrap()).unwrap()
+        );
         // 二次：沿用
-        assert!(!ensure_cert_exists(cert_path.to_str().unwrap(), key_path.to_str().unwrap()).unwrap());
+        assert!(
+            !ensure_cert_exists(cert_path.to_str().unwrap(), key_path.to_str().unwrap()).unwrap()
+        );
     }
 
     #[test]
@@ -164,8 +164,14 @@ mod tests {
 
         // 只留残留私钥 → 整体重新生成
         std::fs::write(&key_path, "stale").unwrap();
-        assert!(ensure_cert_exists(cert_path.to_str().unwrap(), key_path.to_str().unwrap()).unwrap());
-        assert!(std::fs::read_to_string(&key_path).unwrap().contains("PRIVATE KEY"));
+        assert!(
+            ensure_cert_exists(cert_path.to_str().unwrap(), key_path.to_str().unwrap()).unwrap()
+        );
+        assert!(
+            std::fs::read_to_string(&key_path)
+                .unwrap()
+                .contains("PRIVATE KEY")
+        );
         assert!(cert_path.exists());
     }
 }

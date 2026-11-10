@@ -4,12 +4,15 @@ use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
 
 use fftp_ipc::protocol::Command;
-use tokio::sync::watch;
+use tokio::sync::{Semaphore, watch};
 
 use crate::auth::{LoginLimiter, SessionStore};
 use crate::config::{AdminUser, HttpConfig};
 use crate::daemon::Daemon;
 use crate::idle::{IdleState, ShutdownReason};
+
+/// 同时活跃的 SSE 日志流上限（每流独占一条 IPC 连接，需防止耗尽）
+pub const MAX_SSE_STREAMS: usize = 32;
 
 /// 进程级共享状态（`Arc<AppState>` 作为 axum state）
 pub struct AppState {
@@ -24,6 +27,8 @@ pub struct AppState {
     pub login_limiter: LoginLimiter,
     /// 空闲自动关闭
     pub idle: Arc<IdleState>,
+    /// SSE 流并发配额（每流独占一条 IPC 连接）
+    pub sse_slots: Arc<Semaphore>,
     shutdown_tx: watch::Sender<Option<ShutdownReason>>,
 }
 
@@ -45,6 +50,7 @@ impl AppState {
             sessions,
             login_limiter: LoginLimiter::default(),
             idle,
+            sse_slots: Arc::new(Semaphore::new(MAX_SSE_STREAMS)),
             shutdown_tx,
         });
         (state, shutdown_rx)
@@ -64,18 +70,12 @@ impl AppState {
     /// 管理员账户快照（无锁等待时间极短，返回共享 Arc）
     #[must_use]
     pub fn admins(&self) -> Arc<Vec<AdminUser>> {
-        self.admins
-            .read()
-            .expect("管理员列表锁中毒")
-            .clone()
+        self.admins.read().expect("管理员列表锁中毒").clone()
     }
 
     /// 替换运行期管理员列表
     pub fn set_admins(&self, users: Vec<AdminUser>) {
-        *self
-            .admins
-            .write()
-            .expect("管理员列表锁中毒") = Arc::new(users);
+        *self.admins.write().expect("管理员列表锁中毒") = Arc::new(users);
     }
 
     /// 写审计日志（经 fftpd 落盘；失败仅告警，不影响主流程）

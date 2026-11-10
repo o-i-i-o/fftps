@@ -3,7 +3,7 @@
 //! advisory 锁语义：会话级标记 + 全局 `locked_files` 集合防重入，
 //! 阻塞锁不支持。参数为协议层解析后的强类型字段。
 
-use crate::protocol::{Status, StatusReply, StatusCode};
+use crate::protocol::{Status, StatusCode, StatusReply};
 use crate::state::{SftpState, status_err, status_ok};
 use crate::types::SftpFileHandle;
 
@@ -25,7 +25,10 @@ impl SftpState {
         flags: u32,
     ) -> Result<Status, StatusReply> {
         if !self.check_permission(|p| p.can_write) {
-            return Err(status_err(StatusCode::PermissionDenied, "Permission denied"));
+            return Err(status_err(
+                StatusCode::PermissionDenied,
+                "Permission denied",
+            ));
         }
 
         let file_handle = self
@@ -153,7 +156,12 @@ mod tests {
     /// 打开文件句柄的辅助
     async fn open_file(state: &mut SftpState, id: u32) -> String {
         state
-            .open(id, "/f.txt".to_string(), OpenFlags::WRITE | OpenFlags::CREATE, FileAttributes::default())
+            .open(
+                id,
+                "/f.txt".to_string(),
+                OpenFlags::WRITE | OpenFlags::CREATE,
+                FileAttributes::default(),
+            )
             .await
             .unwrap()
             .handle

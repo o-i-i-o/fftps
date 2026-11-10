@@ -1,6 +1,6 @@
 use thiserror::Error;
 
-use super::{impl_packet_for, impl_request_id, Packet, RequestId};
+use super::{Packet, RequestId, impl_packet_for, impl_request_id};
 
 /// Error Codes for SSH_FXP_STATUS
 #[derive(Debug, Error, Clone, Copy, PartialEq, Serialize, Deserialize)]

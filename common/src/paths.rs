@@ -288,6 +288,102 @@ pub fn audit_log_path() -> PathBuf {
     default_log_dir().join("audit.log")
 }
 
+/// IPC 认证令牌文件路径
+///
+/// Unix 位于 0700 运行时目录（随登录会话失效）；Windows 位于状态目录
+/// （命名管道无文件系统路径，令牌需跨进程共享）。
+#[must_use]
+pub fn ipc_token_path() -> PathBuf {
+    #[cfg(unix)]
+    {
+        runtime_dir().join("ipc.token")
+    }
+    #[cfg(windows)]
+    {
+        state_dir().join("ipc.token")
+    }
+}
+
+/// 读取（缺失时生成）IPC 握手令牌
+///
+/// fftpd 与 fftp-http 以同一用户运行，本文件仅作为纵深防御：它能阻止
+/// 其他用户（Unix 权限）或误连的进程调用管理面，但无法抵御已在本用户
+/// 上下文执行的攻击者（其本就可读取令牌或直接操作进程）。
+///
+/// # Errors
+/// 运行时目录/状态目录或令牌文件无法创建、读取时返回错误
+pub fn load_or_create_ipc_token() -> std::io::Result<String> {
+    let path = ipc_token_path();
+
+    if let Ok(existing) = std::fs::read_to_string(&path) {
+        let token = existing.trim().to_string();
+        if token.len() >= 32 {
+            harden_token_permissions(&path)?;
+            return Ok(token);
+        }
+    }
+
+    let parent = path
+        .parent()
+        .ok_or_else(|| std::io::Error::other("IPC 令牌路径缺少父目录"))?;
+    #[cfg(unix)]
+    {
+        // 令牌与套接字同处 0700 运行时目录
+        ensure_runtime_dir()?;
+    }
+    std::fs::create_dir_all(parent)?;
+
+    let token = format!(
+        "{:032x}{:032x}",
+        rand::random::<u128>(),
+        rand::random::<u128>()
+    );
+    write_private_file(&path, &token)?;
+    Ok(token)
+}
+
+/// 以 0600（Unix）原子创建令牌文件；并发创建时复用已存在文件
+fn write_private_file(path: &std::path::Path, token: &str) -> std::io::Result<()> {
+    use std::io::Write;
+
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+
+    match options.open(path) {
+        Ok(mut file) => {
+            file.write_all(token.as_bytes())?;
+            file.write_all(b"\n")?;
+            file.sync_all()?;
+            Ok(())
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+            // 另一进程已生成：读取并收紧权限
+            let existing = std::fs::read_to_string(path)?;
+            if existing.trim().len() < 32 {
+                return Err(std::io::Error::other("已存在的 IPC 令牌内容非法"));
+            }
+            harden_token_permissions(path)
+        }
+        Err(e) => Err(e),
+    }
+}
+
+#[cfg(unix)]
+fn harden_token_permissions(path: &std::path::Path) -> std::io::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))
+}
+
+#[cfg(windows)]
+fn harden_token_permissions(_path: &std::path::Path) -> std::io::Result<()> {
+    Ok(())
+}
+
 /// fftp-http 独立配置文件路径（Web 管理前端专用，fftpd 不读取）
 ///
 /// 环境变量 `FFTPD_HTTP_CONFIG` 可整体覆盖（测试/多实例）；
@@ -313,6 +409,7 @@ mod tests {
         assert!(default_host_key_path().ends_with("ssh_host_ed25519_key"));
         assert!(config_dir().ends_with("fftpd"));
         assert!(http_config_path().ends_with("fftp-http.toml"));
+        assert!(ipc_token_path().ends_with("ipc.token"));
     }
 
     #[test]

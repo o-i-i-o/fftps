@@ -120,12 +120,6 @@
           <label>端口 <input id="cf-port" type="number" min="1" max="65535"></label>
           <label class="wide">欢迎消息 <input id="cf-welcome" type="text"></label>
           <label>编码 <input id="cf-encoding" type="text" placeholder="UTF-8"></label>
-          <label>默认传输模式
-            <select id="cf-transfer-mode">
-              <option value="binary">binary</option>
-              <option value="ascii">ascii</option>
-            </select>
-          </label>
           <label>连接模式
             <select id="cf-conn-mode">
               <option value="passive_only">passive_only（仅被动）</option>
@@ -139,9 +133,7 @@
           <label>被动端口上限 <input id="cf-passive-hi" type="number" min="1" max="65535"></label>
           <label>单连接限速（KB/s） <input id="cf-speed" type="number" min="0" step="1" placeholder="0 = 不限速"></label>
           <label class="wide">对外通告地址 <input id="cf-masquerade" type="text" placeholder="（空 = 使用实际连接地址）"></label>
-          <label>连接超时（秒） <input id="cf-conn-timeout" type="number" min="1" step="1"></label>
           <label>空闲超时（秒） <input id="cf-idle-timeout" type="number" min="1" step="1"></label>
-          <label class="check"><input id="cf-hide-version" type="checkbox"> 隐藏版本信息</label>
           <label class="check"><input id="cf-pooled" type="checkbox"> 池化被动监听（开启后运行期重启会失败）</label>
           <label class="check"><input id="cf-nat" type="checkbox"> 允许 NAT 客户端</label>
           <label class="wide">FTP 根目录 <input id="cf-root" type="text" placeholder="（空 = 各用户 home）"></label>
@@ -168,15 +160,6 @@
             <label class="wide">主机密钥路径 <input id="cf-sftp-host-key" type="text" placeholder="（空 = 默认路径）"></label>
             <label>最大认证尝试 <input id="cf-sftp-max-auth" type="number" min="1" step="1"></label>
             <label>认证超时（秒） <input id="cf-sftp-auth-timeout" type="number" min="1" step="1"></label>
-            <label>SFTP 日志级别
-              <select id="cf-sftp-log-level">
-                <option value="error">error</option>
-                <option value="warn">warn</option>
-                <option value="info" selected>info</option>
-                <option value="debug">debug</option>
-                <option value="trace">trace</option>
-              </select>
-            </label>
             <label>单用户最大会话 <input id="cf-sftp-sessions" type="number" min="1" step="1"></label>
             <label>主机密钥轮换（天） <input id="cf-sftp-rotation" type="number" min="0" step="1" placeholder="0 = 不轮换"></label>
           </div>

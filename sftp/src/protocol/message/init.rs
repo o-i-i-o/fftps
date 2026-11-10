@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use super::{impl_packet_for, Packet, VERSION};
+use super::{Packet, VERSION, impl_packet_for};
 
 /// Implementation for `SSH_FXP_INIT`
 #[derive(Debug, Serialize, Deserialize)]

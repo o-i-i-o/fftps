@@ -1,6 +1,6 @@
 use std::fs;
 
-use super::{impl_packet_for, impl_request_id, FileAttributes, Packet, RequestId};
+use super::{FileAttributes, Packet, RequestId, impl_packet_for, impl_request_id};
 
 /// Opening flags according to the specification
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]

@@ -4,10 +4,10 @@
 
 use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
 
-use crate::protocol::{Data, FileAttributes, Handle, OpenFlags, Status, StatusReply, StatusCode};
+use crate::protocol::{Data, FileAttributes, Handle, OpenFlags, Status, StatusCode, StatusReply};
 use crate::state::{SftpState, status_err, status_ok};
 use crate::types::{
-    SftpFileHandle, MAX_HANDLES, SFTP_READ_BUFFER_SIZE, SFTP_WRITE_FLUSH_THRESHOLD,
+    MAX_HANDLES, SFTP_READ_BUFFER_SIZE, SFTP_WRITE_FLUSH_THRESHOLD, SftpFileHandle,
 };
 
 impl SftpState {
@@ -45,7 +45,10 @@ impl SftpState {
                  write={need_write}, append={need_append})",
                 self.username
             );
-            return Err(status_err(StatusCode::PermissionDenied, "Permission denied"));
+            return Err(status_err(
+                StatusCode::PermissionDenied,
+                "Permission denied",
+            ));
         }
 
         if self.handles.len() >= MAX_HANDLES {
@@ -67,9 +70,7 @@ impl SftpState {
         // 配额预检必须在截断/创建之前完成：配额不足时不能留下副作用
         // （旧实现先 truncate 再检查，失败时原文件内容已丢失）。
         let original_size = if file_existed {
-            tokio::fs::metadata(&full_path)
-                .await
-                .map_or(0, |m| m.len())
+            tokio::fs::metadata(&full_path).await.map_or(0, |m| m.len())
         } else {
             0
         };
@@ -196,8 +197,11 @@ impl SftpState {
 
                     if quota_reserved > 0 {
                         let username = self.audit_user().to_string();
-                        self.quota_manager
-                            .commit_usage(&username, quota_reserved, actual_new_bytes);
+                        self.quota_manager.commit_usage(
+                            &username,
+                            quota_reserved,
+                            actual_new_bytes,
+                        );
                         if shrunk_bytes > 0 {
                             self.quota_manager.subtract_usage(&username, shrunk_bytes);
                         }
@@ -215,7 +219,6 @@ impl SftpState {
                     } else {
                         self.audit_file_op("UPLOAD", &path.to_string_lossy(), written_bytes);
                     }
-                    fftp_common::metrics::record_upload_bytes("SFTP", written_bytes);
                 } else if quota_reserved > 0 {
                     let username = self.audit_user().to_string();
                     self.quota_manager
@@ -224,7 +227,6 @@ impl SftpState {
 
                 if read_bytes > 0 {
                     self.audit_file_op("DOWNLOAD", &path.to_string_lossy(), read_bytes);
-                    fftp_common::metrics::record_download_bytes("SFTP", read_bytes);
                 }
 
                 tracing::debug!(
@@ -270,7 +272,10 @@ impl SftpState {
                 action = "READ_DENIED",
                 "SFTP READ denied: no read permission"
             );
-            return Err(status_err(StatusCode::PermissionDenied, "Permission denied"));
+            return Err(status_err(
+                StatusCode::PermissionDenied,
+                "Permission denied",
+            ));
         }
 
         let Some(SftpFileHandle::File {
@@ -363,7 +368,10 @@ impl SftpState {
                 "SFTP WRITE denied: no write permission for user {:?}",
                 self.username
             );
-            return Err(status_err(StatusCode::PermissionDenied, "Permission denied"));
+            return Err(status_err(
+                StatusCode::PermissionDenied,
+                "Permission denied",
+            ));
         }
 
         if let Some(limiter) = &self.rate_limiter {
@@ -432,7 +440,10 @@ impl SftpState {
 
         if let Err(e) = file.write_all(&write_data).await {
             tracing::error!("SFTP WRITE error for {path:?}: {e}");
-            return Err(status_err(StatusCode::Failure, &format!("Write error: {e}")));
+            return Err(status_err(
+                StatusCode::Failure,
+                &format!("Write error: {e}"),
+            ));
         }
 
         let written = data_len as u64;
@@ -444,7 +455,10 @@ impl SftpState {
         if *pending_flush_bytes >= SFTP_WRITE_FLUSH_THRESHOLD as u64 {
             if let Err(e) = file.flush().await {
                 tracing::error!("SFTP WRITE flush error for {path:?}: {e}");
-                return Err(status_err(StatusCode::Failure, &format!("Flush error: {e}")));
+                return Err(status_err(
+                    StatusCode::Failure,
+                    &format!("Flush error: {e}"),
+                ));
             }
             if let Err(e) = file.sync_all().await {
                 tracing::warn!("SFTP WRITE sync_all error for {path:?}: {e}");
@@ -489,7 +503,12 @@ mod tests {
 
         let handle = env
             .state
-            .open(4, "/a.txt".to_string(), OpenFlags::READ, FileAttributes::default())
+            .open(
+                4,
+                "/a.txt".to_string(),
+                OpenFlags::READ,
+                FileAttributes::default(),
+            )
             .await
             .unwrap()
             .handle;
@@ -527,11 +546,7 @@ mod tests {
             .await
             .unwrap()
             .handle;
-        let err = env
-            .state
-            .read(2, handle, 0, 8)
-            .await
-            .unwrap_err();
+        let err = env.state.read(2, handle, 0, 8).await.unwrap_err();
         assert_eq!(err.status_code, StatusCode::PermissionDenied);
     }
 
@@ -544,7 +559,12 @@ mod tests {
 
         let handle = env
             .state
-            .open(1, "/empty.txt".to_string(), OpenFlags::READ, FileAttributes::default())
+            .open(
+                1,
+                "/empty.txt".to_string(),
+                OpenFlags::READ,
+                FileAttributes::default(),
+            )
             .await
             .unwrap()
             .handle;
@@ -557,7 +577,11 @@ mod tests {
     async fn invalid_handle_rejected() {
         let mut env = crate::test_util::setup();
 
-        let err = env.state.read(1, "ghost".to_string(), 0, 8).await.unwrap_err();
+        let err = env
+            .state
+            .read(1, "ghost".to_string(), 0, 8)
+            .await
+            .unwrap_err();
         assert_eq!(err.status_code, StatusCode::Failure);
 
         let err = env
@@ -569,11 +593,7 @@ mod tests {
 
         // 目录句柄不能当文件句柄用
         let dir_handle = env.state.opendir(3, "/").unwrap().handle;
-        let err = env
-            .state
-            .read(4, dir_handle, 0, 8)
-            .await
-            .unwrap_err();
+        let err = env.state.read(4, dir_handle, 0, 8).await.unwrap_err();
         assert_eq!(err.status_code, StatusCode::Failure);
     }
 
@@ -581,11 +601,7 @@ mod tests {
     #[tokio::test]
     async fn close_unknown_handle() {
         let mut env = crate::test_util::setup();
-        let err = env
-            .state
-            .close(1, "ghost".to_string())
-            .await
-            .unwrap_err();
+        let err = env.state.close(1, "ghost".to_string()).await.unwrap_err();
         assert_eq!(err.status_code, StatusCode::Failure);
     }
 
@@ -598,7 +614,12 @@ mod tests {
         let flags = OpenFlags::WRITE | OpenFlags::CREATE | OpenFlags::EXCLUDE;
         let err = env
             .state
-            .open(1, "/exists.txt".to_string(), flags, FileAttributes::default())
+            .open(
+                1,
+                "/exists.txt".to_string(),
+                flags,
+                FileAttributes::default(),
+            )
             .await
             .unwrap_err();
         assert_eq!(err.status_code, StatusCode::Failure);

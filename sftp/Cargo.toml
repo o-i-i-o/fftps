@@ -7,7 +7,7 @@ authors.workspace = true
 license.workspace = true
 
 [dependencies]
-# 内部共享层：用户库/配置/配额/限速/防护/指标/审计日志
+# 内部共享层：用户库/配置/配额/限速/防护/审计日志
 fftp-common = { workspace = true }
 
 # 异步运行时

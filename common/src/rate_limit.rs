@@ -10,6 +10,7 @@
 //!
 //! 跨平台实现（不依赖 `windows` crate）。
 
+use crate::sync::MutexExt;
 use std::collections::HashMap;
 use std::pin::Pin;
 use std::sync::Mutex;
@@ -381,7 +382,7 @@ impl ConnectionLimiter {
     /// # Panics
     /// 内部互斥锁中毒时 panic
     pub fn update_config(&self, security: &SecurityConfig) {
-        let mut limits = self.limits.lock().unwrap();
+        let mut limits = self.limits.lock_recover();
         limits.max_connections = security.max_connections;
         limits.max_connections_per_ip = security.max_connections_per_ip;
     }
@@ -391,8 +392,8 @@ impl ConnectionLimiter {
     /// # Panics
     /// 内部互斥锁中毒时 panic
     pub fn try_register(&self, client_ip: &str) -> bool {
-        let mut map = self.connection_count_per_ip.lock().unwrap();
-        let limits = *self.limits.lock().unwrap();
+        let mut map = self.connection_count_per_ip.lock_recover();
+        let limits = *self.limits.lock_recover();
 
         let global_count = self.global_connection_count.load(Ordering::SeqCst);
         if global_count >= limits.max_connections {
@@ -420,7 +421,7 @@ impl ConnectionLimiter {
             tracing::warn!("Connection count underflow prevented during unregister");
         }
 
-        let mut map = self.connection_count_per_ip.lock().unwrap();
+        let mut map = self.connection_count_per_ip.lock_recover();
         if let Some(count) = map.get_mut(client_ip) {
             *count = count.saturating_sub(1);
             if *count == 0 {
@@ -442,8 +443,7 @@ impl ConnectionLimiter {
     #[must_use]
     pub fn get_ip_count(&self, ip: &str) -> usize {
         self.connection_count_per_ip
-            .lock()
-            .unwrap()
+            .lock_recover()
             .get(ip)
             .copied()
             .unwrap_or(0)
@@ -455,7 +455,7 @@ impl ConnectionLimiter {
     /// 内部互斥锁中毒时 panic
     #[must_use]
     pub fn get_all_ip_counts(&self) -> HashMap<String, usize> {
-        self.connection_count_per_ip.lock().unwrap().clone()
+        self.connection_count_per_ip.lock_recover().clone()
     }
 
     /// (全局, per-IP) 连接计数
@@ -509,7 +509,10 @@ mod tests {
 
     #[test]
     fn bucket_capacity_scales_with_rate() {
-        assert_eq!(RateLimiter::new(10).get_bucket_capacity(), MIN_BUCKET_CAPACITY);
+        assert_eq!(
+            RateLimiter::new(10).get_bucket_capacity(),
+            MIN_BUCKET_CAPACITY
+        );
         assert_eq!(
             RateLimiter::new(512).get_bucket_capacity(),
             512 * 1024,

@@ -69,7 +69,7 @@ pub struct HttpConfig {
 
 /// 将内容原子写入配置文件，并在 Unix 下收紧为 0600
 ///
-/// 配置文件含 api_token 与口令哈希，直接 `fs::write` 会以 umask 默认权限
+/// 配置文件含 `api_token` 与口令哈希，直接 `fs::write` 会以 umask 默认权限
 /// 落盘且回写非原子（中途失败会留下截断文件）。这里先写同目录私有临时文件，
 /// 再 `rename` 覆盖。
 fn write_config(path: &Path, contents: &str) -> Result<()> {
@@ -77,9 +77,10 @@ fn write_config(path: &Path, contents: &str) -> Result<()> {
         .parent()
         .filter(|p| !p.as_os_str().is_empty())
         .unwrap_or_else(|| Path::new("."));
-    let file_name = path
-        .file_name()
-        .map_or_else(|| "http.toml".to_string(), |n| n.to_string_lossy().into_owned());
+    let file_name = path.file_name().map_or_else(
+        || "http.toml".to_string(),
+        |n| n.to_string_lossy().into_owned(),
+    );
     let unique = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |d| d.as_nanos());
@@ -96,7 +97,10 @@ fn write_config(path: &Path, contents: &str) -> Result<()> {
             .mode(0o600)
             .open(&tmp)
             .with_context(|| format!("创建临时配置文件失败: {}", tmp.display()))?;
-        if let Err(e) = file.write_all(contents.as_bytes()).and_then(|()| file.sync_all()) {
+        if let Err(e) = file
+            .write_all(contents.as_bytes())
+            .and_then(|()| file.sync_all())
+        {
             let _ = std::fs::remove_file(&tmp);
             return Err(e).with_context(|| format!("写入临时配置文件失败: {}", tmp.display()));
         }
@@ -286,7 +290,10 @@ impl HttpConfig {
             }
             write_config(path, DEFAULT_CONFIG)
                 .with_context(|| format!("写入默认配置模板失败: {}", path.display()))?;
-            tracing::warn!("已生成默认配置模板: {}（首次启动将进入本机 setup 引导）", path.display());
+            tracing::warn!(
+                "已生成默认配置模板: {}（首次启动将进入本机 setup 引导）",
+                path.display()
+            );
         }
         tighten_config_permissions(path);
         let raw = std::fs::read_to_string(path)
@@ -298,38 +305,29 @@ impl HttpConfig {
     /// 内容与注释；写入前对完整新内容做解析 + 启动校验，避免落盘非法配置
     ///
     /// # Errors
-    /// 读取失败或生成的新内容解析/校验失败时返回错误
+    /// 读取/解析失败或生成的新内容解析/校验失败时返回错误
     pub fn save_admin_users(path: &Path, users: &[AdminUser]) -> Result<()> {
         let raw = std::fs::read_to_string(path)
             .with_context(|| format!("读取配置失败: {}", path.display()))?;
+        let mut doc: toml_edit::DocumentMut = raw
+            .parse()
+            .with_context(|| format!("解析配置 TOML 失败: {}", path.display()))?;
 
-        // 剔除现存 [[admin_users]] 块（段头起至下一个段头/文件尾），其余原样保留
-        let mut kept: Vec<&str> = Vec::new();
-        let mut in_admin = false;
-        for line in raw.lines() {
-            let trimmed = line.trim_start();
-            if trimmed.starts_with("[[admin_users]") {
-                in_admin = true;
-                continue;
+        if users.is_empty() {
+            // 清空管理员：直接移除整个段（下次启动重新进入 setup 引导）
+            doc.remove("admin_users");
+        } else {
+            let mut tables = toml_edit::ArrayOfTables::new();
+            for user in users {
+                let mut table = toml_edit::Table::new();
+                table["username"] = toml_edit::value(user.username.as_str());
+                table["password_hash"] = toml_edit::value(user.password_hash.as_str());
+                tables.push(table);
             }
-            // 非注释的段头（[x] / [[x]]）结束 admin 块
-            if in_admin && trimmed.starts_with('[') {
-                in_admin = false;
-            }
-            if !in_admin {
-                kept.push(line);
-            }
-        }
-        while kept.last().is_some_and(|l| l.trim().is_empty()) {
-            kept.pop();
+            doc["admin_users"] = toml_edit::Item::ArrayOfTables(tables);
         }
 
-        let mut out = kept.join("\n");
-        for u in users {
-            // AdminUser 为纯字符串字段，经 toml 序列化自动处理转义
-            out.push_str("\n\n[[admin_users]]\n");
-            out.push_str(&toml::to_string(u)?);
-        }
+        let out = doc.to_string();
 
         // 写入前校验：解析新内容并复用启动校验规则
         let parsed: HttpConfig = toml::from_str(&out)
@@ -338,47 +336,33 @@ impl HttpConfig {
             .validate()
             .context("生成的新配置未通过启动校验（未写入文件）")?;
 
-        write_config(path, &out)
-            .with_context(|| format!("写入配置失败: {}", path.display()))?;
+        write_config(path, &out).with_context(|| format!("写入配置失败: {}", path.display()))?;
         Ok(())
     }
 
     /// 将空闲设置写回配置文件：仅替换 `[idle]` 段，保留其余内容与注释
     ///
     /// # Errors
-    /// 读取失败、生成的新内容解析/校验失败或写入失败时返回错误
+    /// 读取/解析失败、生成的新内容解析/校验失败或写入失败时返回错误
     pub fn save_idle(path: &Path, idle: &IdleConfig) -> Result<()> {
         let raw = std::fs::read_to_string(path)
             .with_context(|| format!("读取配置失败: {}", path.display()))?;
+        let mut doc: toml_edit::DocumentMut = raw
+            .parse()
+            .with_context(|| format!("解析配置 TOML 失败: {}", path.display()))?;
 
-        let mut kept: Vec<&str> = Vec::new();
-        let mut in_idle = false;
-        for line in raw.lines() {
-            let trimmed = line.trim_start();
-            if trimmed == "[idle]" || trimmed.starts_with("[idle] #") {
-                in_idle = true;
-                continue;
-            }
-            if in_idle && trimmed.starts_with('[') {
-                in_idle = false;
-            }
-            if !in_idle {
-                kept.push(line);
-            }
-        }
-        while kept.last().is_some_and(|l| l.trim().is_empty()) {
-            kept.pop();
-        }
+        let mut table = toml_edit::Table::new();
+        table["enabled"] = toml_edit::value(idle.enabled);
+        table["timeout_secs"] = toml_edit::value(
+            i64::try_from(idle.timeout_secs).context("空闲超时超出 TOML 整数范围")?,
+        );
+        table["mode"] = toml_edit::value(idle.mode.as_str());
+        table["warn_secs"] = toml_edit::value(
+            i64::try_from(idle.warn_secs).context("空闲告警时长超出 TOML 整数范围")?,
+        );
+        doc["idle"] = toml_edit::Item::Table(table);
 
-        let mut out = kept.join("\n");
-        out.push_str("\n\n[idle]\n");
-        {
-            use std::fmt::Write as _;
-            writeln!(out, "enabled = {}", idle.enabled).expect("写入 String 不会失败");
-            writeln!(out, "timeout_secs = {}", idle.timeout_secs).expect("写入 String 不会失败");
-            writeln!(out, "mode = \"{}\"", idle.mode.as_str()).expect("写入 String 不会失败");
-            writeln!(out, "warn_secs = {}", idle.warn_secs).expect("写入 String 不会失败");
-        }
+        let out = doc.to_string();
 
         let parsed: HttpConfig = toml::from_str(&out)
             .with_context(|| format!("生成的新配置解析失败: {}", path.display()))?;
@@ -386,8 +370,7 @@ impl HttpConfig {
             .validate_launch()
             .context("生成的新配置未通过启动校验（未写入文件）")?;
 
-        write_config(path, &out)
-            .with_context(|| format!("写入配置失败: {}", path.display()))?;
+        write_config(path, &out).with_context(|| format!("写入配置失败: {}", path.display()))?;
         Ok(())
     }
 
@@ -416,7 +399,10 @@ impl HttpConfig {
             anyhow::bail!("{msg}");
         }
         if self.tls.enabled {
-            for (label, p) in [("tls.cert_path", &self.tls.cert_path), ("tls.key_path", &self.tls.key_path)] {
+            for (label, p) in [
+                ("tls.cert_path", &self.tls.cert_path),
+                ("tls.key_path", &self.tls.key_path),
+            ] {
                 if p.is_empty() || !Path::new(p).is_file() {
                     anyhow::bail!("{label} 指向的文件不存在或未配置: {p:?}（TLS 已启用）");
                 }
@@ -589,10 +575,10 @@ mod tests {
         assert_eq!(cfg.listen.address, "127.0.0.1");
         assert_eq!(cfg.listen.port, 8080);
         assert!(!cfg.tls.enabled);
-        assert!(cfg.ip_filter.whitelist.is_empty());
-        assert!(cfg.ip_filter.blacklist.is_empty());
+        assert_eq!(cfg.ip_filter.whitelist, [] as [std::string::String; 0]);
+        assert_eq!(cfg.ip_filter.blacklist, [] as [std::string::String; 0]);
         assert_eq!(cfg.auth.session_ttl_secs, 43_200);
-        assert!(cfg.auth.api_token.is_empty());
+        assert_eq!(cfg.auth.api_token, "");
         assert!(!cfg.idle.enabled);
         assert_eq!(cfg.idle.mode, IdleMode::NoPage);
         // 管理员段在示例中默认注释：回环地址下允许启动并进入 setup 引导
@@ -625,8 +611,14 @@ mod tests {
         .unwrap();
 
         let users = vec![
-            AdminUser { username: "a".into(), password_hash: hash.into() },
-            AdminUser { username: "b".into(), password_hash: hash.into() },
+            AdminUser {
+                username: "a".into(),
+                password_hash: hash.into(),
+            },
+            AdminUser {
+                username: "b".into(),
+                password_hash: hash.into(),
+            },
         ];
         HttpConfig::save_admin_users(&path, &users).unwrap();
 

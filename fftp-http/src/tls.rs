@@ -2,7 +2,7 @@
 //!
 //! 进程内同时存在两套 rustls provider（libunftp 传递引入 aws-lc-rs），
 //! 任何 rustls 构建路径都必须显式 [`rustls::crypto::ring`]，不能依赖
-//! 进程默认 provider（否则运行时 panic: no process-level CryptoProvider）。
+//! 进程默认 provider（否则运行时 panic: no process-level `CryptoProvider`）。
 
 use anyhow::{Context, Result};
 use tokio_rustls::TlsAcceptor;

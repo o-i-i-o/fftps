@@ -65,7 +65,10 @@ async fn supervise(tx: watch::Sender<Option<Client>>) {
     loop {
         match Client::connect().await {
             Ok(client) => {
-                tracing::info!("已连接 fftpd（{}）", fftp_ipc::transport::endpoint_display());
+                tracing::info!(
+                    "已连接 fftpd（{}）",
+                    fftp_ipc::transport::endpoint_display()
+                );
                 if tx.send(Some(client.clone())).is_err() {
                     return; // 应用已退出
                 }

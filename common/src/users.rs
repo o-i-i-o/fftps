@@ -405,10 +405,11 @@ impl UserManager {
         Ok(())
     }
 
-    /// 校验用户口令；成功时更新 `last_login` 并落盘用户库
+    /// 校验用户口令；成功时更新 `last_login`
     ///
-    /// 登录成功且既有哈希低于当前策略时惰性重哈希（旧参数/旧版本/旧算法），
-    /// 随 `last_login` 一并落盘。
+    /// 登录成功且既有哈希低于当前策略时惰性重哈希（旧参数/旧版本/旧算法）。
+    /// 本方法只更新内存副本，**不落盘**：调用方应在 `spawn_blocking` 内
+    /// 通过 [`UserManager::save`] 原子写回，避免在异步运行时执行同步磁盘 IO。
     /// 用户不存在、已禁用或口令不匹配均返回 `Ok(false)`。
     ///
     /// # Errors
@@ -431,12 +432,6 @@ impl UserManager {
             }
 
             user.last_login = Some(Utc::now());
-
-            let users_path = crate::paths::users_path();
-            if let Err(e) = self.save(&users_path) {
-                eprintln!("Warning: Failed to persist last_login: {e}");
-            }
-
             return Ok(true);
         }
 

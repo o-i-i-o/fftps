@@ -2,7 +2,7 @@
 //!
 //! 迁移整合自 wftpd-windows `ftp_server/unftp.rs`（libunftp builder 组装）与
 //! wftpd-linux `ftp/src/server.rs`（生命周期形态），对接统一共享层
-//! （[`fftp_common`] 的配置/用户/配额/限速/防护/指标/审计）。
+//! （[`fftp_common`] 的配置/用户/配额/限速/防护/审计）。
 //!
 //! 对外暴露两个类型：
 //! - [`FtpService`]：持有共享层资源，[`FtpService::start`] 组装 libunftp 服务端
@@ -19,6 +19,7 @@
 //! 热重载兼容：配置/用户更新后调用 `stop()` 再 `start()`，即以新配置快照重建服务；
 //! 同一 [`FtpService`] 实例只允许一个运行中的服务（重复 `start` 会被拒绝）。
 
+use fftp_common::sync::{MutexExt, RwLockExt};
 use std::net::Ipv4Addr;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -160,9 +161,7 @@ fn validate_passive_ports((start, end): (u16, u16)) -> Result<()> {
         bail!("ftp.passive_ports 不能为 0（当前 {start}-{end}）");
     }
     if start >= end {
-        bail!(
-            "ftp.passive_ports 起止非法（当前 {start}-{end}），必须满足起始端口 < 结束端口"
-        );
+        bail!("ftp.passive_ports 起止非法（当前 {start}-{end}），必须满足起始端口 < 结束端口");
     }
     Ok(())
 }
@@ -207,6 +206,8 @@ pub struct FtpService {
     running: Arc<AtomicBool>,
     /// fail2ban 清理任务是否已启动（每实例一次，避免热重载堆积任务）
     cleanup_started: AtomicBool,
+    /// 欢迎语缓存：libunftp 要求 `&'static str`，仅在文本变化时才泄漏新副本
+    greeting: StdMutex<Option<(String, &'static str)>>,
 }
 
 impl FtpService {
@@ -227,7 +228,7 @@ impl FtpService {
         logging: Arc<Logging>,
     ) -> Self {
         let data_dir = fftp_common::paths::state_dir();
-        let security = config.read().unwrap().security.clone();
+        let security = config.read_recover().security.clone();
         FtpService {
             quota: Arc::new(QuotaManager::new(&data_dir)),
             fail2ban: Arc::new(Fail2BanManager::new(&data_dir, &security)),
@@ -238,7 +239,29 @@ impl FtpService {
             logging,
             running: Arc::new(AtomicBool::new(false)),
             cleanup_started: AtomicBool::new(false),
+            greeting: StdMutex::new(None),
         }
+    }
+
+    /// 注入配额管理器（与 SFTP 共享同一份用量统计）
+    #[must_use]
+    pub fn with_quota(mut self, quota: Arc<QuotaManager>) -> Self {
+        self.quota = quota;
+        self
+    }
+
+    /// 注入 `Fail2Ban` 管理器（与 SFTP 共享封禁状态）
+    #[must_use]
+    pub fn with_fail2ban(mut self, fail2ban: Arc<Fail2BanManager>) -> Self {
+        self.fail2ban = fail2ban;
+        self
+    }
+
+    /// 注入连接数治理器（与 SFTP 共享全局连接上限）
+    #[must_use]
+    pub fn with_connection_limiter(mut self, connections: Arc<ConnectionLimiter>) -> Self {
+        self.connections = connections;
+        self
     }
 
     /// 当前是否有服务在运行
@@ -252,8 +275,8 @@ impl FtpService {
     /// 返回 [`RunningFtpService`] 运行句柄；句柄 `stop()` 优雅停止，
     /// 直接 drop 同样触发停止。重复启动（前一实例未停止）会被拒绝。
     ///
-    /// greeting 文本经 `Box::leak` 提升为 `&'static str`（libunftp 接口要求），
-    /// 每次 `start()` 泄漏一次欢迎语内存（量级为字节，可接受）。
+    /// greeting 文本经内部缓存提升为 `&'static str`（libunftp 接口要求），
+    /// 同一文本多次 `start()` 不会重复泄漏。
     ///
     /// # Errors
     /// 配置非法（根目录不存在、FTPS 证书配置不一致/生成失败）、libunftp
@@ -265,9 +288,13 @@ impl FtpService {
         }
 
         // 配置快照：后续组装不跨 await 持锁，热重载在下次 start() 生效
-        let cfg = self.config.read().unwrap().clone();
+        let cfg = self.config.read_recover().clone();
 
         validate_passive_ports(cfg.ftp.passive_ports)?;
+
+        // 热重载：安全策略（并发上限、封禁阈值）随 start() 快照同步更新
+        self.fail2ban.update_config(&cfg.security);
+        self.connections.update_config(&cfg.security);
 
         let root_mode = resolve_root_mode(cfg.ftp.ftp_root_opt())?;
         let ftps_paths = resolve_ftps_paths(&cfg.ftp.ftps)?;
@@ -288,10 +315,11 @@ impl FtpService {
 
         if cfg.ftp.pooled_listener_mode {
             // 上游缺陷（libunftp 0.23.1）：池化模式把被动监听器交给分离的 accept 任务，
-            // stop() 只取消监听循环，不关闭这些任务持有的端口，运行期 restart 会绑定失败
+            // stop() 只取消监听循环，不关闭这些任务持有的端口，运行期 restart 会绑定失败。
+            // 为保证配置热重载可用，本版本忽略该选项，始终使用 legacy 监听模式。
             tracing::warn!(
-                "已启用池化被动监听模式（pooled_listener_mode）：libunftp 停止后不会释放被动端口，\
-                 运行期 restart 将失败，需重启 fftpd 进程恢复；建议保持默认关闭"
+                "配置项 ftp.pooled_listener_mode = true 已被忽略：libunftp 0.23.1 的池化模式\
+                 停止后不会释放被动端口，会导致运行期重启失败；将继续使用 legacy 监听模式"
             );
         }
 
@@ -316,6 +344,19 @@ impl FtpService {
             closed_rx,
             running: Arc::clone(&self.running),
         })
+    }
+
+    /// 返回欢迎语的 `&'static str`（libunftp 接口要求）：文本未变化时复用已泄漏副本
+    fn greeting_static(&self, message: &str) -> &'static str {
+        let mut cache = self.greeting.lock_recover();
+        if let Some((text, leaked)) = cache.as_ref()
+            && text == message
+        {
+            return leaked;
+        }
+        let leaked: &'static str = Box::leak(message.to_string().into_boxed_str());
+        *cache = Some((message.to_string(), leaked));
+        leaked
     }
 
     /// 组装 libunftp `Server`（存储栈 + 认证链 + 监听器 + FTPS）
@@ -359,8 +400,8 @@ impl FtpService {
             root_mode,
         ));
 
-        // libunftp 的 greeting 要求 &'static str；每次 start() 泄漏一次欢迎语
-        let greeting: &'static str = Box::leak(cfg.ftp.welcome_message.clone().into_boxed_str());
+        // libunftp 的 greeting 要求 &'static str；缓存后仅在文本变化时泄漏新副本
+        let greeting: &'static str = self.greeting_static(&cfg.ftp.welcome_message);
 
         // 停止信号：stop() 发送后进入优雅停止（宽限 SHUTDOWN_GRACE_SECS）
         let shutdown_indicator = async move {
@@ -369,35 +410,30 @@ impl FtpService {
             Shutdown::new().grace_period(Duration::from_secs(SHUTDOWN_GRACE_SECS))
         };
 
-        let mut builder = ServerBuilder::with_user_detail_provider(
-            storage_factory,
-            user_detail_provider,
-        )
-        .authenticator(authenticator)
-        .greeting(greeting)
-        .passive_ports(cfg.ftp.passive_ports.0..=cfg.ftp.passive_ports.1)
-        .idle_session_timeout(cfg.ftp.idle_timeout)
-        .notify_data(FtpDataListener::new(
-            Arc::clone(&self.sessions),
-            Arc::clone(&self.logging),
-        ))
-        .notify_presence(FtpPresenceListener::new(
-            Arc::clone(&self.sessions),
-            Arc::clone(&self.connections),
-            Arc::clone(&self.logging),
-        ))
-        // libunftp 内建的连续登录失败惩罚与共享层 fail2ban 叠加生效
-        .failed_logins_policy(FailedLoginsPolicy::new(
-            cfg.security.max_login_attempts,
-            Duration::from_secs(cfg.security.fail2ban_ban_time),
-            FailedLoginsBlock::UserAndIP,
-        ))
-        .shutdown_indicator(shutdown_indicator);
+        let mut builder =
+            ServerBuilder::with_user_detail_provider(storage_factory, user_detail_provider)
+                .authenticator(authenticator)
+                .greeting(greeting)
+                .passive_ports(cfg.ftp.passive_ports.0..=cfg.ftp.passive_ports.1)
+                .idle_session_timeout(cfg.ftp.idle_timeout)
+                .notify_data(FtpDataListener::new(
+                    Arc::clone(&self.sessions),
+                    Arc::clone(&self.logging),
+                ))
+                .notify_presence(FtpPresenceListener::new(
+                    Arc::clone(&self.sessions),
+                    Arc::clone(&self.connections),
+                    Arc::clone(&self.logging),
+                ))
+                // libunftp 内建的连续登录失败惩罚与共享层 fail2ban 叠加生效
+                .failed_logins_policy(FailedLoginsPolicy::new(
+                    cfg.security.max_login_attempts,
+                    Duration::from_secs(cfg.security.fail2ban_ban_time),
+                    FailedLoginsBlock::UserAndIP,
+                ))
+                .shutdown_indicator(shutdown_indicator);
 
-        if cfg.ftp.pooled_listener_mode {
-            builder = builder.pooled_listener_mode();
-        }
-
+        // 池化监听模式因上游停止不释放端口而被忽略（见 start() 的告警）
         builder = builder.active_passive_mode(map_connection_mode(cfg.ftp.connection_mode));
         builder = builder.passive_host(resolve_passive_host(cfg.ftp.masquerade_address_opt()));
 
@@ -477,11 +513,13 @@ mod tests {
     use tokio::net::{TcpListener, TcpStream};
 
     use fftp_common::{LoggingConfig, Permissions};
-    use unftp_core::auth::{Authenticator, ChannelEncryptionState, Credentials, UserDetailProvider};
+    use unftp_core::auth::{
+        Authenticator, ChannelEncryptionState, Credentials, UserDetailProvider,
+    };
 
     use crate::test_support::ENV_LOCK;
 
-    /// 在临时状态目录下构造测试用服务（持有 ENV_LOCK 后调用）
+    /// 在临时状态目录下构造测试用服务（持有 `ENV_LOCK` 后调用）
     fn make_service(cfg: Config) -> FtpService {
         FtpService::new(
             Arc::new(StdRwLock::new(cfg)),
@@ -501,7 +539,7 @@ mod tests {
 
     #[test]
     fn new_service_is_not_running() {
-        let _guard = ENV_LOCK.lock().unwrap();
+        let _guard = ENV_LOCK.lock_recover();
         let state = tempfile::tempdir().unwrap();
         unsafe { std::env::set_var("FFTPD_STATE_DIR", state.path()) };
         assert!(!make_service(test_config()).is_running());
@@ -509,7 +547,7 @@ mod tests {
 
     #[tokio::test]
     async fn start_stop_lifecycle() {
-        let _guard = ENV_LOCK.lock().unwrap();
+        let _guard = ENV_LOCK.lock_recover();
         let state = tempfile::tempdir().unwrap();
         unsafe { std::env::set_var("FFTPD_STATE_DIR", state.path()) };
 
@@ -528,7 +566,7 @@ mod tests {
 
     #[tokio::test]
     async fn stop_is_safe_when_listener_exits_early() {
-        let _guard = ENV_LOCK.lock().unwrap();
+        let _guard = ENV_LOCK.lock_recover();
         let state = tempfile::tempdir().unwrap();
         unsafe { std::env::set_var("FFTPD_STATE_DIR", state.path()) };
 
@@ -558,9 +596,10 @@ mod tests {
         match mode {
             RootMode::Homes { base } => {
                 // 卷根：仅由 Prefix + RootDir 构成
-                assert!(base
-                    .components()
-                    .all(|c| matches!(c, Component::Prefix(_) | Component::RootDir)));
+                assert!(
+                    base.components()
+                        .all(|c| matches!(c, Component::Prefix(_) | Component::RootDir))
+                );
                 #[cfg(unix)]
                 assert_eq!(base, PathBuf::from("/"));
             }
@@ -573,7 +612,11 @@ mod tests {
     #[test]
     fn resolve_ftps_paths_variants() {
         // 未启用 → None
-        assert!(resolve_ftps_paths(&FtpsConfig::default()).unwrap().is_none());
+        assert!(
+            resolve_ftps_paths(&FtpsConfig::default())
+                .unwrap()
+                .is_none()
+        );
 
         // 双设置 → 沿用
         let ftps = FtpsConfig {
@@ -596,7 +639,7 @@ mod tests {
         assert!(resolve_ftps_paths(&half).is_err());
 
         // 双空 → 自动生成到 state_dir/certs（需临时状态目录隔离）
-        let _guard = ENV_LOCK.lock().unwrap();
+        let _guard = ENV_LOCK.lock_recover();
         let state = tempfile::tempdir().unwrap();
         unsafe { std::env::set_var("FFTPD_STATE_DIR", state.path()) };
         let auto = FtpsConfig {
@@ -611,10 +654,7 @@ mod tests {
 
     #[test]
     fn resolve_passive_host_variants() {
-        assert_eq!(
-            resolve_passive_host(None),
-            PassiveHost::FromConnection
-        );
+        assert_eq!(resolve_passive_host(None), PassiveHost::FromConnection);
         assert_eq!(
             resolve_passive_host(Some("0.0.0.0")),
             PassiveHost::FromConnection
@@ -648,7 +688,7 @@ mod tests {
     /// 认证链测试：合法用户成功/口令错误/未知用户/匿名开关
     #[tokio::test]
     async fn authenticate_chain() {
-        let _guard = ENV_LOCK.lock().unwrap();
+        let _guard = ENV_LOCK.lock_recover();
         let dir = tempfile::tempdir().unwrap();
         unsafe {
             std::env::set_var("FFTPD_CONFIG_DIR", dir.path());
@@ -673,7 +713,7 @@ mod tests {
         let mut cfg = Config::default();
         cfg.security.allowed_ips = vec!["0.0.0.0/0".to_string()];
         let config = Arc::new(StdRwLock::new(cfg));
-        let security = config.read().unwrap().security.clone();
+        let security = config.read_recover().security.clone();
 
         let auth = FtpAuthenticator::new(
             Arc::new(StdMutex::new(users)),
@@ -687,37 +727,52 @@ mod tests {
         let creds = |password: &str| Credentials {
             password: Some(password.to_string()),
             certificate_chain: None,
-            source_ip: IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)),
+            source_ip: IpAddr::V4(Ipv4Addr::LOCALHOST),
             command_channel_security: ChannelEncryptionState::Plaintext,
         };
 
         // 合法用户 + 正确口令
-        let principal = auth.authenticate("alice", &creds("secret-pw")).await.unwrap();
+        let principal = auth
+            .authenticate("alice", &creds("secret-pw"))
+            .await
+            .unwrap();
         assert_eq!(principal.username, "alice");
 
         // 合法用户 + 错误口令
-        let err = auth.authenticate("alice", &creds("wrong-pw")).await.unwrap_err();
+        let err = auth
+            .authenticate("alice", &creds("wrong-pw"))
+            .await
+            .unwrap_err();
         assert!(matches!(
             err,
             unftp_core::auth::AuthenticationError::BadPassword
         ));
 
         // 未知用户（哑校验恒定时间后失败）
-        let err = auth.authenticate("mallory", &creds("any")).await.unwrap_err();
+        let err = auth
+            .authenticate("mallory", &creds("any"))
+            .await
+            .unwrap_err();
         assert!(matches!(
             err,
             unftp_core::auth::AuthenticationError::BadPassword
         ));
 
         // 非法用户名直接拒绝
-        let err = auth.authenticate("bad user", &creds("x")).await.unwrap_err();
+        let err = auth
+            .authenticate("bad user", &creds("x"))
+            .await
+            .unwrap_err();
         assert!(matches!(
             err,
             unftp_core::auth::AuthenticationError::BadPassword
         ));
 
         // 匿名登录未开启
-        let err = auth.authenticate("anonymous", &creds("")).await.unwrap_err();
+        let err = auth
+            .authenticate("anonymous", &creds(""))
+            .await
+            .unwrap_err();
         assert!(matches!(
             err,
             unftp_core::auth::AuthenticationError::BadPassword
@@ -727,7 +782,7 @@ mod tests {
         let anon_home = dir.path().join("anon");
         std::fs::create_dir_all(&anon_home).unwrap();
         {
-            let mut cfg = config.write().unwrap();
+            let mut cfg = config.write_recover();
             cfg.ftp.allow_anonymous = true;
             cfg.ftp.anonymous_home = anon_home.to_string_lossy().into_owned();
         }
@@ -738,7 +793,7 @@ mod tests {
     /// IP 黑名单拦截测试
     #[tokio::test]
     async fn authenticate_rejects_denied_ip() {
-        let _guard = ENV_LOCK.lock().unwrap();
+        let _guard = ENV_LOCK.lock_recover();
         let dir = tempfile::tempdir().unwrap();
         unsafe {
             std::env::set_var("FFTPD_CONFIG_DIR", dir.path());
@@ -748,7 +803,7 @@ mod tests {
         let mut cfg = Config::default();
         cfg.security.denied_ips = vec!["127.0.0.0/8".to_string()];
         let config = Arc::new(StdRwLock::new(cfg));
-        let security = config.read().unwrap().security.clone();
+        let security = config.read_recover().security.clone();
 
         let auth = FtpAuthenticator::new(
             Arc::new(StdMutex::new(UserManager::new())),
@@ -762,7 +817,7 @@ mod tests {
         let creds = Credentials {
             password: Some("x".to_string()),
             certificate_chain: None,
-            source_ip: IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)),
+            source_ip: IpAddr::V4(Ipv4Addr::LOCALHOST),
             command_channel_security: ChannelEncryptionState::Plaintext,
         };
         let err = auth.authenticate("alice", &creds).await.unwrap_err();
@@ -775,7 +830,7 @@ mod tests {
     /// 用户详情提供者：共享根下所有用户会话根为 `.`
     #[tokio::test]
     async fn user_detail_provider_shared_root() {
-        let _guard = ENV_LOCK.lock().unwrap();
+        let _guard = ENV_LOCK.lock_recover();
         let dir = tempfile::tempdir().unwrap();
         unsafe {
             std::env::set_var("FFTPD_CONFIG_DIR", dir.path());
@@ -842,7 +897,7 @@ mod tests {
         // 服务端 local_addr 是客户端连接的目的地址（127.0.0.1），而非监听地址
         assert_eq!(
             server_local.ip(),
-            IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)),
+            IpAddr::V4(Ipv4Addr::LOCALHOST),
             "server local_addr should be the destination IP client connected to (127.0.0.1)"
         );
         assert_eq!(server_local.port(), server_port);
@@ -868,7 +923,7 @@ mod tests {
         // 绑定具体 IP 时 local_addr 即该 IP
         assert_eq!(
             server_local.ip(),
-            IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)),
+            IpAddr::V4(Ipv4Addr::LOCALHOST),
             "When bound to specific IP, local_addr should return that IP"
         );
     }
@@ -898,7 +953,7 @@ mod tests {
 
         // 多连接共享同一端口，local_addr 均为实际目的地址
         for ip in &results {
-            assert_eq!(*ip, IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)));
+            assert_eq!(*ip, IpAddr::V4(Ipv4Addr::LOCALHOST));
         }
     }
 }

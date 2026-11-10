@@ -8,15 +8,15 @@
 //! - [`quota`]：用户磁盘配额统计与超限拦截
 //! - [`rate_limit`]：全局/每用户传输限速与连接数治理
 //! - [`fail2ban`]：登录失败统计、阈值封禁与持久化
-//! - [`metrics`]：prometheus 运行指标
+//! - [`sync`]：`Mutex`/`RwLock` 中毒恢复扩展
 
 pub mod config;
 pub mod fail2ban;
 pub mod logging;
-pub mod metrics;
 pub mod paths;
 pub mod quota;
 pub mod rate_limit;
+pub mod sync;
 pub mod users;
 
 pub use config::{

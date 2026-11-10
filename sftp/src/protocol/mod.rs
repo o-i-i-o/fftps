@@ -23,6 +23,6 @@ pub(crate) mod utils;
 pub use error::Error;
 pub use message::{
     Attrs, Data, ExtendedReply, File, FileAttributes, Handle, Name, Open, OpenFlags, Packet,
-    Status, StatusCode, Version, VERSION,
+    Status, StatusCode, VERSION, Version,
 };
-pub use server::{run_with_config, Config, Handler, StatusReply};
+pub use server::{Config, Handler, StatusReply, run_with_config};

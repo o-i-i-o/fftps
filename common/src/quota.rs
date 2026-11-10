@@ -6,11 +6,12 @@
 //!
 //! 跨平台实现（不依赖 `windows` crate）。
 
+use crate::sync::MutexExt;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 /// 单个用户的配额用量
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -64,9 +65,9 @@ impl QuotaManager {
     }
 
     /// # Panics
-    /// 内部互斥锁中毒（持有线程 panic）时 panic
+    /// 内部互斥锁中毒时自动恢复（见 [`crate::sync`]）
     fn save_data(&self) -> anyhow::Result<()> {
-        let data = self.data.lock().unwrap();
+        let data = self.data.lock_recover();
         if let Some(parent) = self.data_path.parent() {
             std::fs::create_dir_all(parent)?;
         }
@@ -99,12 +100,11 @@ impl QuotaManager {
     /// 当前用量（字节）
     ///
     /// # Panics
-    /// 内部互斥锁中毒时 panic
+    /// 内部互斥锁中毒时自动恢复（见 [`crate::sync`]）
     #[must_use]
     pub fn get_usage(&self, username: &str) -> u64 {
         self.data
-            .lock()
-            .unwrap()
+            .lock_recover()
             .users
             .get(username)
             .map_or(0, |u| u.used_bytes)
@@ -113,12 +113,11 @@ impl QuotaManager {
     /// 当前预留（字节）
     ///
     /// # Panics
-    /// 内部互斥锁中毒时 panic
+    /// 内部互斥锁中毒时自动恢复（见 [`crate::sync`]）
     #[must_use]
     pub fn get_reserved(&self, username: &str) -> u64 {
         self.data
-            .lock()
-            .unwrap()
+            .lock_recover()
             .users
             .get(username)
             .map_or(0, |u| u.reserved_bytes)
@@ -127,10 +126,10 @@ impl QuotaManager {
     /// 追加 `additional_bytes` 后是否仍在配额 `quota_mb` 内（0 = 不限）
     ///
     /// # Panics
-    /// 内部互斥锁中毒时 panic
+    /// 内部互斥锁中毒时自动恢复（见 [`crate::sync`]）
     #[must_use]
     pub fn check_quota(&self, username: &str, quota_mb: u64, additional_bytes: u64) -> bool {
-        let data = self.data.lock().unwrap();
+        let data = self.data.lock_recover();
         let usage = data.users.get(username);
         let used = usage.map_or(0, |u| u.used_bytes);
         let reserved = usage.map_or(0, |u| u.reserved_bytes);
@@ -145,9 +144,9 @@ impl QuotaManager {
     /// 尝试预留 `bytes`；超出配额返回 `false`，否则计入预留并返回 `true`
     ///
     /// # Panics
-    /// 内部互斥锁中毒时 panic
+    /// 内部互斥锁中毒时自动恢复（见 [`crate::sync`]）
     pub fn try_reserve_quota(&self, username: &str, bytes: u64, quota_mb: u64) -> bool {
-        let mut data = self.data.lock().unwrap();
+        let mut data = self.data.lock_recover();
         let quota_bytes = quota_mb.saturating_mul(1024 * 1024);
 
         let usage = data.users.entry(username.to_string()).or_default();
@@ -170,9 +169,9 @@ impl QuotaManager {
     /// 传输完成：释放 `reserved_bytes` 预留，把 `actual_bytes` 计入用量
     ///
     /// # Panics
-    /// 内部互斥锁中毒时 panic
+    /// 内部互斥锁中毒时自动恢复（见 [`crate::sync`]）
     pub fn commit_usage(&self, username: &str, reserved_bytes: u64, actual_bytes: u64) {
-        let mut data = self.data.lock().unwrap();
+        let mut data = self.data.lock_recover();
         if let Some(usage) = data.users.get_mut(username) {
             usage.reserved_bytes = usage.reserved_bytes.saturating_sub(reserved_bytes);
             usage.used_bytes = usage.used_bytes.saturating_add(actual_bytes);
@@ -184,9 +183,9 @@ impl QuotaManager {
     /// 传输取消：回滚预留
     ///
     /// # Panics
-    /// 内部互斥锁中毒时 panic
+    /// 内部互斥锁中毒时自动恢复（见 [`crate::sync`]）
     pub fn rollback_reservation(&self, username: &str, bytes: u64) {
-        let mut data = self.data.lock().unwrap();
+        let mut data = self.data.lock_recover();
         if let Some(usage) = data.users.get_mut(username) {
             usage.reserved_bytes = usage.reserved_bytes.saturating_sub(bytes);
             usage.last_updated = chrono::Utc::now();
@@ -197,9 +196,9 @@ impl QuotaManager {
     /// 直接累加用量（无预留流程的小操作）
     ///
     /// # Panics
-    /// 内部互斥锁中毒时 panic
+    /// 内部互斥锁中毒时自动恢复（见 [`crate::sync`]）
     pub fn add_usage(&self, username: &str, bytes: u64) {
-        let mut data = self.data.lock().unwrap();
+        let mut data = self.data.lock_recover();
         let usage = data.users.entry(username.to_string()).or_default();
         usage.used_bytes = usage.used_bytes.saturating_add(bytes);
         usage.last_updated = chrono::Utc::now();
@@ -209,9 +208,9 @@ impl QuotaManager {
     /// 扣减用量（下溢饱和到 0）
     ///
     /// # Panics
-    /// 内部互斥锁中毒时 panic
+    /// 内部互斥锁中毒时自动恢复（见 [`crate::sync`]）
     pub fn subtract_usage(&self, username: &str, bytes: u64) {
-        let mut data = self.data.lock().unwrap();
+        let mut data = self.data.lock_recover();
         if let Some(usage) = data.users.get_mut(username) {
             usage.used_bytes = usage.used_bytes.saturating_sub(bytes);
             usage.last_updated = chrono::Utc::now();
@@ -222,9 +221,9 @@ impl QuotaManager {
     /// 清除用户的配额记录
     ///
     /// # Panics
-    /// 内部互斥锁中毒时 panic
+    /// 内部互斥锁中毒时自动恢复（见 [`crate::sync`]）
     pub fn reset_usage(&self, username: &str) {
-        let mut data = self.data.lock().unwrap();
+        let mut data = self.data.lock_recover();
         if data.users.remove(username).is_some() {
             self.dirty.store(true, Ordering::Release);
         }
@@ -238,7 +237,7 @@ impl QuotaManager {
         let total_size = dir_size(home_dir)?;
 
         {
-            let mut data = self.data.lock().unwrap();
+            let mut data = self.data.lock_recover();
             let usage = data.users.entry(username.to_string()).or_default();
             usage.used_bytes = total_size;
             usage.reserved_bytes = 0;
@@ -251,10 +250,10 @@ impl QuotaManager {
     /// 全部用户的用量
     ///
     /// # Panics
-    /// 内部互斥锁中毒时 panic
+    /// 内部互斥锁中毒时自动恢复（见 [`crate::sync`]）
     #[must_use]
     pub fn get_all_usage(&self) -> HashMap<String, QuotaUsage> {
-        self.data.lock().unwrap().users.clone()
+        self.data.lock_recover().users.clone()
     }
 }
 
@@ -498,7 +497,10 @@ mod tests {
         let all = manager.get_all_usage();
         assert_eq!(all.len(), 5);
         for i in 0..5 {
-            assert_eq!(all.get(&format!("user{i}")).unwrap().used_bytes, (i + 1) * 100);
+            assert_eq!(
+                all.get(&format!("user{i}")).unwrap().used_bytes,
+                (i + 1) * 100
+            );
         }
     }
 

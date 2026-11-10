@@ -5,11 +5,11 @@
 
 use std::collections::HashMap;
 
+use crate::protocol::Handler as ProtocolHandler;
 use crate::protocol::{
-    Attrs, Data, FileAttributes, Handle, Name, OpenFlags, Packet, Status, StatusReply, StatusCode,
+    Attrs, Data, FileAttributes, Handle, Name, OpenFlags, Packet, Status, StatusCode, StatusReply,
     Version,
 };
-use crate::protocol::Handler as ProtocolHandler;
 use crate::state::SftpState;
 
 /// SFTP 会话（每条 SFTP 子系统通道一个实例）

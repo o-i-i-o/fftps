@@ -4,9 +4,9 @@
 //! IPC `ErrorCode` → HTTP：Validation→400、NotFound→404、Conflict→409、
 //! Io/Protocol/Internal→502；连接断开→503（UI 据此显示离线横幅）。
 
+use axum::Json;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
-use axum::Json;
 use fftp_ipc::client::ClientError;
 use fftp_ipc::protocol::ErrorCode;
 use serde_json::json;
@@ -68,9 +68,9 @@ impl From<ClientError> for ApiError {
                     ErrorCode::Validation => (StatusCode::BAD_REQUEST, "validation"),
                     ErrorCode::NotFound => (StatusCode::NOT_FOUND, "not_found"),
                     ErrorCode::Conflict => (StatusCode::CONFLICT, "conflict"),
-                    ErrorCode::Io
-                    | ErrorCode::Protocol
-                    | ErrorCode::Internal => (StatusCode::BAD_GATEWAY, "upstream"),
+                    ErrorCode::Io | ErrorCode::Protocol | ErrorCode::Internal => {
+                        (StatusCode::BAD_GATEWAY, "upstream")
+                    }
                 };
                 Self::new(status, code, e.message)
             }

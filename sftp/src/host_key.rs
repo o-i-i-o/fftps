@@ -26,8 +26,7 @@ pub async fn load_or_generate_host_key(path: &Path) -> Result<PrivateKey> {
                     "SFTP host key permissions too open, tightening to 0600: {}",
                     path.display()
                 );
-                let _ =
-                    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600));
+                let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600));
             }
         }
         let key_data = tokio::fs::read_to_string(path).await?;
@@ -56,7 +55,7 @@ pub async fn generate_new_host_key(path: &Path) -> Result<PrivateKey> {
     let mut rng = russh::keys::key::safe_rng();
     let key = PrivateKey::random(&mut rng, ssh_key::Algorithm::Ed25519)?;
     let openssh = key.to_openssh(ssh_key::LineEnding::default())?;
-    write_private_key(path, &openssh.to_string()).await?;
+    write_private_key(path, openssh.as_ref()).await?;
     tracing::info!("Generated SFTP host private key: {}", path.display());
 
     let pub_path = pub_key_path(path);
@@ -206,10 +205,7 @@ mod tests {
 
         // 二次加载读取同一密钥
         let key2 = load_or_generate_host_key(&key_path).await.unwrap();
-        assert_eq!(
-            key1.public_key().to_bytes(),
-            key2.public_key().to_bytes()
-        );
+        assert_eq!(key1.public_key().to_bytes(), key2.public_key().to_bytes());
     }
 
     #[tokio::test]

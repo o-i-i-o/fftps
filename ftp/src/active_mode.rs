@@ -56,7 +56,11 @@ pub fn detect_client_nat(port_command_ip: IpAddr, tcp_connection_ip: IpAddr) -> 
 
 /// 是否接受 PORT 命令：直连放行；NAT 客户端按 `allow_nat_clients` 策略处理
 #[must_use]
-pub fn should_accept_port_command(port_ip: IpAddr, tcp_ip: IpAddr, allow_nat_clients: bool) -> bool {
+pub fn should_accept_port_command(
+    port_ip: IpAddr,
+    tcp_ip: IpAddr,
+    allow_nat_clients: bool,
+) -> bool {
     let nat_status = detect_client_nat(port_ip, tcp_ip);
 
     match nat_status {
@@ -174,7 +178,7 @@ mod tests {
         )));
 
         assert_eq!(
-            classify_ip_address(&IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1))),
+            classify_ip_address(&IpAddr::V4(Ipv4Addr::LOCALHOST)),
             IpAddressClass::Loopback
         );
         assert_eq!(

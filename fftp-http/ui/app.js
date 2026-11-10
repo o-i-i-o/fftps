@@ -879,7 +879,6 @@ function fillConfigForm(content) {
   $("cf-port").value = num(ftp.port, 21);
   $("cf-welcome").value = txt(ftp.welcome_message, "Welcome to fftpd");
   $("cf-encoding").value = txt(ftp.encoding, "UTF-8");
-  $("cf-transfer-mode").value = txt(ftp.default_transfer_mode, "binary");
   $("cf-conn-mode").value = txt(ftp.connection_mode, "passive_only");
   $("cf-anonymous").checked = bool(ftp.allow_anonymous);
   $("cf-anon-home").value = txt(ftp.anonymous_home);
@@ -887,9 +886,7 @@ function fillConfigForm(content) {
   $("cf-passive-hi").value = num(arr(ftp.passive_ports)[1], 51000);
   $("cf-speed").value = num(ftp.max_speed_kbps, 0);
   $("cf-masquerade").value = txt(ftp.masquerade_address);
-  $("cf-conn-timeout").value = num(ftp.connection_timeout, 15);
   $("cf-idle-timeout").value = num(ftp.idle_timeout, 15);
-  $("cf-hide-version").checked = bool(ftp.hide_version_info);
   $("cf-pooled").checked = bool(ftp.pooled_listener_mode);
   $("cf-nat").checked = bool(ftp.allow_nat_clients, true);
   $("cf-root").value = txt(ftp.ftp_root);
@@ -905,7 +902,6 @@ function fillConfigForm(content) {
   $("cf-sftp-host-key").value = txt(sftp.host_key_path);
   $("cf-sftp-max-auth").value = num(sftp.max_auth_attempts, 3);
   $("cf-sftp-auth-timeout").value = num(sftp.auth_timeout, 60);
-  $("cf-sftp-log-level").value = LOG_LEVELS.includes(sftp.log_level) ? sftp.log_level : "info";
   $("cf-sftp-sessions").value = num(sftp.max_sessions_per_user, 5);
   $("cf-sftp-rotation").value = num(sftp.host_key_rotation_days, 0);
 
@@ -956,16 +952,13 @@ function buildConfigToml() {
   lines.push(`port = ${port("cf-port", "FTP 端口")}`);
   lines.push(`welcome_message = ${q(str("cf-welcome"))}`);
   lines.push(`encoding = ${q(str("cf-encoding") || "UTF-8")}`);
-  lines.push(`default_transfer_mode = ${q(sel("cf-transfer-mode"))}`);
   lines.push(`connection_mode = ${q(sel("cf-conn-mode"))}`);
   lines.push(`allow_anonymous = ${$("cf-anonymous").checked}`);
   lines.push(`anonymous_home = ${q(str("cf-anon-home"))}`);
   lines.push(`passive_ports = [${lo}, ${hi}]`);
   lines.push(`max_speed_kbps = ${reqInt("cf-speed", "单连接限速", 0)}`);
   lines.push(`masquerade_address = ${q(str("cf-masquerade"))}`);
-  lines.push(`connection_timeout = ${reqInt("cf-conn-timeout", "连接超时", 1)}`);
   lines.push(`idle_timeout = ${reqInt("cf-idle-timeout", "空闲超时", 1)}`);
-  lines.push(`hide_version_info = ${$("cf-hide-version").checked}`);
   lines.push(`pooled_listener_mode = ${$("cf-pooled").checked}`);
   lines.push(`allow_nat_clients = ${$("cf-nat").checked}`);
   lines.push(`ftp_root = ${q(str("cf-root"))}`);
@@ -983,7 +976,6 @@ function buildConfigToml() {
   lines.push(`host_key_path = ${q(str("cf-sftp-host-key"))}`);
   lines.push(`max_auth_attempts = ${reqInt("cf-sftp-max-auth", "最大认证尝试", 1)}`);
   lines.push(`auth_timeout = ${reqInt("cf-sftp-auth-timeout", "认证超时", 1)}`);
-  lines.push(`log_level = ${q(sel("cf-sftp-log-level"))}`);
   lines.push(`max_sessions_per_user = ${reqInt("cf-sftp-sessions", "单用户最大会话", 1)}`);
   lines.push(`host_key_rotation_days = ${reqInt("cf-sftp-rotation", "主机密钥轮换天数", 0)}`);
   lines.push("");
