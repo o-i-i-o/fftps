@@ -102,6 +102,9 @@ impl fmt::Debug for Fail2BanManager {
     }
 }
 
+// 这些方法保持 `async` 是为了与 FTP/SFTP 认证流程的调用约定一致；
+// 实现本身只使用内存锁与同步落盘，没有真正的异步等待。
+#[allow(clippy::unused_async, clippy::unused_async_trait_impl)]
 impl Fail2BanManager {
     /// 创建管理器并从 `<data_dir>/fail2ban.json` 恢复封禁清单（过期封禁不恢复）
     #[must_use]

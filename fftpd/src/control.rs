@@ -12,6 +12,7 @@ use anyhow::{Context, Result};
 use serde_json::Value;
 
 use fftp_common::config::Config;
+use fftp_common::sync::MutexExt;
 use fftp_common::users::UserManager;
 use fftp_ipc::protocol::{Command, ErrorCode, ServiceTarget};
 use fftp_ipc::server::{Handler, HandlerError};
@@ -221,8 +222,17 @@ impl ControlHandler {
 
         // 热重载：配置句柄更新（日志参数同步生效）→ 在跑协议服务 stop/start
         self.state.store_config(parsed.clone());
-        if let Err(e) = logs::apply_logging_config(&self.state.logging, &parsed.logging) {
-            tracing::error!("日志参数应用失败: {}", e.message);
+        // 日志目录创建/级别切换为同步文件 IO，移入阻塞线程避免占用异步 worker
+        let new_logging = parsed.logging.clone();
+        match self
+            .run_blocking(move |state| {
+                logs::apply_logging_config(&state.logging, &new_logging)
+                    .map_err(|e| HandlerError::internal(e.message))
+            })
+            .await
+        {
+            Ok(()) => {}
+            Err(e) => tracing::error!("日志参数应用失败: {}", e.message),
         }
         if let Err(e) = self.state.reload_services().await {
             // 新配置无法让服务重新监听（端口占用等）：回滚配置并尽量按旧配置恢复
@@ -240,8 +250,16 @@ impl ControlHandler {
             {
                 tracing::error!("回滚配置文件落盘失败: {}", se.message);
             }
-            if let Err(le) = logs::apply_logging_config(&self.state.logging, &previous.logging) {
-                tracing::error!("回滚日志参数失败: {}", le.message);
+            let prev_logging = previous.logging.clone();
+            match self
+                .run_blocking(move |state| {
+                    logs::apply_logging_config(&state.logging, &prev_logging)
+                        .map_err(|e| HandlerError::internal(e.message))
+                })
+                .await
+            {
+                Ok(()) => {}
+                Err(le) => tracing::error!("回滚日志参数失败: {}", le.message),
             }
             if let Err(re) = self.state.reload_services().await {
                 tracing::error!("按旧配置恢复服务失败: {re}");

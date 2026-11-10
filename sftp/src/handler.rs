@@ -466,6 +466,8 @@ impl russh::server::Handler for SftpHandler {
     }
 
     /// 客户端关闭通道：回收尚未被 subsystem 取走的挂起通道
+    // russh Handler trait 的方法签名固定为 async，本实现只操作内存
+    #[allow(clippy::unused_async_trait_impl)]
     async fn channel_close(
         &mut self,
         channel: ChannelId,

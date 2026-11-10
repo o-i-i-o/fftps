@@ -44,8 +44,9 @@ pub async fn write_frame<W: AsyncWrite + Unpin>(writer: &mut W, msg: &Message) -
         bail!("帧载荷超过上限: {} 字节", payload.len());
     }
 
+    let len = u32::try_from(payload.len()).context("帧载荷长度超出 u32")?;
     writer
-        .write_all(&(payload.len() as u32).to_be_bytes())
+        .write_all(&len.to_be_bytes())
         .await
         .context("写入帧长度失败")?;
     writer.write_all(&payload).await.context("写入帧载荷失败")?;
@@ -87,7 +88,7 @@ mod tests {
     #[tokio::test]
     async fn oversized_length_rejected() {
         let (mut client, mut server) = tokio::io::duplex(64);
-        let huge = (MAX_FRAME_SIZE as u32 + 1).to_be_bytes();
+        let huge = (u32::try_from(MAX_FRAME_SIZE).expect("帧上限应能放入 u32") + 1).to_be_bytes();
         client.write_all(&huge).await.unwrap();
         assert!(read_frame(&mut server).await.is_err());
     }

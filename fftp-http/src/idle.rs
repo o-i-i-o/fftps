@@ -13,6 +13,8 @@ use std::time::{Duration, Instant};
 
 use tokio::sync::watch;
 
+use fftp_common::sync::MutexExt;
+
 use crate::config::{IdleConfig, IdleMode};
 
 /// 页面心跳过期时间（秒）：超过该时间未心跳视为页面已关闭
@@ -82,7 +84,7 @@ impl IdleState {
 
     /// 更新配置并重置计时（保存设置后不应立即触发关闭）
     pub fn update(&self, cfg: IdleConfig) {
-        let mut inner = self.inner.lock().expect("空闲状态锁中毒");
+        let mut inner = self.inner.lock_recover();
         inner.cfg = cfg;
         let now = Instant::now();
         inner.last_activity = now;
@@ -92,7 +94,7 @@ impl IdleState {
 
     /// 可见页面心跳；`visible=false` 表示该标签页隐藏/关闭
     pub fn touch_page(&self, page_id: &str, visible: bool) {
-        let mut inner = self.inner.lock().expect("空闲状态锁中毒");
+        let mut inner = self.inner.lock_recover();
         let now = Instant::now();
         if visible {
             inner.pages.insert(page_id.to_string(), now);
@@ -105,13 +107,13 @@ impl IdleState {
 
     /// 真实用户操作
     pub fn touch_activity(&self) {
-        self.inner.lock().expect("空闲状态锁中毒").last_activity = Instant::now();
+        self.inner.lock_recover().last_activity = Instant::now();
     }
 
     /// 当前快照（剩余秒数按当前模式计算）
     #[must_use]
     pub fn snapshot(&self) -> IdleSnapshot {
-        let mut inner = self.inner.lock().expect("空闲状态锁中毒");
+        let mut inner = self.inner.lock_recover();
         let now = Instant::now();
         inner.visible_pages_cleanup(now);
         let deadline = inner.deadline();
@@ -147,7 +149,7 @@ async fn watchdog(state: Arc<IdleState>) {
     loop {
         tokio::time::sleep(Duration::from_secs(1)).await;
         let should_stop = {
-            let mut inner = state.inner.lock().expect("空闲状态锁中毒");
+            let mut inner = state.inner.lock_recover();
             let now = Instant::now();
             inner.visible_pages_cleanup(now);
             if !inner.cfg.enabled || inner.triggered {

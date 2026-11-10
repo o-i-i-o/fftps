@@ -458,7 +458,7 @@ impl SizeRotatingFile {
             size,
             file,
         };
-        writer.prune()?;
+        writer.prune();
         Ok(writer)
     }
 
@@ -509,7 +509,7 @@ impl SizeRotatingFile {
         let next_date = if today == self.date {
             self.date.clone()
         } else {
-            self.date = today.clone();
+            self.date.clone_from(&today);
             today
         };
 
@@ -525,13 +525,14 @@ impl SizeRotatingFile {
         self.size = 0;
         self.seq = next;
         self.date = next_date;
-        self.prune()
+        self.prune();
+        Ok(())
     }
 
     /// 删除超出 `max_files` 的最旧文件（按文件名时间序）
-    fn prune(&self) -> io::Result<()> {
+    fn prune(&self) {
         let Ok(entries) = std::fs::read_dir(&self.dir) else {
-            return Ok(());
+            return;
         };
         let mut files: Vec<PathBuf> = entries
             .flatten()
@@ -552,7 +553,6 @@ impl SizeRotatingFile {
                 tracing::warn!("清理旧日志文件失败 {}: {e}", path.display());
             }
         }
-        Ok(())
     }
 }
 
@@ -1091,7 +1091,8 @@ mod tests {
 
     #[test]
     fn list_files_missing_dir_returns_empty() {
-        assert!(list_log_files_in(Path::new("/nonexistent/fftpd/logs"), "fftpd", 10).is_empty());
+        let files = list_log_files_in(Path::new("/nonexistent/fftpd/logs"), "fftpd", 10);
+        assert_eq!(files, Vec::new(), "不存在的目录应返回空列表");
     }
 
     #[test]
@@ -1127,7 +1128,7 @@ mod tests {
 
         // 只允许扫描 100 字节：首行从文件中段开始，应被丢弃
         let lines = tail_lines(&path, 100, 100);
-        assert!(!lines.is_empty());
+        assert_ne!(lines, Vec::<String>::new());
         assert!(
             lines[0].starts_with("2026-09-08T"),
             "中段截断的半行应被丢弃: {}",

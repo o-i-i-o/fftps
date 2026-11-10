@@ -254,8 +254,9 @@ impl fmt::Display for FtpUser {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
-            "User(username: {:?}, home: {:?})",
-            self.username, self.home_dir
+            "User(username: {}, home: {})",
+            self.username,
+            self.home_dir.display()
         )
     }
 }

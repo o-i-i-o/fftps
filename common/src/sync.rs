@@ -13,7 +13,6 @@ use std::sync::{Mutex, MutexGuard, PoisonError, RwLock, RwLockReadGuard, RwLockW
 /// `std::sync::Mutex` 的中毒恢复扩展
 pub trait MutexExt<T> {
     /// 获取锁；中毒时取回内部数据继续使用
-    #[must_use]
     fn lock_recover(&self) -> MutexGuard<'_, T>;
 }
 
@@ -26,11 +25,9 @@ impl<T> MutexExt<T> for Mutex<T> {
 /// `std::sync::RwLock` 的中毒恢复扩展
 pub trait RwLockExt<T> {
     /// 获取读锁；中毒时取回内部数据继续使用
-    #[must_use]
     fn read_recover(&self) -> RwLockReadGuard<'_, T>;
 
     /// 获取写锁；中毒时取回内部数据继续使用
-    #[must_use]
     fn write_recover(&self) -> RwLockWriteGuard<'_, T>;
 }
 

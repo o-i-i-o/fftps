@@ -19,8 +19,10 @@ use std::convert::Infallible;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::task::{Context, Poll};
+use std::time::{Duration, Instant};
 
 use axum::extract::{Query, State};
+use axum::http::HeaderMap;
 use axum::http::StatusCode;
 use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{IntoResponse, Response};
@@ -32,10 +34,17 @@ use tokio_stream::wrappers::{BroadcastStream, errors::BroadcastStreamRecvError};
 use fftp_ipc::client::Client;
 use fftp_ipc::protocol::{Command, Event as IpcEvent, FileOpLogEntry};
 
-use crate::auth::AuthedUser;
+use crate::auth::{AuthedUser, session_token_from_cookie};
 use crate::error::ApiError;
 use crate::routes::TailQuery;
 use crate::state::{AppState, MAX_SSE_STREAMS};
+
+/// 已建立 SSE 流的会话复核间隔
+///
+/// 登出/会话过期/管理员改密后，`SessionStore` 会移除或判定 token 失效；
+/// 流若只在建立时校验一次，客户端保持连接即可继续接收日志，故运行期
+/// 按此间隔复核（keep-alive 保证 `poll_next` 至少每 15s 被调用一次）。
+const AUTH_CHECK_INTERVAL: Duration = Duration::from_secs(5);
 
 /// 尝试占用一个 SSE 流配额；超限返回 429
 fn acquire_slot(state: &AppState) -> Result<OwnedSemaphorePermit, ApiError> {
@@ -55,11 +64,13 @@ fn acquire_slot(state: &AppState) -> Result<OwnedSemaphorePermit, ApiError> {
 /// # Errors
 /// 连接 fftpd 失败或订阅失败时返回错误
 pub async fn logs_stream(
-    _user: AuthedUser,
+    user: AuthedUser,
     State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
     Query(q): Query<TailQuery>,
 ) -> Result<Response, ApiError> {
     let permit = acquire_slot(&state)?;
+    let token = session_token_for_stream(&user, &headers);
     // 专用连接（独占订阅，见模块注释）
     let client = Client::connect()
         .await
@@ -77,6 +88,9 @@ pub async fn logs_stream(
         client: Some(client),
         pending: VecDeque::new(),
         fileop: false,
+        state,
+        token,
+        last_auth_check: Instant::now(),
         _permit: permit,
     }))
 }
@@ -86,11 +100,13 @@ pub async fn logs_stream(
 /// # Errors
 /// 连接 fftpd 失败时返回错误；历史读取失败仅告警并降级为只推实时条目
 pub async fn fileop_stream(
-    _user: AuthedUser,
+    user: AuthedUser,
     State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
     Query(q): Query<TailQuery>,
 ) -> Result<Response, ApiError> {
     let permit = acquire_slot(&state)?;
+    let token = session_token_for_stream(&user, &headers);
     let client = Client::connect()
         .await
         .map_err(|e| ApiError::internal(format!("连接 fftpd 失败: {e:#}")))?;
@@ -123,8 +139,19 @@ pub async fn fileop_stream(
         client: Some(client),
         pending: pending.into(),
         fileop: true,
+        state,
+        token,
+        last_auth_check: Instant::now(),
         _permit: permit,
     }))
+}
+
+/// 取运行期复核用的会话 token；`api_token` 认证无会话，返回 `None` 跳过复核
+fn session_token_for_stream(user: &AuthedUser, headers: &HeaderMap) -> Option<String> {
+    if user.0 == "api_token" {
+        return None;
+    }
+    session_token_from_cookie(headers)
 }
 
 fn sse_response(stream: EventStream) -> Response {
@@ -149,11 +176,32 @@ struct EventStream {
     pending: VecDeque<FileOpLogEntry>,
     /// true = 文件操作审计流（转发 `Event::FileOp`），false = 程序日志流（`Event::Log`）
     fileop: bool,
+    /// 运行期复核会话所需的共享状态
+    state: Arc<AppState>,
+    /// 建立流时的会话 token（`api_token` 认证为 `None`，不复核）
+    token: Option<String>,
+    /// 上次会话复核时间
+    last_auth_check: Instant,
     /// 流存活期间持有的并发配额（drop 时归还）
     _permit: OwnedSemaphorePermit,
 }
 
 impl EventStream {
+    /// 会话已失效（登出/过期/改密）则返回 `true`
+    fn session_expired(&mut self) -> bool {
+        let Some(token) = &self.token else {
+            return false;
+        };
+        if self.last_auth_check.elapsed() < AUTH_CHECK_INTERVAL {
+            return false;
+        }
+        self.last_auth_check = Instant::now();
+        self.state
+            .sessions
+            .get_valid(token, &self.state.admins())
+            .is_none()
+    }
+
     /// 流结束时释放专用连接（服务端随之自动清理推送任务）
     fn release(&mut self) {
         if let Some(client) = self.client.take() {
@@ -177,6 +225,12 @@ impl Stream for EventStream {
     type Item = Result<Event, Infallible>;
 
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        // 会话已失效（登出/过期/改密）则主动断开，避免登出后继续收日志
+        if self.session_expired() {
+            self.release();
+            return Poll::Ready(None);
+        }
+
         // 先补推历史条目（仅 fileop 流有存量）
         while let Some(entry) = self.pending.pop_front() {
             if let Some(item) = Self::emit(&entry, "fileop") {

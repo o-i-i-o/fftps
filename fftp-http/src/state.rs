@@ -6,6 +6,8 @@ use std::sync::{Arc, RwLock};
 use fftp_ipc::protocol::Command;
 use tokio::sync::{Semaphore, watch};
 
+use fftp_common::sync::RwLockExt;
+
 use crate::auth::{LoginLimiter, SessionStore};
 use crate::config::{AdminUser, HttpConfig};
 use crate::daemon::Daemon;
@@ -70,12 +72,12 @@ impl AppState {
     /// 管理员账户快照（无锁等待时间极短，返回共享 Arc）
     #[must_use]
     pub fn admins(&self) -> Arc<Vec<AdminUser>> {
-        self.admins.read().expect("管理员列表锁中毒").clone()
+        self.admins.read_recover().clone()
     }
 
     /// 替换运行期管理员列表
     pub fn set_admins(&self, users: Vec<AdminUser>) {
-        *self.admins.write().expect("管理员列表锁中毒") = Arc::new(users);
+        *self.admins.write_recover() = Arc::new(users);
     }
 
     /// 写审计日志（经 fftpd 落盘；失败仅告警，不影响主流程）

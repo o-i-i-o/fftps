@@ -181,13 +181,14 @@ pub fn resolve_passive_host(masquerade_address: Option<&str>) -> PassiveHost {
 }
 
 /// 配置连接模式 → libunftp 主动/被动模式
+///
+/// 审计 P2-8：libunftp 0.23.1 不对主动模式下 `PORT`/`EPRT` 指定的目标地址做
+/// 校验，已认证用户可借其让服务端连接任意 `IP:端口`（FTP bounce / 内网探测）。
+/// 在接入目标地址校验之前一律以被动模式运行；非 `passive_only` 配置在
+/// [`FtpService::start`] 中记录告警。
 #[must_use]
-pub fn map_connection_mode(mode: ConnectionMode) -> ActivePassiveMode {
-    match mode {
-        ConnectionMode::PassiveOnly => ActivePassiveMode::PassiveOnly,
-        ConnectionMode::ActiveOnly => ActivePassiveMode::ActiveOnly,
-        ConnectionMode::ActiveAndPassive => ActivePassiveMode::ActiveAndPassive,
-    }
+pub fn map_connection_mode(_mode: ConnectionMode) -> ActivePassiveMode {
+    ActivePassiveMode::PassiveOnly
 }
 
 /// FTP(FTPS) 服务：持有共享层资源，负责组装与生命周期管理
@@ -282,6 +283,9 @@ impl FtpService {
     /// 配置非法（根目录不存在、FTPS 证书配置不一致/生成失败）、libunftp
     /// 组装失败时返回错误；监听绑定失败在后台任务中记录日志并使
     /// [`FtpService::is_running`] 归于 `false`。
+    // 保持与 SFTP 服务一致的 `async` 调用形式（fftpd 统一 `start().await`）；
+    // 实现本身只做同步组装与 spawn，没有真正的异步等待。
+    #[allow(clippy::unused_async, clippy::unused_async_trait_impl)]
     pub async fn start(&self) -> Result<RunningFtpService> {
         if self.is_running() {
             bail!("FTP 服务已在运行，请先 stop() 再重新 start()");
@@ -295,6 +299,16 @@ impl FtpService {
         // 热重载：安全策略（并发上限、封禁阈值）随 start() 快照同步更新
         self.fail2ban.update_config(&cfg.security);
         self.connections.update_config(&cfg.security);
+
+        if cfg.ftp.connection_mode != ConnectionMode::PassiveOnly {
+            // 审计 P2-8：主动模式缺失 PORT/EPRT 目标校验，统一降级为被动模式
+            tracing::warn!(
+                "配置项 ftp.connection_mode = {} 已降级为 passive_only：libunftp 0.23.1 \
+                 不校验主动模式 PORT/EPRT 的目标地址，开放主动模式可被用于 \
+                 FTP bounce / 内网探测",
+                cfg.ftp.connection_mode.as_str()
+            );
+        }
 
         let root_mode = resolve_root_mode(cfg.ftp.ftp_root_opt())?;
         let ftps_paths = resolve_ftps_paths(&cfg.ftp.ftps)?;
@@ -546,6 +560,8 @@ mod tests {
     }
 
     #[tokio::test]
+    // 测试用 ENV_LOCK 串行化进程级环境变量修改，跨 await 持锁是刻意行为
+    #[allow(clippy::await_holding_lock)]
     async fn start_stop_lifecycle() {
         let _guard = ENV_LOCK.lock_recover();
         let state = tempfile::tempdir().unwrap();
@@ -565,6 +581,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
     async fn stop_is_safe_when_listener_exits_early() {
         let _guard = ENV_LOCK.lock_recover();
         let state = tempfile::tempdir().unwrap();
@@ -671,22 +688,24 @@ mod tests {
 
     #[test]
     fn map_connection_mode_variants() {
+        // 审计 P2-8：主动模式缺少 PORT/EPRT 目标校验，一律降级为被动模式
         assert_eq!(
             map_connection_mode(ConnectionMode::PassiveOnly),
             ActivePassiveMode::PassiveOnly
         );
         assert_eq!(
             map_connection_mode(ConnectionMode::ActiveOnly),
-            ActivePassiveMode::ActiveOnly
+            ActivePassiveMode::PassiveOnly
         );
         assert_eq!(
             map_connection_mode(ConnectionMode::ActiveAndPassive),
-            ActivePassiveMode::ActiveAndPassive
+            ActivePassiveMode::PassiveOnly
         );
     }
 
     /// 认证链测试：合法用户成功/口令错误/未知用户/匿名开关
     #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
     async fn authenticate_chain() {
         let _guard = ENV_LOCK.lock_recover();
         let dir = tempfile::tempdir().unwrap();
@@ -792,6 +811,7 @@ mod tests {
 
     /// IP 黑名单拦截测试
     #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
     async fn authenticate_rejects_denied_ip() {
         let _guard = ENV_LOCK.lock_recover();
         let dir = tempfile::tempdir().unwrap();
@@ -829,6 +849,7 @@ mod tests {
 
     /// 用户详情提供者：共享根下所有用户会话根为 `.`
     #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
     async fn user_detail_provider_shared_root() {
         let _guard = ENV_LOCK.lock_recover();
         let dir = tempfile::tempdir().unwrap();

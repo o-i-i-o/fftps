@@ -174,6 +174,8 @@ pub struct AuthedUser(pub String);
 impl axum::extract::FromRequestParts<Arc<AppState>> for AuthedUser {
     type Rejection = ApiError;
 
+    // trait 签名固定为 async，但取 extensions 是同步操作
+    #[allow(clippy::unused_async_trait_impl)]
     async fn from_request_parts(
         parts: &mut axum::http::request::Parts,
         _state: &Arc<AppState>,
@@ -217,7 +219,7 @@ fn authenticate(state: &AppState, req: &Request<axum::body::Body>) -> Option<Str
 }
 
 /// 从 `Cookie` 头提取会话 token
-fn session_token_from_cookie(headers: &HeaderMap) -> Option<String> {
+pub(crate) fn session_token_from_cookie(headers: &HeaderMap) -> Option<String> {
     let raw = headers.get(axum::http::header::COOKIE)?.to_str().ok()?;
     raw.split(';').find_map(|pair| {
         pair.trim()

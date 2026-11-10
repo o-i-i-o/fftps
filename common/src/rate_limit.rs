@@ -25,6 +25,15 @@ const MIN_BUCKET_CAPACITY: u64 = 64 * 1024;
 const MAX_BUCKET_CAPACITY: u64 = 1024 * 1024;
 const REFILL_INTERVAL_MS: u64 = 10;
 
+/// 按剩余字节与速率估算等待毫秒数（向上取整；整数运算避免浮点精度损失）
+fn wait_millis(bytes: u64, bytes_per_second: u64) -> u64 {
+    if bytes_per_second == 0 {
+        return REFILL_INTERVAL_MS;
+    }
+    let millis = (u128::from(bytes) * 1000).div_ceil(u128::from(bytes_per_second));
+    u64::try_from(millis).unwrap_or(u64::MAX)
+}
+
 /// 合成全局与每用户限速（KB/s）：0 表示不限速，取两者中更严格的一个
 #[must_use]
 pub fn effective_speed_limit_kbps(global_kbps: u64, user_kbps: u64) -> u64 {
@@ -113,7 +122,7 @@ impl RateLimiter {
 
         let last = self.last_refill.load(Ordering::Acquire);
 
-        if now - last >= REFILL_INTERVAL_MS as i64
+        if now - last >= i64::try_from(REFILL_INTERVAL_MS).unwrap_or(i64::MAX)
             && self
                 .last_refill
                 .compare_exchange(last, now, Ordering::SeqCst, Ordering::Acquire)
@@ -140,8 +149,7 @@ impl RateLimiter {
 
             let current = self.tokens.load(Ordering::Acquire);
             if current == 0 {
-                let wait_ms =
-                    ((remaining as f64 / self.bytes_per_second as f64) * 1000.0).ceil() as u64;
+                let wait_ms = wait_millis(remaining, self.bytes_per_second);
                 tokio::time::sleep(Duration::from_millis(
                     wait_ms.clamp(REFILL_INTERVAL_MS, 100),
                 ))
@@ -223,13 +231,12 @@ impl TransferRateTracker {
     /// 平均速率（KB/s）
     #[must_use]
     pub fn get_rate_kbps(&self) -> u64 {
-        let elapsed_secs = self.start_time.elapsed().as_secs_f64();
-        if elapsed_secs > 0.0 {
-            let bytes_per_sec = self.total_bytes as f64 / elapsed_secs;
-            (bytes_per_sec / 1024.0) as u64
-        } else {
-            0
+        let elapsed_ms = self.start_time.elapsed().as_millis();
+        if elapsed_ms == 0 {
+            return 0;
         }
+        let kbps = u128::from(self.total_bytes) * 1000 / (elapsed_ms * 1024);
+        u64::try_from(kbps).unwrap_or(u64::MAX)
     }
 
     #[must_use]
@@ -308,10 +315,13 @@ impl<R: AsyncRead + Unpin> AsyncRead for RateLimitedReader<R> {
 
         self.limiter.try_refill();
 
-        let available = self.limiter.get_available_tokens() as usize;
+        let available = usize::try_from(self.limiter.get_available_tokens()).unwrap_or(usize::MAX);
         if available == 0 {
             let bytes_per_second = self.limiter.bytes_per_second;
-            let wait_ms = ((remaining as f64 / bytes_per_second as f64) * 1000.0).ceil() as u64;
+            let wait_ms = wait_millis(
+                u64::try_from(remaining).unwrap_or(u64::MAX),
+                bytes_per_second,
+            );
             let wait_ms = wait_ms.clamp(REFILL_INTERVAL_MS, 100);
 
             let waker = cx.waker().clone();
@@ -544,7 +554,7 @@ mod tests {
         tracker.add_bytes(1024);
         assert_eq!(tracker.get_total_bytes(), 1024);
 
-        let defaulted: TransferRateTracker = Default::default();
+        let defaulted = TransferRateTracker::default();
         assert_eq!(defaulted.get_total_bytes(), 0);
     }
 

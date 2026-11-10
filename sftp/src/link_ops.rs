@@ -111,74 +111,9 @@ impl SftpState {
             ));
         }
 
-        // 目标可能尚不存在：其父目录的真实位置也必须在 home 内，
-        // 防止 `target = linkdir/evil` 中 linkdir 是指向 home 外的符号链接。
-        let Some(target_parent) = resolved_target.parent() else {
-            return Err(status_err(StatusCode::Failure, "Invalid symlink target"));
-        };
-        match target_parent.canonicalize() {
-            Ok(canon_parent)
-                if crate::path_resolve::path_starts_with_ignore_case(
-                    &canon_parent,
-                    &home_canon,
-                ) => {}
-            Ok(_) => {
-                tracing::warn!(
-                    "SFTP SYMLINK denied: target parent outside home - {} -> {:?}",
-                    full_link.display(),
-                    resolved_target
-                );
-                return Err(status_err(
-                    StatusCode::PermissionDenied,
-                    "Permission denied: target path outside home",
-                ));
-            }
-            Err(e) => {
-                tracing::warn!(
-                    "SFTP SYMLINK denied: target parent cannot be resolved - {} -> {:?}: {e}",
-                    full_link.display(),
-                    resolved_target
-                );
-                return Err(status_err(
-                    StatusCode::Failure,
-                    "Symlink target directory not found",
-                ));
-            }
-        }
+        ensure_target_parent_within(&home_canon, &resolved_target, &full_link)?;
 
-        // 目标已存在时再做 canonicalize 校验（防符号链接目标指向 home 之外）
-        if let Ok(canon_target) = resolved_target.canonicalize()
-            && !crate::path_resolve::path_starts_with_ignore_case(&canon_target, &home_canon)
-        {
-            tracing::warn!(
-                "SFTP SYMLINK denied: canonicalized target outside home - {} -> {:?}",
-                full_link.display(),
-                canon_target
-            );
-            return Err(status_err(
-                StatusCode::PermissionDenied,
-                "Permission denied: target path outside home",
-            ));
-        }
-
-        // Windows：拒绝指向 junction/reparse point 的目标（旧版防护）
-        #[cfg(windows)]
-        {
-            use std::os::windows::fs::MetadataExt;
-            if resolved_target.exists()
-                && let Ok(metadata) = std::fs::metadata(&resolved_target)
-                && metadata.file_attributes() & 0x400 != 0
-            {
-                tracing::warn!(
-                    "SFTP SYMLINK denied: target is a junction/reparse point - {:?}",
-                    resolved_target
-                );
-                return Err(status_err(
-                    StatusCode::PermissionDenied,
-                    "Permission denied: junction points not allowed",
-                ));
-            }
-        }
+        reject_unsafe_existing_target(&home_canon, &resolved_target, &full_link)?;
 
         match create_symlink(target, &full_link, &resolved_target) {
             Ok(()) => {
@@ -228,6 +163,88 @@ fn create_symlink(target: &str, link_path: &Path, resolved_target: &Path) -> std
             std::os::windows::fs::symlink_file(target, link_path)
         }
     }
+}
+
+/// 目标可能尚不存在：其父目录的真实位置也必须在 home 内，
+/// 防止 `target = linkdir/evil` 中 linkdir 是指向 home 外的符号链接。
+fn ensure_target_parent_within(
+    home_canon: &Path,
+    resolved_target: &Path,
+    full_link: &Path,
+) -> Result<(), StatusReply> {
+    let Some(target_parent) = resolved_target.parent() else {
+        return Err(status_err(StatusCode::Failure, "Invalid symlink target"));
+    };
+    match target_parent.canonicalize() {
+        Ok(canon_parent)
+            if crate::path_resolve::path_starts_with_ignore_case(&canon_parent, home_canon) =>
+        {
+            Ok(())
+        }
+        Ok(_) => {
+            tracing::warn!(
+                "SFTP SYMLINK denied: target parent outside home - {} -> {:?}",
+                full_link.display(),
+                resolved_target
+            );
+            Err(status_err(
+                StatusCode::PermissionDenied,
+                "Permission denied: target path outside home",
+            ))
+        }
+        Err(e) => {
+            tracing::warn!(
+                "SFTP SYMLINK denied: target parent cannot be resolved - {} -> {:?}: {e}",
+                full_link.display(),
+                resolved_target
+            );
+            Err(status_err(
+                StatusCode::Failure,
+                "Symlink target directory not found",
+            ))
+        }
+    }
+}
+
+/// 目标已存在时再做 canonicalize 校验（防符号链接目标指向 home 之外），
+/// 并在 Windows 上拒绝 junction/reparse point。
+fn reject_unsafe_existing_target(
+    home_canon: &Path,
+    resolved_target: &Path,
+    full_link: &Path,
+) -> Result<(), StatusReply> {
+    if let Ok(canon_target) = resolved_target.canonicalize()
+        && !crate::path_resolve::path_starts_with_ignore_case(&canon_target, home_canon)
+    {
+        tracing::warn!(
+            "SFTP SYMLINK denied: canonicalized target outside home - {} -> {:?}",
+            full_link.display(),
+            canon_target
+        );
+        return Err(status_err(
+            StatusCode::PermissionDenied,
+            "Permission denied: target path outside home",
+        ));
+    }
+
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+        if resolved_target.exists()
+            && let Ok(metadata) = std::fs::metadata(resolved_target)
+            && metadata.file_attributes() & 0x400 != 0
+        {
+            tracing::warn!(
+                "SFTP SYMLINK denied: target is a junction/reparse point - {:?}",
+                resolved_target
+            );
+            return Err(status_err(
+                StatusCode::PermissionDenied,
+                "Permission denied: junction points not allowed",
+            ));
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]

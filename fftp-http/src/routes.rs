@@ -456,7 +456,14 @@ async fn put_idle(
             return Err(ApiError::bad_request("倒计时提示不能大于空闲时长"));
         }
     }
-    crate::config::HttpConfig::save_idle(&state.http_config_path, &idle)?;
+    // 配置文件读写是同步 IO，移入阻塞线程避免占用异步 worker
+    let config_path = state.http_config_path.clone();
+    let idle_for_save = idle.clone();
+    tokio::task::spawn_blocking(move || {
+        crate::config::HttpConfig::save_idle(&config_path, &idle_for_save)
+    })
+    .await
+    .map_err(|e| ApiError::internal(format!("保存空闲配置任务失败: {e}")))??;
     let snapshot = {
         state.idle.update(idle);
         state.idle.snapshot()

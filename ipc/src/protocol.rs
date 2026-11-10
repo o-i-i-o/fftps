@@ -309,7 +309,7 @@ mod tests {
                     assert_eq!(code, ErrorCode::Validation);
                     assert_eq!(message, "bad");
                 }
-                other => panic!("unexpected: {other:?}"),
+                OpResult::Ok { .. } => panic!("unexpected: ok"),
             },
             other => panic!("unexpected: {other:?}"),
         }

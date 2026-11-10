@@ -132,6 +132,12 @@ pub fn is_absolute_ftp_path(path: &str) -> bool {
 /// - 拒绝 Windows 保留设备名（CON/PRN/AUX/NUL/COM1-9/LPT1-9，含带扩展名形态）。
 #[must_use]
 pub fn is_valid_path_component(name: &OsStr) -> bool {
+    // Windows 保留设备名（含 `CON.txt` 这类带扩展名形态），全平台统一拒绝
+    const RESERVED: [&str; 22] = [
+        "CON", "PRN", "AUX", "NUL", "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8",
+        "COM9", "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
+    ];
+
     let name_str = name.to_string_lossy();
     let name_str = name_str.trim();
 
@@ -155,16 +161,11 @@ pub fn is_valid_path_component(name: &OsStr) -> bool {
         return false;
     }
 
-    // Windows 保留设备名（含 `CON.txt` 这类带扩展名形态），全平台统一拒绝
     let stem = name_str
         .split('.')
         .next()
         .unwrap_or(name_str)
         .to_uppercase();
-    const RESERVED: [&str; 22] = [
-        "CON", "PRN", "AUX", "NUL", "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8",
-        "COM9", "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
-    ];
     !RESERVED.contains(&stem.as_str())
 }
 

@@ -216,9 +216,7 @@ mod tests {
         let client = Client::from_duplex(client_side);
 
         tokio::spawn(async move {
-            let (mut _r, mut w) = split(server_side);
-            // 读请求
-            let mut reader = _r;
+            let (mut reader, mut w) = split(server_side);
             if let Some(Message::Request(req)) = framing::read_frame(&mut reader).await.unwrap() {
                 let resp = Response::ok(req.id, serde_json::json!({"pong": true}));
                 framing::write_frame(&mut w, &Message::Response(resp))
