@@ -116,12 +116,11 @@ mod unix {
     use tokio::net::{UnixListener, UnixStream};
 
     pub(super) async fn listen() -> Result<Listener> {
-        let path = fftp_common::paths::socket_path();
-        if let Some(parent) = path.parent() {
-            tokio::fs::create_dir_all(parent)
-                .await
-                .context("创建运行时目录失败")?;
-        }
+        // 运行时目录以 0700 创建并校验属主，防止其他用户抢占目录后
+        // 预置同路径 socket 冒充 fftpd。
+        let dir = fftp_common::paths::ensure_runtime_dir()
+            .context("创建/校验运行时目录失败")?;
+        let path = dir.join("fftpd.sock");
 
         // 清理上次异常退出的残留套接字；若已有存活实例则让 bind 失败暴露冲突
         if path.exists() {

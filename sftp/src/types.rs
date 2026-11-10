@@ -35,6 +35,10 @@ pub enum SftpFileHandle {
         quota_reserved: u64,
         /// 打开前文件大小（配额按增量计）
         original_size: u64,
+        /// 当前逻辑文件大小（写入后按最大 end 更新，供配额增量与清理结算）
+        current_size: u64,
+        /// 是否以追加模式打开（写入偏移按文件末尾计算）
+        append: bool,
     },
     /// 目录句柄
     Dir {

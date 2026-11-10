@@ -37,6 +37,30 @@ pub(crate) fn status_ok(id: u32) -> Status {
     }
 }
 
+/// 结算单个文件句柄的配额
+///
+/// 按「当前逻辑大小 − 打开前大小」计入增量，并释放打开期间累计的预留；
+/// 文件被截断/缩小时扣减对应用量，避免用量账目只增不减。
+fn settle_handle_quota(
+    quota_manager: &QuotaManager,
+    username: &str,
+    quota_reserved: u64,
+    original_size: u64,
+    current_size: u64,
+) {
+    let growth = current_size.saturating_sub(original_size);
+    let shrink = original_size.saturating_sub(current_size);
+
+    if quota_reserved > 0 {
+        quota_manager.commit_usage(username, quota_reserved, growth);
+    } else if growth > 0 {
+        quota_manager.add_usage(username, growth);
+    }
+    if shrink > 0 {
+        quota_manager.subtract_usage(username, shrink);
+    }
+}
+
 /// SFTP 会话状态
 pub struct SftpState {
     /// 用户 home（服务器绝对路径，会话级 jail 根）
@@ -251,14 +275,31 @@ impl SftpState {
         }
     }
 
-    /// 会话结束清理：关闭句柄并释放锁
+    /// 会话结束清理：关闭句柄、结算配额并释放锁
     pub fn cleanup(&mut self) {
+        let username = self.audit_user().to_string();
         for (_, handle) in self.handles.drain() {
-            if let SftpFileHandle::File { locked, path, .. } = handle
-                && locked
+            if let SftpFileHandle::File {
+                locked,
+                path,
+                quota_reserved,
+                original_size,
+                current_size,
+                ..
+            } = handle
             {
-                tracing::info!("Releasing lock on {path:?} during cleanup");
-                self.locked_files.remove(&path);
+                // 断连时按已跟踪的逻辑大小结算，避免预留额度永久泄漏
+                settle_handle_quota(
+                    &self.quota_manager,
+                    &username,
+                    quota_reserved,
+                    original_size,
+                    current_size,
+                );
+                if locked {
+                    tracing::info!("Releasing lock on {path:?} during cleanup");
+                    self.locked_files.remove(&path);
+                }
             }
         }
         self.locked_files.clear();
@@ -268,6 +309,7 @@ impl SftpState {
     /// 回收超时未访问的句柄（刷新文件数据并释放锁）
     pub async fn cleanup_expired_handles(&mut self) {
         let timeout = Duration::from_secs(HANDLE_TIMEOUT_SECS);
+        let username = self.audit_user().to_string();
         let expired: Vec<String> = self
             .handles
             .iter()
@@ -285,12 +327,22 @@ impl SftpState {
                         locked,
                         path,
                         mut file,
+                        quota_reserved,
+                        original_size,
+                        current_size,
                         ..
                     } => {
                         use tokio::io::AsyncWriteExt;
                         if let Err(e) = file.flush().await {
                             tracing::warn!("Failed to flush file {path:?} on handle expiry: {e}");
                         }
+                        settle_handle_quota(
+                            &self.quota_manager,
+                            &username,
+                            quota_reserved,
+                            original_size,
+                            current_size,
+                        );
                         if locked {
                             self.locked_files.remove(&path);
                         }
@@ -516,6 +568,8 @@ mod tests {
                 last_access: Instant::now(),
                 quota_reserved: 0,
                 original_size: 0,
+                current_size: 0,
+                append: false,
             },
         );
         state.locked_files.insert(path);

@@ -85,15 +85,80 @@ pub fn state_dir() -> PathBuf {
 }
 
 /// 运行时目录（UDS 套接字等生命周期与登录会话一致的数据）
+///
+/// 优先 `$XDG_RUNTIME_DIR/fftpd`；缺失时若 `/run/user/<uid>` 存在则使用，
+/// 最后才退回 `/tmp/fftpd-<uid>`。实际创建/校验请用 [`ensure_runtime_dir`]。
 #[cfg(unix)]
 #[must_use]
 pub fn runtime_dir() -> PathBuf {
     if let Some(dir) = std::env::var_os("XDG_RUNTIME_DIR").filter(|v| !v.is_empty()) {
-        PathBuf::from(dir).join("fftpd")
+        return PathBuf::from(dir).join("fftpd");
+    }
+
+    let uid = nix::unistd::getuid();
+    let run_user = PathBuf::from(format!("/run/user/{uid}"));
+    if run_user.is_dir() {
+        run_user.join("fftpd")
     } else {
-        let uid = nix::unistd::getuid();
         PathBuf::from(format!("/tmp/fftpd-{uid}"))
     }
+}
+
+/// 创建并校验运行时目录（0700、属主为当前用户、拒绝符号链接）
+///
+/// 返回实际使用的目录（与 [`runtime_dir`] 一致）。目录不可信时返回错误，
+/// 而不是静默回退，避免 `/tmp/fftpd-<uid>` 被其他用户抢占后劫持套接字/令牌。
+///
+/// # Errors
+/// 目录无法创建，或已存在但属主/类型/权限不可信时返回错误。
+#[cfg(unix)]
+pub fn ensure_runtime_dir() -> std::io::Result<PathBuf> {
+    let dir = runtime_dir();
+    ensure_private_dir(&dir, nix::unistd::getuid().as_raw())?;
+    Ok(dir)
+}
+
+/// 以 0700 创建目录并校验其真实属性
+#[cfg(unix)]
+fn ensure_private_dir(dir: &std::path::Path, uid: u32) -> std::io::Result<()> {
+    use std::os::unix::fs::{DirBuilderExt, MetadataExt, PermissionsExt};
+
+    // 父目录（/tmp 除外）必须属于当前用户，防止在他人可控目录中建运行时目录
+    if let Some(parent) = dir.parent()
+        && parent != std::path::Path::new("/tmp")
+    {
+        let meta = std::fs::symlink_metadata(parent)?;
+        if !meta.is_dir() || meta.file_type().is_symlink() || meta.uid() != uid {
+            return Err(std::io::Error::other(format!(
+                "runtime base directory {} is not a trusted directory",
+                parent.display()
+            )));
+        }
+    }
+
+    match std::fs::DirBuilder::new().mode(0o700).create(dir) {
+        Ok(()) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
+        Err(e) => return Err(e),
+    }
+
+    let meta = std::fs::symlink_metadata(dir)?;
+    if !meta.is_dir() || meta.file_type().is_symlink() {
+        return Err(std::io::Error::other(format!(
+            "runtime path {} is not a real directory",
+            dir.display()
+        )));
+    }
+    if meta.uid() != uid {
+        return Err(std::io::Error::other(format!(
+            "runtime directory {} is not owned by current user",
+            dir.display()
+        )));
+    }
+    if meta.permissions().mode() & 0o077 != 0 {
+        std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))?;
+    }
+    Ok(())
 }
 
 /// 前后端 UDS 套接字路径
@@ -260,6 +325,26 @@ mod tests {
     #[cfg(windows)]
     fn test_socket_path_uses_named_pipe() {
         assert!(socket_path().ends_with("fftpd"));
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn test_ensure_private_dir_creates_0700_and_rejects_symlink() {
+        use std::os::unix::fs::{PermissionsExt, symlink};
+
+        let base = tempfile::tempdir().unwrap();
+        let dir = base.path().join("fftpd");
+        let uid = nix::unistd::getuid().as_raw();
+        ensure_private_dir(&dir, uid).unwrap();
+        assert_eq!(
+            std::fs::metadata(&dir).unwrap().permissions().mode() & 0o777,
+            0o700
+        );
+
+        // 符号链接不能作为运行时目录
+        let link = base.path().join("fftpd-link");
+        symlink(&dir, &link).unwrap();
+        assert!(ensure_private_dir(&link, uid).is_err());
     }
 
     #[test]

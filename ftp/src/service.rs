@@ -118,7 +118,24 @@ pub fn resolve_ftps_paths(ftps: &FtpsConfig) -> Result<Option<(PathBuf, PathBuf)
         return Ok(None);
     }
     match (ftps.cert_path_opt(), ftps.key_path_opt()) {
-        (Some(cert), Some(key)) => Ok(Some((PathBuf::from(cert), PathBuf::from(key)))),
+        (Some(cert), Some(key)) => {
+            let key_path = PathBuf::from(key);
+            // 用户自带 FTPS 私钥：拒绝组/其他用户可读的宽松权限
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                if let Ok(meta) = std::fs::metadata(&key_path)
+                    && meta.permissions().mode() & 0o077 != 0
+                {
+                    bail!(
+                        "FTPS 私钥 {} 权限过于宽松（{:o}），请执行 chmod 600 后重试",
+                        key_path.display(),
+                        meta.permissions().mode() & 0o777
+                    );
+                }
+            }
+            Ok(Some((PathBuf::from(cert), key_path)))
+        }
         (None, None) => {
             let cert_dir = fftp_common::paths::state_dir().join("certs");
             let cert = cert_dir.join("ftps-cert.pem");

@@ -43,15 +43,7 @@ pub fn generate_self_signed_cert(cert_path: &str, key_path: &str) -> Result<()> 
     let cert = params.self_signed(&key_pair)?;
 
     let key_pem = key_pair.serialize_pem();
-    fs::write(key_path, key_pem).context("写入私钥文件失败")?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let metadata = fs::metadata(key_path)?;
-        let mut permissions = metadata.permissions();
-        permissions.set_mode(0o600);
-        fs::set_permissions(key_path, permissions)?;
-    }
+    write_private_key(key_path, &key_pem)?;
     info!(key_path, "私钥已保存");
 
     let cert_pem = cert.pem();
@@ -96,6 +88,31 @@ pub fn ensure_cert_exists(cert_path: &str, key_path: &str) -> Result<bool> {
 
     generate_self_signed_cert(cert_path, key_path)?;
     Ok(true)
+}
+
+/// 以 0600 权限写入私钥（Unix 下创建即 0600，避免先写后 chmod 的窗口）
+fn write_private_key(key_path: &str, contents: &str) -> Result<()> {
+    #[cfg(unix)]
+    {
+        use std::io::Write;
+        use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+
+        let mut options = fs::OpenOptions::new();
+        options.write(true).create(true).truncate(true).mode(0o600);
+        let mut file = options.open(key_path).context("写入私钥文件失败")?;
+        file.write_all(contents.as_bytes())
+            .context("写入私钥文件失败")?;
+        file.flush().ok();
+        // 既有文件可能权限过宽，显式收紧
+        fs::set_permissions(key_path, fs::Permissions::from_mode(0o600))
+            .context("设置私钥权限失败")?;
+        Ok(())
+    }
+    #[cfg(not(unix))]
+    {
+        fs::write(key_path, contents).context("写入私钥文件失败")?;
+        Ok(())
+    }
 }
 
 #[cfg(test)]

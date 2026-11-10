@@ -39,28 +39,89 @@ pub fn ensure_token() -> Result<String> {
         rand::random::<u128>(),
         rand::random::<u128>()
     );
-    let path = token_path();
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)
-            .with_context(|| format!("创建 setup 令牌目录失败: {}", parent.display()))?;
-    }
-    std::fs::write(&path, &token)
-        .with_context(|| format!("写入 setup 令牌失败: {}", path.display()))?;
+
     #[cfg(unix)]
     {
-        use std::os::unix::fs::PermissionsExt;
-        let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600));
+        if write_token_unix(&token)? {
+            return Ok(token);
+        }
+        // 并发/残留文件：以磁盘上的令牌为准，避免调用方拿到未落盘的值
+        return read_token().context("setup 令牌文件已存在但无法安全读取");
     }
-    Ok(token)
+
+    #[cfg(windows)]
+    {
+        let path = token_path();
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)
+                .with_context(|| format!("创建 setup 令牌目录失败: {}", parent.display()))?;
+        }
+        std::fs::write(&path, &token)
+            .with_context(|| format!("写入 setup 令牌失败: {}", path.display()))?;
+        Ok(token)
+    }
+}
+
+/// 以 `O_CREAT|O_EXCL|O_NOFOLLOW` + 0600 创建令牌文件
+///
+/// 返回 `true` 表示本次创建成功，`false` 表示文件已存在。
+#[cfg(unix)]
+fn write_token_unix(token: &str) -> Result<bool> {
+    use std::io::Write;
+    use std::os::unix::fs::OpenOptionsExt;
+
+    let dir = fftp_common::paths::ensure_runtime_dir()
+        .context("创建运行时目录失败（请检查 XDG_RUNTIME_DIR 或 /tmp 权限）")?;
+    let path = dir.join("setup-token");
+
+    let mut options = std::fs::OpenOptions::new();
+    options
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .custom_flags(nix::libc::O_NOFOLLOW);
+
+    match options.open(&path) {
+        Ok(mut file) => {
+            file.write_all(token.as_bytes())
+                .with_context(|| format!("写入 setup 令牌失败: {}", path.display()))?;
+            file.flush().ok();
+            Ok(true)
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => Ok(false),
+        Err(e) => {
+            Err(e).with_context(|| format!("创建 setup 令牌失败: {}", path.display()))
+        }
+    }
 }
 
 /// 读取令牌（不存在或为空时返回 `None`）
 #[must_use]
 pub fn read_token() -> Option<String> {
-    std::fs::read_to_string(token_path())
-        .ok()
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty())
+    #[cfg(unix)]
+    {
+        use std::io::Read;
+        use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+
+        let mut options = std::fs::OpenOptions::new();
+        options
+            .read(true)
+            .custom_flags(nix::libc::O_NOFOLLOW);
+        let mut file = options.open(token_path()).ok()?;
+        // 旧版本可能以宽松权限创建，读取时顺手收紧
+        let _ = file.set_permissions(std::fs::Permissions::from_mode(0o600));
+        let mut contents = String::new();
+        file.read_to_string(&mut contents).ok()?;
+        let token = contents.trim().to_string();
+        (!token.is_empty()).then_some(token)
+    }
+    #[cfg(windows)]
+    {
+        std::fs::read_to_string(token_path())
+            .ok()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+    }
 }
 
 /// 删除令牌（setup 完成后调用）

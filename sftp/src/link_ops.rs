@@ -59,6 +59,25 @@ impl SftpState {
             return Err(status_err(StatusCode::PermissionDenied, "Permission denied"));
         }
 
+        // 未开启符号链接支持时禁止创建，避免为后续访问埋下逃逸面
+        if !self.allow_symlinks {
+            return Err(status_err(
+                StatusCode::PermissionDenied,
+                "Symlinks not allowed",
+            ));
+        }
+
+        // 绝对目标会把宿主绝对路径写入链接；jail 语义下只允许相对目标
+        if Path::new(target).is_absolute() {
+            tracing::warn!(
+                "SFTP SYMLINK denied: absolute target not allowed - {target:?}"
+            );
+            return Err(status_err(
+                StatusCode::PermissionDenied,
+                "Permission denied: absolute symlink target not allowed",
+            ));
+        }
+
         let full_link = self.resolve_path_or_err(link_path)?;
 
         // home 规范路径作为 jail 基准（链接路径已经 resolve 落在其内）
@@ -66,13 +85,9 @@ impl SftpState {
             .canonicalize()
             .unwrap_or_else(|_| PathBuf::from(&self.home_dir));
 
-        // 目标必须解析到 home 之内（相对目标按链接父目录拼接）
+        // 相对目标按链接父目录拼接
         let link_parent = full_link.parent().unwrap_or(Path::new(&self.home_dir));
-        let resolved_target = if Path::new(target).is_absolute() {
-            self.resolve_path_or_err(target)?
-        } else {
-            link_parent.join(&target)
-        };
+        let resolved_target = link_parent.join(&target);
 
         // 词法校验：`..` 归一化后仍须落在 home 内（悬空链接目标也必须安全）
         if crate::path_resolve::build_safe_path(&home_canon, &resolved_target, "symlink target")
@@ -87,6 +102,41 @@ impl SftpState {
                 StatusCode::PermissionDenied,
                 "Permission denied: target path outside home",
             ));
+        }
+
+        // 目标可能尚不存在：其父目录的真实位置也必须在 home 内，
+        // 防止 `target = linkdir/evil` 中 linkdir 是指向 home 外的符号链接。
+        let Some(target_parent) = resolved_target.parent() else {
+            return Err(status_err(StatusCode::Failure, "Invalid symlink target"));
+        };
+        match target_parent.canonicalize() {
+            Ok(canon_parent)
+                if crate::path_resolve::path_starts_with_ignore_case(
+                    &canon_parent,
+                    &home_canon,
+                ) => {}
+            Ok(_) => {
+                tracing::warn!(
+                    "SFTP SYMLINK denied: target parent outside home - {} -> {:?}",
+                    full_link.display(),
+                    resolved_target
+                );
+                return Err(status_err(
+                    StatusCode::PermissionDenied,
+                    "Permission denied: target path outside home",
+                ));
+            }
+            Err(e) => {
+                tracing::warn!(
+                    "SFTP SYMLINK denied: target parent cannot be resolved - {} -> {:?}: {e}",
+                    full_link.display(),
+                    resolved_target
+                );
+                return Err(status_err(
+                    StatusCode::Failure,
+                    "Symlink target directory not found",
+                ));
+            }
         }
 
         // 目标已存在时再做 canonicalize 校验（防符号链接目标指向 home 之外）
@@ -187,6 +237,8 @@ mod tests {
     #[tokio::test]
     async fn symlink_readlink_roundtrip() {
         let mut env = crate::test_util::setup();
+        // 创建链接需要显式开启 allow_symlinks
+        env.state.allow_symlinks = true;
         std::fs::write(env.dir.path().join("target.txt"), b"t").unwrap();
 
         // 业务参数序：target 在前、link_path 在后
@@ -199,6 +251,19 @@ mod tests {
         // READLINK 不跟随链接：LSTAT 语义下链接自身可查
         let attrs = env.state.lstat(3, "/link.txt".to_string()).await.unwrap();
         assert!(attrs.attrs.is_symlink());
+    }
+
+    /// `allow_symlinks=false` 时禁止创建链接；绝对目标一律拒绝
+    #[tokio::test]
+    async fn symlink_creation_disabled_and_absolute_target_rejected() {
+        let mut env = crate::test_util::setup();
+        let err = env.state.symlink(1, "target.txt", "/link.txt").unwrap_err();
+        assert_eq!(err.status_code, StatusCode::PermissionDenied);
+
+        env.state.allow_symlinks = true;
+        let err = env.state.symlink(2, "/etc/passwd", "/link.txt").unwrap_err();
+        assert_eq!(err.status_code, StatusCode::PermissionDenied);
+        assert!(!env.dir.path().join("link.txt").exists());
     }
 
     /// `READLINK` 目标不是符号链接（或不存在）回 `NO_SUCH_FILE`

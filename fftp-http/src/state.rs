@@ -6,7 +6,7 @@ use std::sync::{Arc, RwLock};
 use fftp_ipc::protocol::Command;
 use tokio::sync::watch;
 
-use crate::auth::SessionStore;
+use crate::auth::{LoginLimiter, SessionStore};
 use crate::config::{AdminUser, HttpConfig};
 use crate::daemon::Daemon;
 use crate::idle::{IdleState, ShutdownReason};
@@ -20,6 +20,8 @@ pub struct AppState {
     pub http_config_path: PathBuf,
     pub daemon: Daemon,
     pub sessions: SessionStore,
+    /// 登录失败限流（按 IP + 用户名）
+    pub login_limiter: LoginLimiter,
     /// 空闲自动关闭
     pub idle: Arc<IdleState>,
     shutdown_tx: watch::Sender<Option<ShutdownReason>>,
@@ -41,6 +43,7 @@ impl AppState {
             http_config_path,
             daemon,
             sessions,
+            login_limiter: LoginLimiter::default(),
             idle,
             shutdown_tx,
         });

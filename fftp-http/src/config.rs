@@ -396,9 +396,21 @@ impl HttpConfig {
         Ok(())
     }
 
-    /// 非回环绑定的强制保护规则：必须启用 TLS 或配置 `api_token`
+    /// 非回环绑定的强制保护规则
+    ///
+    /// 存在管理员账户即意味着开放浏览器登录（口令 + Cookie）；此时只配置
+    /// `api_token` 不能替代 TLS，否则登录凭据会以明文经过网络。
     fn missing_network_protection(&self) -> Option<String> {
-        if self.is_loopback_only() || self.tls.enabled || !self.auth.api_token.is_empty() {
+        if self.is_loopback_only() || self.tls.enabled {
+            return None;
+        }
+        if !self.admin_users.is_empty() {
+            return Some(format!(
+                "监听地址 {:?} 为非回环地址且已配置管理员账户，必须启用 TLS（[tls].enabled），否则 Web 登录口令与 Cookie 将以明文传输",
+                self.listen.address
+            ));
+        }
+        if !self.auth.api_token.is_empty() {
             return None;
         }
         Some(format!(
@@ -434,13 +446,14 @@ mod tests {
     }
 
     #[test]
-    fn non_loopback_requires_tls_or_token() {
+    fn non_loopback_requires_tls_when_admin_login_enabled() {
         let mut cfg = base();
         cfg.listen.address = "0.0.0.0".into();
         assert!(cfg.missing_network_protection().is_some());
 
+        // api_token 不能替代 TLS：浏览器登录仍会走明文
         cfg.auth.api_token = "secret".into();
-        assert!(cfg.missing_network_protection().is_none());
+        assert!(cfg.missing_network_protection().is_some());
 
         let mut cfg = base();
         cfg.listen.address = "::".into();

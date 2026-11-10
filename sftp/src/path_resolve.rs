@@ -59,14 +59,22 @@ pub fn strip_extended_prefix(path: &Path) -> PathBuf {
     PathBuf::from(stripped)
 }
 
-/// 路径前缀包含判断：Windows 忽略大小写，Unix 严格比较
+/// 路径前缀包含判断：Windows 按路径成分忽略大小写比较，Unix 严格比较
+///
+/// Windows 下必须按 [`Component`] 逐段比较：字符串前缀会把
+/// `C:\Users\alice2` 误判为 `C:\Users\alice` 的子路径。
 #[must_use]
 pub fn path_starts_with_ignore_case<P: AsRef<Path>>(path: &Path, prefix: P) -> bool {
     #[cfg(windows)]
     {
-        let path_str = path.to_string_lossy().to_lowercase();
-        let prefix_str = prefix.as_ref().to_string_lossy().to_lowercase();
-        path_str.starts_with(&prefix_str)
+        let mut path_components = path.components();
+        for prefix_component in prefix.as_ref().components() {
+            match path_components.next() {
+                Some(component) if component_eq_ignore_case(&component, &prefix_component) => {}
+                _ => return false,
+            }
+        }
+        true
     }
     #[cfg(not(windows))]
     {
@@ -74,14 +82,32 @@ pub fn path_starts_with_ignore_case<P: AsRef<Path>>(path: &Path, prefix: P) -> b
     }
 }
 
-/// 路径相等判断：Windows 忽略大小写，Unix 严格比较
+/// 单个路径成分的大小写不敏感比较（Windows 专用）
+#[cfg(windows)]
+fn component_eq_ignore_case(a: &Component<'_>, b: &Component<'_>) -> bool {
+    fn eq_os(a: &std::ffi::OsStr, b: &std::ffi::OsStr) -> bool {
+        a.to_string_lossy().to_lowercase() == b.to_string_lossy().to_lowercase()
+    }
+
+    match (a, b) {
+        (Component::Prefix(pa), Component::Prefix(pb)) => {
+            eq_os(pa.as_os_str(), pb.as_os_str())
+        }
+        (Component::RootDir, Component::RootDir) => true,
+        (Component::CurDir, Component::CurDir) => true,
+        (Component::ParentDir, Component::ParentDir) => true,
+        (Component::Normal(a), Component::Normal(b)) => eq_os(a, b),
+        _ => false,
+    }
+}
+
+/// 路径相等判断：Windows 按成分忽略大小写，Unix 严格比较
 #[must_use]
 pub fn paths_equal_ignore_case<P1: AsRef<Path>, P2: AsRef<Path>>(path1: P1, path2: P2) -> bool {
     #[cfg(windows)]
     {
-        let str1 = path1.as_ref().to_string_lossy().to_lowercase();
-        let str2 = path2.as_ref().to_string_lossy().to_lowercase();
-        str1 == str2
+        path_starts_with_ignore_case(path1.as_ref(), path2.as_ref())
+            && path_starts_with_ignore_case(path2.as_ref(), path1.as_ref())
     }
     #[cfg(not(windows))]
     {
@@ -593,6 +619,20 @@ pub fn validate_parent_and_build_path(
     home_canon: &Path,
     input_desc: &str,
 ) -> Result<PathBuf, PathResolveError> {
+    // 末段是符号链接而 canonicalize 又失败，说明链接悬空/成环：无法确认
+    // 目标仍落在 home 内，必须拒绝。否则 open(CREATE) 会跟随悬空链接在
+    // jail 之外创建文件（POSIX 语义）。
+    if let Ok(metadata) = path.symlink_metadata()
+        && metadata.file_type().is_symlink()
+    {
+        tracing::warn!(
+            "SECURITY: refusing dangling/looping symlink - path: {:?}, input: {:?}",
+            path,
+            input_desc
+        );
+        return Err(PathResolveError::SymlinkNotAllowed);
+    }
+
     let parent = path.parent().ok_or_else(|| {
         tracing::warn!("validate_parent: path has no parent - {:?}", input_desc);
         PathResolveError::InvalidPath
@@ -930,6 +970,26 @@ mod tests {
         assert!(safe_resolve_path(&home, &home, "leak/secret.txt", false).is_err());
         // allow_symlinks=true：链校验发现目标越狱仍拒绝
         assert!(safe_resolve_path(&home, &home, "leak/secret.txt", true).is_err());
+    }
+
+    /// 悬空符号链接无法确认目标位置，必须拒绝（否则 open(CREATE) 会跟随越狱）
+    #[cfg(unix)]
+    #[test]
+    fn test_safe_resolve_path_rejects_dangling_symlink() {
+        let dir = temp_home();
+        let home = dir.path().to_string_lossy().to_string();
+        let outside = tempfile::tempdir().unwrap();
+        let link = dir.path().join("dangling.txt");
+        std::os::unix::fs::symlink(outside.path().join("created.txt"), &link).unwrap();
+
+        assert_eq!(
+            safe_resolve_path(&home, &home, "dangling.txt", false).unwrap_err(),
+            PathResolveError::SymlinkNotAllowed
+        );
+        assert_eq!(
+            safe_resolve_path(&home, &home, "dangling.txt", true).unwrap_err(),
+            PathResolveError::SymlinkNotAllowed
+        );
     }
 
     #[test]

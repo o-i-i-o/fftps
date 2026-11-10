@@ -938,6 +938,7 @@ dependencies = [
  "fs2",
  "hex",
  "md-5",
+ "nix 0.31.3",
  "russh",
  "scopeguard",
  "serde",

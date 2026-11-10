@@ -295,15 +295,31 @@ fn wait_ready(cfg: &HttpConfig) -> Option<Health> {
 
 /// 启动锁：防止连点同时拉起多个实例
 fn acquire_lock() -> Result<Option<LaunchLock>> {
+    // Unix 下运行时目录先以 0700 创建并校验属主，锁文件不跟随符号链接
+    #[cfg(unix)]
+    fftp_common::paths::ensure_runtime_dir()
+        .context("创建/校验运行时目录失败")?;
+
     let path = lock_path();
+    #[cfg(not(unix))]
     if let Some(parent) = path.parent() {
         let _ = std::fs::create_dir_all(parent);
     }
-    let file = std::fs::OpenOptions::new()
+
+    let mut options = std::fs::OpenOptions::new();
+    options
         .create(true)
         .truncate(false)
         .read(true)
-        .write(true)
+        .write(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options
+            .mode(0o600)
+            .custom_flags(nix::libc::O_NOFOLLOW);
+    }
+    let file = options
         .open(&path)
         .with_context(|| format!("打开启动锁失败: {}", path.display()))?;
     #[cfg(unix)]

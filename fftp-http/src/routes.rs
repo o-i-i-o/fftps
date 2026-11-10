@@ -323,7 +323,7 @@ async fn do_setup(
     };
     let users = vec![crate::config::AdminUser {
         username: name.to_string(),
-        password_hash: hash,
+        password_hash: hash.clone(),
     }];
     if let Err(e) = crate::config::HttpConfig::save_admin_users(&state.http_config_path, &users) {
         return ApiError::internal(format!("写入管理员配置失败: {e:#}")).into_response();
@@ -331,7 +331,7 @@ async fn do_setup(
 
     state.set_admins(users);
     crate::setup::clear_token();
-    let token = state.sessions.create(name);
+    let token = state.sessions.create(name, &hash);
     let cookie = auth::session_cookie(&state, &token);
     state
         .audit(name, "setup", "fftp-http.toml", "首次设置完成，已创建管理员")

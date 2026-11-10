@@ -15,6 +15,21 @@ use russh::keys::{PrivateKey, ssh_key};
 /// 密钥文件读取/解析失败、目录创建或写入失败时返回错误
 pub async fn load_or_generate_host_key(path: &Path) -> Result<PrivateKey> {
     if path.exists() {
+        // 既有私钥权限过宽时收紧到 0600，避免同机其他用户读取
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            if let Ok(meta) = std::fs::metadata(path)
+                && meta.permissions().mode() & 0o077 != 0
+            {
+                tracing::warn!(
+                    "SFTP host key permissions too open, tightening to 0600: {}",
+                    path.display()
+                );
+                let _ =
+                    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600));
+            }
+        }
         let key_data = tokio::fs::read_to_string(path).await?;
         let key = PrivateKey::from_openssh(&key_data)?;
         tracing::info!("Loaded existing SFTP host key: {}", path.display());
@@ -41,7 +56,7 @@ pub async fn generate_new_host_key(path: &Path) -> Result<PrivateKey> {
     let mut rng = russh::keys::key::safe_rng();
     let key = PrivateKey::random(&mut rng, ssh_key::Algorithm::Ed25519)?;
     let openssh = key.to_openssh(ssh_key::LineEnding::default())?;
-    tokio::fs::write(path, openssh.to_string()).await?;
+    write_private_key(path, &openssh.to_string()).await?;
     tracing::info!("Generated SFTP host private key: {}", path.display());
 
     let pub_path = pub_key_path(path);
@@ -50,6 +65,29 @@ pub async fn generate_new_host_key(path: &Path) -> Result<PrivateKey> {
     tracing::info!("Generated SFTP host public key: {}", pub_path.display());
 
     Ok(key)
+}
+
+/// 以 0600 权限写入私钥（Unix 下创建即 0600，避免先写后 chmod 的窗口）
+async fn write_private_key(path: &Path, contents: &str) -> Result<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        use tokio::io::AsyncWriteExt;
+
+        let mut options = tokio::fs::OpenOptions::new();
+        options.write(true).create(true).truncate(true).mode(0o600);
+        let mut file = options.open(path).await?;
+        file.write_all(contents.as_bytes()).await?;
+        file.flush().await?;
+        // 既有文件可能权限过宽，显式收紧
+        tokio::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600)).await?;
+        Ok(())
+    }
+    #[cfg(not(unix))]
+    {
+        tokio::fs::write(path, contents).await?;
+        Ok(())
+    }
 }
 
 /// 检查并按 `rotation_days` 轮换主机密钥

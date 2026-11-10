@@ -38,6 +38,19 @@ pub fn is_anonymous_name(username: &str) -> bool {
     username.eq_ignore_ascii_case("anonymous") || username.eq_ignore_ascii_case("ftp")
 }
 
+/// 会话跟踪使用的规范用户名：匿名别名统一为 `anonymous`
+///
+/// 认证成功时按规范名登记，登出事件携带的却是客户端原始用户名
+/// （`ftp` / `ANONYMOUS` 等），必须归一到同一键，否则连接数永久泄漏。
+#[must_use]
+pub fn canonical_username(username: &str) -> &str {
+    if is_anonymous_name(username) {
+        "anonymous"
+    } else {
+        username
+    }
+}
+
 /// 会话根解析模式（docs/design.md §4 存储组装）
 #[derive(Debug, Clone)]
 pub enum RootMode {
@@ -146,18 +159,18 @@ impl SessionTracker {
             .insert(trace_id, username.to_string());
     }
 
-    /// 注销用户最早登记的一次连接，返回其 IP
+    /// 注销用户最近登记的一次连接，返回其 IP
     #[must_use]
     pub fn unregister(&self, username: &str) -> Option<String> {
         let mut sessions = self.sessions.lock().unwrap();
         if let Some(ips) = sessions.get_mut(username)
             && !ips.is_empty()
         {
-            let ip = ips.remove(0);
+            let ip = ips.pop();
             if ips.is_empty() {
                 sessions.remove(username);
             }
-            return Some(ip);
+            return ip;
         }
         None
     }
@@ -341,8 +354,19 @@ impl FtpAuthenticator {
     }
 
     /// 认证失败统一处理：注销连接登记、累计失败、写指标与审计
-    async fn reject(&self, username: &str, client_ip: &str, reason: &str) -> AuthenticationError {
-        self.connections.unregister(client_ip);
+    ///
+    /// `registered` 表示本次请求是否已通过连接数登记；未登记（用户名非法、
+    /// IP 被拒、连接超限等）时不能注销，否则可被用来压低已有会话的计数。
+    async fn reject(
+        &self,
+        username: &str,
+        client_ip: &str,
+        reason: &str,
+        registered: bool,
+    ) -> AuthenticationError {
+        if registered {
+            self.connections.unregister(client_ip);
+        }
         self.fail2ban.add_failure(client_ip).await;
         fftp_common::metrics::record_auth_failure();
         self.logging.write_audit(
@@ -410,7 +434,7 @@ impl Authenticator for FtpAuthenticator {
         // 1. 用户名合法性（认证前拦截非法输入）
         if !is_safe_username(username) {
             return Err(self
-                .reject(username, &client_ip, "用户名不合法")
+                .reject(username, &client_ip, "用户名不合法", false)
                 .await);
         }
 
@@ -464,40 +488,52 @@ impl Authenticator for FtpAuthenticator {
                 }
             };
             if let Some(reason) = denied {
-                return Err(self.reject(username, &client_ip, &reason).await);
+                return Err(self.reject(username, &client_ip, &reason, true).await);
             }
             return Ok(self.accept("anonymous", &client_ip).await);
         }
 
         // 5b. 名义用户：口令校验（登录前 reload users.json，支持外部热更新）
         let Some(password) = creds.password.as_deref() else {
-            return Err(self.reject(username, &client_ip, "缺少口令").await);
+            return Err(self.reject(username, &client_ip, "缺少口令", true).await);
         };
 
-        let known = {
-            let mut users = self.users.lock().unwrap();
+        // Argon2id 校验是 CPU 密集型同步操作，必须放到阻塞线程，
+        // 否则并发 PASS 会占满 tokio worker（未认证 DoS）。
+        let users = Arc::clone(&self.users);
+        let username_owned = username.to_string();
+        let password_owned = password.to_string();
+        let dummy_hash = self.dummy_hash.clone();
+        let known = tokio::task::spawn_blocking(move || {
+            let mut users = users.lock().unwrap();
             if let Err(e) = users.reload(&fftp_common::paths::users_path()) {
                 tracing::warn!("重新加载用户库失败: {e}");
             }
-            match users.get_user(username) {
-                Some(_) => users
-                    .authenticate(username, password)
+            if users.get_user(&username_owned).is_some() {
+                users
+                    .authenticate(&username_owned, &password_owned)
                     .unwrap_or_else(|e| {
                         tracing::error!("口令校验异常: {e}");
                         false
-                    }),
-                None => {
-                    // 未知用户：等价耗时的哑校验后按失败处理
-                    dummy_verify(password, &self.dummy_hash);
-                    false
-                }
+                    })
+            } else {
+                // 未知用户：等价耗时的哑校验后按失败处理
+                dummy_verify(&password_owned, &dummy_hash);
+                false
             }
-        };
+        })
+        .await
+        .unwrap_or_else(|e| {
+            tracing::error!("认证阻塞任务失败: {e}");
+            false
+        });
 
         if known {
             Ok(self.accept(username, &client_ip).await)
         } else {
-            Err(self.reject(username, &client_ip, "用户名或口令错误").await)
+            Err(self
+                .reject(username, &client_ip, "用户名或口令错误", true)
+                .await)
         }
     }
 
@@ -686,9 +722,9 @@ mod tests {
         tracker.register_trace("t1".to_string(), "alice", "10.0.0.1".to_string());
         assert_eq!(tracker.get_ip_by_trace("t1").as_deref(), Some("10.0.0.1"));
 
-        // 先进先出注销
-        assert_eq!(tracker.unregister("alice").as_deref(), Some("10.0.0.1"));
+        // 后进先出注销，与 get_ip_for_user 的 last() 语义保持一致
         assert_eq!(tracker.unregister("alice").as_deref(), Some("10.0.0.2"));
+        assert_eq!(tracker.unregister("alice").as_deref(), Some("10.0.0.1"));
         assert_eq!(tracker.unregister("alice"), None);
     }
 

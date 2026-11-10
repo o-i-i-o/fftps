@@ -38,6 +38,10 @@ socket2 = "0.6"
 # 连接清理守卫
 scopeguard = "1.2"
 
+[target.'cfg(unix)'.dependencies]
+# O_NOFOLLOW 等打开标志
+nix = { workspace = true }
+
 [dev-dependencies]
 tempfile = "3"
 

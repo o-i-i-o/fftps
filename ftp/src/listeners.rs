@@ -112,10 +112,13 @@ impl PresenceListener for FtpPresenceListener {
     async fn receive_presence_event(&self, event: PresenceEvent, meta: EventMeta) {
         match event {
             PresenceEvent::LoggedIn => {
-                if let Some(client_ip) = self.sessions.get_ip_for_user(&meta.username) {
+                // 认证时匿名别名统一登记为 `anonymous`，事件里却是原始
+                // 用户名（ftp/ANONYMOUS），必须归一到同一键
+                let username = crate::auth::canonical_username(&meta.username);
+                if let Some(client_ip) = self.sessions.get_ip_for_user(username) {
                     self.sessions.register_trace(
-                        meta.trace_id.to_string(),
-                        &meta.username,
+                        meta.trace_id.clone(),
+                        username,
                         client_ip,
                     );
                 }
@@ -132,12 +135,13 @@ impl PresenceListener for FtpPresenceListener {
                 );
             }
             PresenceEvent::LoggedOut => {
-                // 匿名/未知会话按 trace 注销，其余按用户名注销
-                let client_ip = if self.sessions.get_ip_for_user(&meta.username).is_some() {
-                    self.sessions.unregister(&meta.username)
-                } else {
-                    self.sessions.unregister_by_trace(&meta.trace_id)
-                };
+                // 优先按 trace 精确注销（同名多连接不会错配），
+                // 没有 trace 映射时再按规范用户名回退
+                let username = crate::auth::canonical_username(&meta.username);
+                let client_ip = self
+                    .sessions
+                    .unregister_by_trace(&meta.trace_id)
+                    .or_else(|| self.sessions.unregister(username));
 
                 if let Some(ip) = client_ip {
                     self.connections.unregister(&ip);

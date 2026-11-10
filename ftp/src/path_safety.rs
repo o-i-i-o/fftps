@@ -59,13 +59,21 @@ impl std::fmt::Display for PathError {
 
 impl std::error::Error for PathError {}
 
-/// 路径前缀包含判断（Windows 不区分大小写）
+/// 路径前缀包含判断（Windows 按路径成分忽略大小写，Unix 严格比较）
+///
+/// Windows 下不能做字符串前缀比较，否则 `C:\Users\alice2` 会被误判为
+/// `C:\Users\alice` 的子路径，导致跨用户越权。
 pub fn path_starts_with_ignore_case<P: AsRef<Path>>(path: &Path, prefix: P) -> bool {
     #[cfg(windows)]
     {
-        let path_str = path.to_string_lossy().to_lowercase();
-        let prefix_str = prefix.as_ref().to_string_lossy().to_lowercase();
-        path_str.starts_with(&prefix_str)
+        let mut path_components = path.components();
+        for prefix_component in prefix.as_ref().components() {
+            match path_components.next() {
+                Some(component) if component_eq_ignore_case(&component, &prefix_component) => {}
+                _ => return false,
+            }
+        }
+        true
     }
     #[cfg(not(windows))]
     {
@@ -73,13 +81,34 @@ pub fn path_starts_with_ignore_case<P: AsRef<Path>>(path: &Path, prefix: P) -> b
     }
 }
 
-/// 路径相等判断（Windows 不区分大小写）
+/// 单个路径成分的大小写不敏感比较（Windows 专用）
+#[cfg(windows)]
+fn component_eq_ignore_case(
+    a: &std::path::Component<'_>,
+    b: &std::path::Component<'_>,
+) -> bool {
+    use std::path::Component;
+
+    fn eq_os(a: &OsStr, b: &OsStr) -> bool {
+        a.to_string_lossy().to_lowercase() == b.to_string_lossy().to_lowercase()
+    }
+
+    match (a, b) {
+        (Component::Prefix(pa), Component::Prefix(pb)) => eq_os(pa.as_os_str(), pb.as_os_str()),
+        (Component::RootDir, Component::RootDir) => true,
+        (Component::CurDir, Component::CurDir) => true,
+        (Component::ParentDir, Component::ParentDir) => true,
+        (Component::Normal(a), Component::Normal(b)) => eq_os(a, b),
+        _ => false,
+    }
+}
+
+/// 路径相等判断（Windows 按成分忽略大小写）
 pub fn paths_equal_ignore_case<P1: AsRef<Path>, P2: AsRef<Path>>(path1: P1, path2: P2) -> bool {
     #[cfg(windows)]
     {
-        let s1 = path1.as_ref().to_string_lossy().to_lowercase();
-        let s2 = path2.as_ref().to_string_lossy().to_lowercase();
-        s1 == s2
+        path_starts_with_ignore_case(path1.as_ref(), path2.as_ref())
+            && path_starts_with_ignore_case(path2.as_ref(), path1.as_ref())
     }
     #[cfg(not(windows))]
     {
@@ -225,6 +254,15 @@ fn canonicalize_and_validate(
             Ok(canon)
         }
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            // 目标本身是符号链接却无法 canonicalize（悬空/成环）：无法确认
+            // 最终落点，拒绝，避免后续 create/write 跟随链接逃逸根目录。
+            if let Ok(meta) = resolved.symlink_metadata()
+                && meta.file_type().is_symlink()
+            {
+                tracing::warn!(path = %resolved.display(), "目标为悬空符号链接，拒绝");
+                return Err(PathError::SymlinkNotAllowed);
+            }
+
             // 目标（或中间段）不存在：校验最近存在的祖先目录仍在根之下
             let mut ancestor = resolved.to_path_buf();
             loop {
@@ -455,5 +493,26 @@ mod tests {
         std::os::unix::fs::symlink(root.path().join("sub"), root.path().join("inner")).unwrap();
         std::fs::create_dir(root.path().join("sub")).unwrap();
         assert!(resolve_in_root(root.path(), "/inner", true).is_ok());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_resolve_in_root_rejects_dangling_symlink() {
+        let root = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        std::os::unix::fs::symlink(
+            outside.path().join("created.txt"),
+            root.path().join("dangling"),
+        )
+        .unwrap();
+
+        assert_eq!(
+            resolve_in_root(root.path(), "/dangling", false).unwrap_err(),
+            PathError::SymlinkNotAllowed
+        );
+        assert_eq!(
+            resolve_in_root(root.path(), "/dangling", true).unwrap_err(),
+            PathError::SymlinkNotAllowed
+        );
     }
 }

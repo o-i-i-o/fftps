@@ -10,9 +10,6 @@ use crate::types::{
     SftpFileHandle, MAX_HANDLES, SFTP_READ_BUFFER_SIZE, SFTP_WRITE_FLUSH_THRESHOLD,
 };
 
-/// 写打开时的配额预留粒度（100 MiB）
-const QUOTA_RESERVE_BYTES: u64 = 100 * 1024 * 1024;
-
 impl SftpState {
     /// `SSH_FXP_OPEN`：打开文件并创建句柄
     ///
@@ -67,42 +64,49 @@ impl SftpState {
             full_path.display()
         );
 
+        // 配额预检必须在截断/创建之前完成：配额不足时不能留下副作用
+        // （旧实现先 truncate 再检查，失败时原文件内容已丢失）。
+        let original_size = if file_existed {
+            tokio::fs::metadata(&full_path)
+                .await
+                .map_or(0, |m| m.len())
+        } else {
+            0
+        };
+        let quota_mb = self.cached_permissions.as_ref().and_then(|p| p.quota_mb);
+        if (need_write || need_append)
+            && let Some(quota) = quota_mb
+            && !self.quota_manager.check_quota(self.audit_user(), quota, 0)
+        {
+            tracing::warn!(
+                "SFTP OPEN denied: quota already exceeded for user {:?}",
+                self.username
+            );
+            return Err(status_err(StatusCode::Failure, "Quota exceeded"));
+        }
+
+        let current_size = if need_trunc { 0 } else { original_size };
+
         let file_result = if need_write || need_append {
             if need_excl && need_creat && file_existed {
                 return Err(status_err(StatusCode::Failure, "File already exists"));
             }
 
+            let mut options = tokio::fs::OpenOptions::new();
+            options.read(need_read).write(true);
             if need_append {
-                tokio::fs::OpenOptions::new()
-                    .read(need_read)
-                    .write(true)
-                    .create(need_creat)
-                    .append(true)
-                    .open(&full_path)
-                    .await
+                options.append(true).create(need_creat);
             } else if need_trunc {
-                tokio::fs::OpenOptions::new()
-                    .read(need_read)
-                    .write(true)
-                    .create(need_creat)
-                    .truncate(true)
-                    .open(&full_path)
-                    .await
+                options.create(need_creat).truncate(true);
             } else if need_creat {
-                tokio::fs::OpenOptions::new()
-                    .read(need_read)
-                    .write(true)
-                    .create(true)
-                    .truncate(false)
-                    .open(&full_path)
-                    .await
-            } else {
-                tokio::fs::OpenOptions::new()
-                    .read(need_read)
-                    .write(true)
-                    .open(&full_path)
-                    .await
+                options.create(true).truncate(false);
             }
+            #[cfg(unix)]
+            {
+                // 路径解析已拒绝悬空链接，这里再用 O_NOFOLLOW 加一道内核级保险
+                options.custom_flags(nix::libc::O_NOFOLLOW);
+            }
+            options.open(&full_path).await
         } else {
             tokio::fs::File::open(&full_path).await
         };
@@ -110,39 +114,6 @@ impl SftpState {
         match file_result {
             Ok(file) => {
                 let handle = self.generate_handle();
-
-                let original_size = if file_existed {
-                    tokio::fs::metadata(&full_path)
-                        .await
-                        .map_or(0, |m| m.len())
-                } else {
-                    0
-                };
-
-                let quota_reserved = if need_write || need_append {
-                    let quota_mb = self.cached_permissions.as_ref().and_then(|p| p.quota_mb);
-                    if let Some(quota) = quota_mb {
-                        let username = self.audit_user();
-                        if self.quota_manager.try_reserve_quota(
-                            username,
-                            QUOTA_RESERVE_BYTES,
-                            quota,
-                        ) {
-                            QUOTA_RESERVE_BYTES
-                        } else {
-                            tracing::warn!(
-                                "SFTP OPEN denied: quota exceeded for user {:?}",
-                                self.username
-                            );
-                            return Err(status_err(StatusCode::Failure, "Quota exceeded"));
-                        }
-                    } else {
-                        0
-                    }
-                } else {
-                    0
-                };
-
                 self.handles.insert(
                     handle.clone(),
                     SftpFileHandle::File {
@@ -154,8 +125,10 @@ impl SftpState {
                         read_bytes: 0,
                         pending_flush_bytes: 0,
                         last_access: std::time::Instant::now(),
-                        quota_reserved,
+                        quota_reserved: 0,
                         original_size,
+                        current_size,
+                        append: need_append,
                     },
                 );
                 tracing::debug!("SFTP OPEN: handle '{handle}' created for {filename}");
@@ -218,20 +191,23 @@ impl SftpState {
                         .await
                         .map_or(written_bytes, |m| m.len());
 
-                    let actual_new_bytes = if existed {
-                        file_size.saturating_sub(original_size)
-                    } else {
-                        file_size
-                    };
+                    let actual_new_bytes = file_size.saturating_sub(original_size);
+                    let shrunk_bytes = original_size.saturating_sub(file_size);
 
                     if quota_reserved > 0 {
                         let username = self.audit_user().to_string();
                         self.quota_manager
                             .commit_usage(&username, quota_reserved, actual_new_bytes);
-                    } else if let Some(username) = &self.username
-                        && actual_new_bytes > 0
-                    {
-                        self.quota_manager.add_usage(username, actual_new_bytes);
+                        if shrunk_bytes > 0 {
+                            self.quota_manager.subtract_usage(&username, shrunk_bytes);
+                        }
+                    } else if let Some(username) = &self.username {
+                        if actual_new_bytes > 0 {
+                            self.quota_manager.add_usage(username, actual_new_bytes);
+                        }
+                        if shrunk_bytes > 0 {
+                            self.quota_manager.subtract_usage(username, shrunk_bytes);
+                        }
                     }
 
                     if existed {
@@ -394,12 +370,20 @@ impl SftpState {
             limiter.acquire(data_len).await;
         }
 
+        // 写入前先取配额上下文，避免与 handles 的可变借用冲突
+        let quota_mb = self.cached_permissions.as_ref().and_then(|p| p.quota_mb);
+        let quota_username = self.audit_user().to_string();
+        let quota_manager = std::sync::Arc::clone(&self.quota_manager);
+
         let Some(SftpFileHandle::File {
             path,
             file,
             written_bytes,
             pending_flush_bytes,
             last_access,
+            quota_reserved,
+            current_size,
+            append,
             ..
         }) = self
             .handles
@@ -418,6 +402,29 @@ impl SftpState {
             return Err(status_err(StatusCode::Failure, "Invalid handle"));
         };
 
+        // 按写入增量实时预检配额：旧实现只在 OPEN 预留固定额度，
+        // 写路径完全不校验，可无限写满磁盘。
+        let write_end = if *append {
+            current_size.saturating_add(data_len as u64)
+        } else {
+            offset.saturating_add(data_len as u64)
+        };
+        let new_end = write_end.max(*current_size);
+        let growth = new_end.saturating_sub(*current_size);
+        if growth > 0
+            && let Some(quota) = quota_mb
+            && !quota_manager.try_reserve_quota(&quota_username, growth, quota)
+        {
+            tracing::warn!(
+                "SFTP WRITE denied: quota exceeded for user {:?}, need {growth} bytes",
+                self.username
+            );
+            return Err(status_err(StatusCode::Failure, "Quota exceeded"));
+        }
+        if growth > 0 {
+            *quota_reserved = (*quota_reserved).saturating_add(growth);
+        }
+
         if let Err(e) = file.seek(std::io::SeekFrom::Start(offset)).await {
             tracing::error!("SFTP WRITE seek error for {path:?}: {e}");
             return Err(status_err(StatusCode::Failure, &format!("Seek error: {e}")));
@@ -431,6 +438,7 @@ impl SftpState {
         let written = data_len as u64;
         *written_bytes += written;
         *pending_flush_bytes += written;
+        *current_size = new_end;
         *last_access = std::time::Instant::now();
 
         if *pending_flush_bytes >= SFTP_WRITE_FLUSH_THRESHOLD as u64 {

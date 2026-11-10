@@ -21,10 +21,13 @@
 
 use std::fmt::Debug;
 use std::path::{Component, Path, PathBuf};
+use std::pin::Pin;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, RwLock as StdRwLock};
+use std::task::{Context, Poll};
 
 use async_trait::async_trait;
-use tokio::io::AsyncRead;
+use tokio::io::{AsyncRead, ReadBuf};
 use unftp_core::storage::{Error, ErrorKind, Fileinfo, Metadata, Result, StorageBackend};
 
 use fftp_common::rate_limit::{RateLimitedReader, effective_speed_limit_kbps};
@@ -33,9 +36,50 @@ use fftp_common::{Config, QuotaManager};
 use crate::auth::FtpUser;
 use crate::path_safety::{PathError, normalize_virtual_path, resolve_in_root};
 
-/// 写入配额预留估算值（迁移自 wftpd-windows `QuotaFilesystem`）：
-/// 上传大小未知，先按 100MB 预留，完成后按实际字节结算
-const ESTIMATED_MAX_FILE_SIZE: u64 = 100 * 1024 * 1024;
+/// 上传读取包装：每读到一批数据即按增量预留配额，超限立即中止传输
+///
+/// 旧实现固定按 100MB 预留，既会误拒小配额用户的小文件，也无法阻止
+/// 超过预留值的超大上传；按实际流经字节预留可精确控制上限。
+struct QuotaReservingReader<R> {
+    inner: R,
+    quota: Arc<QuotaManager>,
+    username: String,
+    quota_mb: Option<u64>,
+    /// 已成功预留的字节数（供传输失败/结算时回滚）
+    reserved: Arc<AtomicU64>,
+    /// 是否因配额超限中止（用于映射为配额错误）
+    denied: Arc<AtomicBool>,
+}
+
+impl<R: AsyncRead + Unpin> AsyncRead for QuotaReservingReader<R> {
+    fn poll_read(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &mut ReadBuf<'_>,
+    ) -> Poll<std::io::Result<()>> {
+        let this = self.get_mut();
+        let before = buf.filled().len();
+        match Pin::new(&mut this.inner).poll_read(cx, buf) {
+            Poll::Ready(Ok(())) => {
+                let read = buf.filled().len().saturating_sub(before) as u64;
+                if read > 0
+                    && let Some(quota_mb) = this.quota_mb
+                {
+                    if !this
+                        .quota
+                        .try_reserve_quota(&this.username, read, quota_mb)
+                    {
+                        this.denied.store(true, Ordering::Relaxed);
+                        return Poll::Ready(Err(std::io::Error::other("配额超限")));
+                    }
+                    this.reserved.fetch_add(read, Ordering::Relaxed);
+                }
+                Poll::Ready(Ok(()))
+            }
+            other => other,
+        }
+    }
+}
 
 /// 路径防护 + 配额 + 限速的存储封装层
 #[derive(Debug)]
@@ -183,22 +227,49 @@ where
     ) -> Result<u64> {
         let (virt, _) = self.guard(user, path.as_ref())?;
         let username = user.username.as_str();
+        let quota_mb = user.permissions.quota_mb;
 
-        // 配额：先预留估算值，完成后按实际字节结算
-        let reserved = user.permissions.quota_mb.and_then(|quota_mb| {
-            if self
-                .quota
-                .try_reserve_quota(username, ESTIMATED_MAX_FILE_SIZE, quota_mb)
-            {
-                Some(ESTIMATED_MAX_FILE_SIZE)
-            } else {
-                None
-            }
-        });
-        if user.permissions.quota_mb.is_some() && reserved.is_none() {
+        // 配额预检：已耗尽时直接拒绝，避免传输到一半才失败
+        if let Some(quota) = quota_mb
+            && !self.quota.check_quota(username, quota, 0)
+        {
             tracing::warn!(username, "上传被配额超限拦截");
             return Err(quota_exceeded());
         }
+
+        // REST 偏移落在文件末尾之后会通过 set_len 直接占盘，先按空洞增量预留
+        let existing_size = self
+            .inner
+            .metadata(user, &virt)
+            .await
+            .map_or(0, |meta| meta.len());
+        let seek_growth = start_pos.saturating_sub(existing_size);
+        if seek_growth > 0
+            && let Some(quota) = quota_mb
+            && !self
+                .quota
+                .try_reserve_quota(username, seek_growth, quota)
+        {
+            tracing::warn!(username, "上传被配额超限拦截（REST 偏移）");
+            return Err(quota_exceeded());
+        }
+        let upfront_reserved = if quota_mb.is_some() {
+            seek_growth
+        } else {
+            0
+        };
+
+        // 流式预留：每读取一批数据就按增量检查配额
+        let streamed = Arc::new(AtomicU64::new(0));
+        let denied = Arc::new(AtomicBool::new(false));
+        let quota_reader = QuotaReservingReader {
+            inner: input,
+            quota: Arc::clone(&self.quota),
+            username: username.to_string(),
+            quota_mb,
+            reserved: Arc::clone(&streamed),
+            denied: Arc::clone(&denied),
+        };
 
         let limit = effective_speed_limit_kbps(
             self.global_speed_kbps(),
@@ -207,16 +278,28 @@ where
         let upload_result = if limit > 0 {
             tracing::debug!(username, limit_kbps = limit, "上传限速生效");
             self.inner
-                .put(user, RateLimitedReader::new(input, limit), &virt, start_pos)
+                .put(
+                    user,
+                    RateLimitedReader::new(quota_reader, limit),
+                    &virt,
+                    start_pos,
+                )
                 .await
         } else {
-            self.inner.put(user, input, &virt, start_pos).await
+            self.inner.put(user, quota_reader, &virt, start_pos).await
         };
+
+        let streamed_bytes = streamed.load(Ordering::Relaxed);
+        let total_reserved = upfront_reserved.saturating_add(streamed_bytes);
 
         match upload_result {
             Ok(bytes_written) => {
-                if let Some(reserved) = reserved {
-                    self.quota.commit_usage(username, reserved, bytes_written);
+                if quota_mb.is_some() {
+                    // 按最终文件大小二次复核增量，避免恢复/覆盖场景多计
+                    let final_size = existing_size.max(start_pos.saturating_add(bytes_written));
+                    let actual_growth = final_size.saturating_sub(existing_size);
+                    self.quota
+                        .commit_usage(username, total_reserved, actual_growth);
                 } else {
                     // 未设配额的用户同样记账用量（供统计与前端展示）
                     self.quota.add_usage(username, bytes_written);
@@ -224,10 +307,15 @@ where
                 Ok(bytes_written)
             }
             Err(e) => {
-                if let Some(reserved) = reserved {
-                    self.quota.rollback_reservation(username, reserved);
+                if total_reserved > 0 {
+                    self.quota.rollback_reservation(username, total_reserved);
                 }
-                Err(e)
+                if denied.load(Ordering::Relaxed) {
+                    tracing::warn!(username, "上传因配额超限中途终止");
+                    Err(quota_exceeded())
+                } else {
+                    Err(e)
+                }
             }
         }
     }
@@ -362,14 +450,51 @@ mod tests {
         let quota_dir = tempfile::tempdir().unwrap();
         let fs = make_fs(base.path(), quota_dir.path());
         let mut user = make_user(base.path(), ".");
-        // 预留估算值 100MB > 1MB 配额 → 直接拒绝
         user.permissions.quota_mb = Some(1);
+        // 先占满 1MB 配额，上传前预检应直接拒绝
+        fs.quota.add_usage("alice", 1024 * 1024);
 
         let err = fs
             .put(&user, &b"x"[..], Path::new("/big.bin"), 0)
             .await
             .unwrap_err();
         assert_eq!(err.kind(), ErrorKind::InsufficientStorageSpaceError);
+    }
+
+    #[tokio::test]
+    async fn test_small_quota_allows_small_upload() {
+        let base = tempfile::tempdir().unwrap();
+        let quota_dir = tempfile::tempdir().unwrap();
+        let fs = make_fs(base.path(), quota_dir.path());
+        let mut user = make_user(base.path(), ".");
+        user.permissions.quota_mb = Some(1);
+
+        // 剩余配额不足 100MB 也不应误拒小文件
+        let written = fs
+            .put(&user, &b"small"[..], Path::new("/small.txt"), 0)
+            .await
+            .unwrap();
+        assert_eq!(written, 5);
+        assert_eq!(fs.quota.get_usage("alice"), 5);
+    }
+
+    #[tokio::test]
+    async fn test_quota_exceeded_midstream_rolls_back() {
+        let base = tempfile::tempdir().unwrap();
+        let quota_dir = tempfile::tempdir().unwrap();
+        let fs = make_fs(base.path(), quota_dir.path());
+        let mut user = make_user(base.path(), ".");
+        user.permissions.quota_mb = Some(1);
+
+        // 2MB 数据超过 1MB 配额：流式预留失败，预留在错误后回滚
+        let data = std::io::Cursor::new(vec![0u8; 2 * 1024 * 1024]);
+        let err = fs
+            .put(&user, data, Path::new("/oversize.bin"), 0)
+            .await
+            .unwrap_err();
+        assert_eq!(err.kind(), ErrorKind::InsufficientStorageSpaceError);
+        assert_eq!(fs.quota.get_usage("alice"), 0);
+        assert_eq!(fs.quota.get_reserved("alice"), 0);
     }
 
     #[tokio::test]
