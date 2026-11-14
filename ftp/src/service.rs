@@ -405,7 +405,6 @@ impl FtpService {
             Arc::clone(&self.fail2ban),
             Arc::clone(&self.connections),
             Arc::clone(&self.sessions),
-            Arc::clone(&self.logging),
         ));
 
         let user_detail_provider = Arc::new(FtpUserDetailProvider::new(
@@ -437,7 +436,6 @@ impl FtpService {
                 .notify_presence(FtpPresenceListener::new(
                     Arc::clone(&self.sessions),
                     Arc::clone(&self.connections),
-                    Arc::clone(&self.logging),
                 ))
                 // libunftp 内建的连续登录失败惩罚与共享层 fail2ban 叠加生效
                 .failed_logins_policy(FailedLoginsPolicy::new(
@@ -740,7 +738,6 @@ mod tests {
             Arc::new(Fail2BanManager::new(&dir.path().join("state"), &security)),
             Arc::new(ConnectionLimiter::new(&security)),
             Arc::new(SessionTracker::new()),
-            Arc::new(Logging::new(&LoggingConfig::default())),
         );
 
         let creds = |password: &str| Credentials {
@@ -831,7 +828,6 @@ mod tests {
             Arc::new(Fail2BanManager::new(&dir.path().join("state"), &security)),
             Arc::new(ConnectionLimiter::new(&security)),
             Arc::new(SessionTracker::new()),
-            Arc::new(Logging::new(&LoggingConfig::default())),
         );
 
         let creds = Credentials {

@@ -191,6 +191,13 @@ pub enum Command {
         target: String,
         details: String,
     },
+    /// GUI 触发的文件操作审计（如创建用户主目录），写入 file-ops 审计日志
+    WriteFileOpLog {
+        username: String,
+        operation: String,
+        file_path: String,
+        details: String,
+    },
 }
 
 /// 服务操作目标

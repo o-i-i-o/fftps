@@ -264,7 +264,7 @@ fn is_valid_log_level(level: &str) -> bool {
     )
 }
 
-/// `WriteAuditLog`：经共享层写入文件操作审计
+/// `WriteAuditLog`：GUI 管理审计（登录/配置变更等，写入程序日志而非 file-ops）
 pub fn write_audit_log(
     state: &AppState,
     user: &str,
@@ -273,6 +273,20 @@ pub fn write_audit_log(
     details: &str,
 ) -> Value {
     state.logging.write_audit(user, action, target, details);
+    json!({ "recorded": true })
+}
+
+/// `WriteFileOpLog`：GUI 触发的文件操作审计（写入 file-ops，协议标记 `GUI`）
+pub fn write_file_op_log(
+    state: &AppState,
+    username: &str,
+    operation: &str,
+    file_path: &str,
+    details: &str,
+) -> Value {
+    state
+        .logging
+        .write_gui_file_op(username, operation, file_path, details);
     json!({ "recorded": true })
 }
 

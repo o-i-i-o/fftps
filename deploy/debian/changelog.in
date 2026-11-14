@@ -1,4 +1,4 @@
-fftp-http (@VERSION@) stable; urgency=medium
+fftps (@VERSION@) stable; urgency=medium
 
   * Release version @VERSION@
   * Support SFTP and FTP(FTPS) server management

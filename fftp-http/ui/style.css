@@ -12,8 +12,6 @@
   --danger: #c2352b;
   --ok: #1a7f37;
   --warn: #b45309;
-  --console-bg: #14181f;
-  --console-text: #d7dde6;
   --radius: 8px;
 }
 
@@ -254,7 +252,7 @@ details.json-card[open] summary { margin-bottom: 12px; }
   font-size: 13px; min-width: 190px; background: var(--surface); color: var(--text);
 }
 .filter-input:focus { outline: 2px solid color-mix(in srgb, var(--primary) 30%, transparent); border-color: var(--primary); }
-.line.filtered, .optable tbody tr.filtered { display: none; }
+.optable tbody tr.filtered { display: none; }
 .form-actions .spacer { flex: 1; }
 .notice-box { width: 440px; text-align: center; }
 .notice-box h3 { color: var(--danger); }
@@ -262,27 +260,6 @@ code {
   background: var(--surface-muted); border-radius: 4px; padding: 1px 5px;
   font-family: ui-monospace, "Cascadia Mono", Consolas, monospace; font-size: 12px;
 }
-
-.console {
-  background: var(--console-bg);
-  color: var(--console-text);
-  border-radius: 6px;
-  height: 420px;
-  overflow-y: auto;
-  padding: 8px 10px;
-  font-family: ui-monospace, "Cascadia Mono", Consolas, monospace;
-  font-size: 12px;
-  line-height: 1.55;
-}
-.console.small { height: 420px; }
-.console .line { white-space: pre-wrap; word-break: break-all; }
-.console .t-dim { color: #7c8593; }
-.console .lvl-ERROR { color: #ff6b5e; font-weight: 600; }
-.console .lvl-WARN { color: #f0b429; }
-.console .lvl-INFO { color: #7cc4ff; }
-.console .lvl-DEBUG { color: #9aa4b1; }
-.console .lvl-TRACE { color: #6b7280; }
-.console .sysline { color: #f0b429; font-style: italic; }
 
 /* 历史日志文件下拉 */
 .file-select { max-width: 260px; }
@@ -297,6 +274,12 @@ table.optable td.path { white-space: normal; word-break: break-all; }
 table.optable th { color: var(--text-muted); font-weight: 500; position: sticky; top: 0; background: var(--surface); }
 .op-ok { color: var(--ok); }
 .op-fail { color: var(--danger); }
+
+/* 程序日志表格：级别配色 */
+table.optable td.lvl-ERROR { color: var(--danger); font-weight: 600; }
+table.optable td.lvl-WARN { color: var(--warn); font-weight: 600; }
+table.optable td.lvl-INFO { color: var(--ok); }
+table.optable td.lvl-DEBUG, table.optable td.lvl-TRACE { color: var(--text-muted); }
 
 /* ---------- 登录遮罩 / 提示 ---------- */
 

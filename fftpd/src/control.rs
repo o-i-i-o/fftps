@@ -119,6 +119,19 @@ impl Handler for ControlHandler {
                 })
                 .await
             }
+            Command::WriteFileOpLog {
+                username,
+                operation,
+                file_path,
+                details,
+            } => {
+                self.run_blocking(move |state| {
+                    Ok(logs::write_file_op_log(
+                        state, &username, &operation, &file_path, &details,
+                    ))
+                })
+                .await
+            }
         }
     }
 }

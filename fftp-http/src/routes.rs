@@ -803,7 +803,7 @@ async fn create_user_dir(
         })
         .await?;
     state
-        .audit(&user.0, "create_dir", &body.path, "创建用户主目录")
+        .audit_file_op(&user.0, "MKDIR", &body.path, "创建用户主目录")
         .await;
     Ok(Json(data))
 }
@@ -821,7 +821,7 @@ async fn setup_dir_perms(
         })
         .await?;
     state
-        .audit(&user.0, "setup_permissions", &body.path, "设置目录权限")
+        .audit_file_op(&user.0, "CHMOD", &body.path, "设置目录权限")
         .await;
     Ok(Json(data))
 }

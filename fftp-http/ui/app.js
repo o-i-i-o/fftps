@@ -537,33 +537,37 @@ function createStream(cfg) {
   return { start, stop };
 }
 
-// ---------- 程序日志：实时流（左） ----------
+// ---------- 程序日志：实时流（左，与文件操作日志页同款表格样式） ----------
 
-function logLine(entry) {
-  const div = document.createElement("div");
-  div.className = "line";
-  const extra = [entry.client_ip, entry.username, entry.action].filter(Boolean).join(" ");
-  const raw = [entry.timestamp, entry.level, entry.source, entry.message, extra].filter(Boolean).join(" ");
-  div.dataset.filter = raw;
-  div.innerHTML =
-    `<span class="t-dim">${escapeHtml(fmtTime(entry.timestamp))}</span> ` +
-    `<span class="lvl-${escapeHtml(entry.level)}">${escapeHtml(entry.level)}</span> ` +
-    `<span class="t-dim">[${escapeHtml(entry.source)}]</span> ` +
-    escapeHtml(entry.message) +
-    (extra ? ` <span class="t-dim">(${escapeHtml(extra)})</span>` : "");
-  div.classList.toggle("filtered", !matchesFilter(raw, $("log-filter").value));
-  return div;
+function buildLogTable() {
+  const table = document.createElement("table");
+  table.className = "optable";
+  table.innerHTML =
+    "<thead><tr><th>时间</th><th>级别</th><th>来源</th><th>用户</th><th>客户端</th>" +
+    "<th>操作</th><th>消息</th></tr></thead><tbody></tbody>";
+  return table;
+}
+
+function logRow(entry) {
+  const tr = document.createElement("tr");
+  const raw = [entry.timestamp, entry.level, entry.source, entry.message,
+    entry.client_ip, entry.username, entry.action].filter(Boolean).join(" ");
+  tr.dataset.filter = raw;
+  tr.classList.toggle("filtered", !matchesFilter(raw, $("log-filter").value));
+  tr.innerHTML =
+    `<td>${escapeHtml(fmtTime(entry.timestamp))}</td>` +
+    `<td class="lvl-${escapeHtml(entry.level)}">${escapeHtml(entry.level)}</td>` +
+    `<td>${escapeHtml(entry.source)}</td>` +
+    `<td>${escapeHtml(entry.username || "—")}</td>` +
+    `<td>${escapeHtml(entry.client_ip || "—")}</td>` +
+    `<td>${escapeHtml(entry.action || "—")}</td>` +
+    `<td class="path">${escapeHtml(entry.message)}</td>`;
+  return tr;
 }
 
 function matchesFilter(raw, query) {
   const q = String(query || "").trim().toLowerCase();
   return !q || String(raw || "").toLowerCase().includes(q);
-}
-
-function applyLogFilter(view, query) {
-  for (const el of view.children) {
-    el.classList.toggle("filtered", !matchesFilter(el.dataset.filter || el.textContent, query));
-  }
 }
 
 function applyTableFilter(wrap, query) {
@@ -572,25 +576,32 @@ function applyTableFilter(wrap, query) {
   }
 }
 
-$("log-filter").addEventListener("input", () => applyLogFilter($("log-view"), $("log-filter").value));
-$("logfile-filter").addEventListener("input", () => applyLogFilter($("logfile-view"), $("logfile-filter").value));
+$("log-filter").addEventListener("input", () => applyTableFilter($("log-view"), $("log-filter").value));
+$("logfile-filter").addEventListener("input", () => applyTableFilter($("logfile-view"), $("logfile-filter").value));
 $("fop-filter").addEventListener("input", () => applyTableFilter($("fop-live"), $("fop-filter").value));
 $("fileop-filter").addEventListener("input", () => applyTableFilter($("fileop-view"), $("fileop-filter").value));
 
 function appendLog(entry) {
-  const view = $("log-view");
-  view.appendChild(logLine(entry));
-  while (view.childElementCount > 5000) view.removeChild(view.firstChild);
-  if ($("log-autoscroll").checked) view.scrollTop = view.scrollHeight;
+  const wrap = $("log-view");
+  let table = wrap.querySelector("table");
+  if (!table) {
+    wrap.textContent = "";
+    table = buildLogTable();
+    wrap.appendChild(table);
+  }
+  const tbody = table.tBodies[0];
+  tbody.appendChild(logRow(entry));
+  while (tbody.rows.length > 5000) tbody.deleteRow(0);
+  if ($("log-autoscroll").checked) wrap.scrollTop = wrap.scrollHeight;
 }
 
 function appendSysLine(text) {
-  const view = $("log-view");
-  const div = document.createElement("div");
-  div.className = "sysline";
-  div.textContent = "— " + text + " —";
-  view.appendChild(div);
-  if ($("log-autoscroll").checked) view.scrollTop = view.scrollHeight;
+  const wrap = $("log-view");
+  const p = document.createElement("p");
+  p.className = "hint";
+  p.textContent = "— " + text + " —";
+  wrap.appendChild(p);
+  wrap.scrollTop = wrap.scrollHeight;
 }
 
 const logStream = createStream({
@@ -646,9 +657,12 @@ async function loadLogFileContent() {
       body: { path, count: parseInt($("logfile-count").value, 10) },
     });
     view.textContent = "";
-    for (const e of entries) view.appendChild(logLine(e));
-    if (!entries.length) view.textContent = "（无记录）";
-    applyLogFilter(view, $("logfile-filter").value);
+    if (!entries.length) { view.textContent = "（无记录）"; return; }
+    const table = buildLogTable();
+    const tbody = table.tBodies[0];
+    for (const e of entries) tbody.appendChild(logRow(e));
+    view.appendChild(table);
+    applyTableFilter(view, $("logfile-filter").value);
     view.scrollTop = view.scrollHeight;
   } catch (e) {
     view.textContent = "加载失败：" + errMsg(e);

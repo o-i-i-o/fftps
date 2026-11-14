@@ -2,7 +2,8 @@
 //!
 //! - [`FtpDataListener`]：数据事件 → 文件操作审计（[`Logging::write_file_op`]）
 //!   + 传输字节审计；
-//! - [`FtpPresenceListener`]：登录/登出事件 → 会话 trace 映射、连接数注销、审计。
+//! - [`FtpPresenceListener`]：登录/登出事件 → 会话 trace 映射、连接数注销
+//!   （会话事件经 tracing 写入程序日志，不写文件操作审计）。
 
 use std::fmt;
 use std::sync::Arc;
@@ -75,16 +76,15 @@ impl DataListener for FtpDataListener {
     }
 }
 
-/// 会话事件监听器：会话 trace 映射、连接数注销、会话审计
+/// 会话事件监听器：会话 trace 映射、连接数注销
 pub struct FtpPresenceListener {
     sessions: Arc<SessionTracker>,
     connections: Arc<ConnectionLimiter>,
-    logging: Arc<Logging>,
 }
 
 impl fmt::Debug for FtpPresenceListener {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        // 共享层组件（Logging）无 Debug，仅给出类型标识
+        // 共享层组件（SessionTracker）无 Debug，仅给出类型标识
         f.debug_struct("FtpPresenceListener")
             .finish_non_exhaustive()
     }
@@ -93,15 +93,10 @@ impl fmt::Debug for FtpPresenceListener {
 impl FtpPresenceListener {
     /// 创建会话事件监听器
     #[must_use]
-    pub fn new(
-        sessions: Arc<SessionTracker>,
-        connections: Arc<ConnectionLimiter>,
-        logging: Arc<Logging>,
-    ) -> Self {
+    pub fn new(sessions: Arc<SessionTracker>, connections: Arc<ConnectionLimiter>) -> Self {
         FtpPresenceListener {
             sessions,
             connections,
-            logging,
         }
     }
 }
@@ -118,12 +113,7 @@ impl PresenceListener for FtpPresenceListener {
                     self.sessions
                         .register_trace(meta.trace_id.clone(), username, client_ip);
                 }
-                self.logging.write_audit(
-                    &meta.username,
-                    "SESSION_START",
-                    "ftp",
-                    &format!("会话 {} 建立", meta.trace_id),
-                );
+                // 会话建立属程序日志（tracing），不写文件操作审计
                 tracing::info!(
                     username = %meta.username,
                     trace_id = %meta.trace_id,
@@ -143,12 +133,7 @@ impl PresenceListener for FtpPresenceListener {
                     self.connections.unregister(&ip);
                     tracing::debug!(ip = %ip, "FTP 连接数登记已注销");
                 }
-                self.logging.write_audit(
-                    &meta.username,
-                    "SESSION_END",
-                    "ftp",
-                    &format!("会话 {} 结束", meta.trace_id),
-                );
+                // 会话结束属程序日志（tracing），不写文件操作审计
                 tracing::info!(
                     username = %meta.username,
                     trace_id = %meta.trace_id,
@@ -202,14 +187,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_presence_listener_registers_and_unregisters() {
-        let logging = Arc::new(Logging::new(&LoggingConfig::default()));
         let sessions = Arc::new(SessionTracker::new());
         let connections = Arc::new(ConnectionLimiter::default());
-        let listener = FtpPresenceListener::new(
-            Arc::clone(&sessions),
-            Arc::clone(&connections),
-            Arc::clone(&logging),
-        );
+        let listener = FtpPresenceListener::new(Arc::clone(&sessions), Arc::clone(&connections));
 
         sessions.register("alice", "10.0.0.1".to_string());
         assert!(connections.try_register("10.0.0.1"));

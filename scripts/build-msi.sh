@@ -2,8 +2,8 @@
 # FFTPS Windows MSI 安装包构建脚本（WiX 5，x86_64 / arm64 双架构）
 #
 # 产出统一放到 dist/：
-#   dist/fftps-http_<version>_windows-x64.msi
-#   dist/fftps-http_<version>_windows-arm64.msi
+#   dist/fftps_<version>_windows-x64.msi
+#   dist/fftps_<version>_windows-arm64.msi
 #
 # MSI 特性（与原 NSIS 安装器语义对齐，见 deploy/windows/fftps.wxs 头注释）：
 #   - 原生 msiexec（ARM64 Windows 上无 x86 模拟 stub）
@@ -126,7 +126,7 @@ log_info "版本: ${VERSION}（WiX arch: ${WIX_ARCH}）"
 log_info "产物目录: ${BIN_DIR}"
 log_info "输出目录: ${OUTPUT_DIR}"
 
-MSI_FILE="${OUTPUT_DIR}/fftps-http-${VERSION}-windows-${ARCH}.msi"
+MSI_FILE="${OUTPUT_DIR}/fftps-${VERSION}-windows-${ARCH}.msi"
 
 cd "${PROJECT_DIR}"
 wix build \

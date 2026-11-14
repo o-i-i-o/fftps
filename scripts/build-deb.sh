@@ -2,7 +2,7 @@
 # FFTPS DEB 打包脚本（Debian / Ubuntu / UOS / 麒麟等 debian 系）
 #
 # 产出统一放到 dist/：
-#   dist/fftp-http_<version>_<amd64|arm64>.deb
+#   dist/fftps_<version>_<amd64|arm64>.deb
 #
 # 打包物料统一位于 deploy/：
 #   deploy/common/    两个 systemd 用户单元、桌面入口、图标、配置模板
@@ -57,7 +57,7 @@ DEPLOY_DIR="${PROJECT_DIR}/deploy"
 DEPLOY_COMMON="${DEPLOY_DIR}/common"
 DEPLOY_DEBIAN="${DEPLOY_DIR}/debian"
 DIST_DIR="${PROJECT_DIR}/dist"
-PACKAGE="fftp-http"
+PACKAGE="fftps"
 SHARE_DIR="usr/share/fftpd"
 
 detect_arch() {
@@ -200,7 +200,7 @@ check_dependencies
 BUILD_MODE=$([ "$DEBUG_MODE" = true ] && echo "" || echo "--release")
 
 echo "========================================"
-echo "  FFTPS DEB 打包（fftp-http）"
+echo "  FFTPS DEB 打包（fftp suite：fftpd + fftp-http）"
 echo "========================================"
 echo "版本: ${VERSION}"
 echo "架构: ${TARGET_ARCH}"
@@ -335,7 +335,7 @@ log_success "构建成功: ${deb_file} ($(du -h "$deb_file" | cut -f1))"
 echo ""
 echo "安装方法:"
 echo "  sudo apt install ${deb_file}"
-echo "  （请用 apt 而不是 dpkg -i：本包 Conflicts/Replaces 旧的 fftps/fftp-gui，"
+echo "  （请用 apt 而不是 dpkg -i：本包 Conflicts/Replaces 旧的 fftp-http/fftp-gui，"
 echo "    apt 会自动移除旧包及其 ftp-gui 桌面入口）"
 echo ""
 echo "安装时会为活跃桌面用户自动启用并启动 fftpd（无需 root）。"
@@ -345,5 +345,5 @@ echo "启动 Web 管理界面:"
 echo "  从应用菜单打开「FFTPS」，或执行 fftp-http launch"
 echo ""
 echo "卸载方法:"
-echo "  sudo apt remove fftp-http"
+echo "  sudo apt remove fftps"
 echo "========================================"

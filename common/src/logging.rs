@@ -4,8 +4,11 @@
 //!   程序日志支持 JSON 与文本两种格式（[`LoggingConfig::enable_json`]），审计日志恒为 JSON 行；
 //!   两类文件均按「日期 + 单文件大小」轮转，保留 [`LoggingConfig::max_log_files`] 份；
 //! - 内存环形缓冲（[`RingBuffer`]）：程序日志经常驻的 [`MemoryLogLayer`] 捕获
-//!   （逐条按 `enable_gui_logging` 判断，运行期切换即时生效），审计条目由
+//!   （逐条按 `enable_gui_logging` 判断，运行期切换即时生效）；审计条目由
 //!   [`Logging::write_file_op`] 直接写入，供 IPC 拉取（`recent`）与订阅（`subscribe`）；
+//! - GUI 管理审计（[`Logging::write_audit`]，登录/配置变更等）只进程序日志；
+//!   文件操作审计（[`Logging::write_file_op`]，FTP/SFTP/GUI）只进 file-ops：
+//!   文件日志只包含文件操作记录；
 //! - 日志文件管理：[`Logging::list_log_files`] / [`Logging::read_log_file`]（程序日志）与
 //!   [`Logging::list_file_op_log_files`] / [`Logging::read_file_op_log`]（审计）。
 //!
@@ -45,6 +48,9 @@ pub const PROGRAM_LOG_PREFIX: &str = "fftpd";
 pub const FILE_OP_LOG_PREFIX: &str = "file-ops";
 /// 文件操作审计的 tracing target（与旧版一致，路由到审计日志文件）
 pub const AUDIT_TARGET: &str = "file_ops";
+/// GUI 管理审计的 tracing target（写入程序日志文件/控制台；
+/// 内存层排除该 target，避免与 [`Logging::write_audit`] 的直接 push 重复）
+pub const GUI_AUDIT_TARGET: &str = "gui_audit";
 
 /// 程序日志条目（与 `fftp_ipc::protocol::LogEntry` 字段一一对应）
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -230,7 +236,9 @@ impl<S: Subscriber> Layer<S> for MemoryLogLayer {
             return;
         }
         let metadata = event.metadata();
-        if metadata.target().starts_with(AUDIT_TARGET) {
+        if metadata.target().starts_with(AUDIT_TARGET)
+            || metadata.target().starts_with(GUI_AUDIT_TARGET)
+        {
             return;
         }
 
@@ -351,17 +359,46 @@ impl Logging {
         );
     }
 
-    /// 审计写入口（对应 IPC `WriteAuditLog`）。
+    /// GUI 管理审计写入口（对应 IPC `WriteAuditLog`）。
     ///
-    /// 字段映射：`user`→`username`、`action`→`operation`、`target`→`file_path`、
-    /// `details`→`message`；`protocol` 记为 `GUI`，`file_size` 为 0。
+    /// 记录 Web 管理操作（登录、保存配置、服务启停等）——**不是文件操作**，
+    /// 因此只写入程序日志（内存缓冲 + `gui_audit` target → 程序日志文件/控制台），
+    /// 不进 file-ops 审计文件；文件操作请用 [`Self::write_gui_file_op`]。
+    ///
+    /// 字段映射：`user`→`username`、`action`→`action`、`target`→消息前缀、`details`→`message`。
     pub fn write_audit(&self, user: &str, action: &str, target: &str, details: &str) {
+        if self.live_config().enable_gui_logging {
+            self.log_buffer.push(LogEntry {
+                timestamp: chrono::Local::now().to_rfc3339(),
+                level: "INFO".to_string(),
+                source: GUI_AUDIT_TARGET.to_string(),
+                message: format!("{target}: {details}"),
+                client_ip: String::new(),
+                username: user.to_string(),
+                action: action.to_string(),
+            });
+        }
+
+        // 程序日志文件/控制台；内存层排除 gui_audit target（上面已直接 push，避免重复）
+        tracing::info!(
+            target: GUI_AUDIT_TARGET,
+            username = user,
+            client_ip = "",
+            action = action,
+            "GUI 管理操作: {target}: {details}"
+        );
+    }
+
+    /// GUI 文件操作审计写入口（对应 IPC `WriteFileOpLog`）：
+    /// Web 触发的文件操作（如创建用户主目录），与 FTP/SFTP 的文件操作
+    /// 一样进入 file-ops 审计（协议标记为 `GUI`）。
+    pub fn write_gui_file_op(&self, user: &str, operation: &str, file_path: &str, details: &str) {
         self.write_file_op(&FileOpLogEntry {
             timestamp: chrono::Local::now().to_rfc3339(),
             username: user.to_string(),
             client_ip: String::new(),
-            operation: action.to_string(),
-            file_path: target.to_string(),
+            operation: operation.to_string(),
+            file_path: file_path.to_string(),
             file_size: 0,
             protocol: "GUI".to_string(),
             success: true,
@@ -659,7 +696,7 @@ fn install_subscriber(
                 buffer: log_buffer.clone(),
                 live_config,
             }
-            .with_filter(filter.with_target(FILE_OP_LOG_PREFIX, LevelFilter::OFF)),
+            .with_filter(filter.with_target(AUDIT_TARGET, LevelFilter::OFF)),
         );
     let subscriber = Box::new(subscriber) as Box<dyn Subscriber + Send + Sync>;
 
@@ -984,17 +1021,34 @@ mod tests {
     // ---- 审计写入 ----
 
     #[test]
-    fn write_audit_lands_in_file_op_buffer() {
+    fn write_audit_lands_in_program_log_buffer() {
         let (_dir, logging) = temp_logging(true, false);
         logging.write_audit("admin", "save_config", "config.toml", "修改端口");
+
+        // 管理审计写入程序日志缓冲（不进文件操作审计）
+        let recent = logging.log_buffer().recent(10);
+        assert_eq!(recent.len(), 1);
+        let entry = &recent[0];
+        assert_eq!(entry.username, "admin");
+        assert_eq!(entry.action, "save_config");
+        assert_eq!(entry.source, GUI_AUDIT_TARGET);
+        assert_eq!(entry.message, "config.toml: 修改端口");
+        assert!(entry.timestamp.contains('T'), "时间戳应为 RFC3339");
+        assert!(logging.file_op_buffer().is_empty(), "管理审计不应进文件操作缓冲");
+    }
+
+    #[test]
+    fn write_gui_file_op_lands_in_file_op_buffer() {
+        let (_dir, logging) = temp_logging(true, false);
+        logging.write_gui_file_op("admin", "MKDIR", "/home/u/Desktop", "创建用户主目录");
 
         let recent = logging.file_op_buffer().recent(10);
         assert_eq!(recent.len(), 1);
         let entry = &recent[0];
         assert_eq!(entry.username, "admin");
-        assert_eq!(entry.operation, "save_config");
-        assert_eq!(entry.file_path, "config.toml");
-        assert_eq!(entry.message, "修改端口");
+        assert_eq!(entry.operation, "MKDIR");
+        assert_eq!(entry.file_path, "/home/u/Desktop");
+        assert_eq!(entry.message, "创建用户主目录");
         assert_eq!(entry.protocol, "GUI");
         assert!(entry.success);
         assert_eq!(entry.file_size, 0);
@@ -1017,7 +1071,7 @@ mod tests {
             message: "ok".into(),
         });
         assert!(
-            logging.file_op_buffer().is_empty(),
+            logging.file_op_buffer().is_empty() && logging.log_buffer().is_empty(),
             "关闭 GUI 日志时只记文件不进缓冲"
         );
     }
@@ -1139,8 +1193,8 @@ mod tests {
     #[test]
     fn read_log_file_roundtrip_via_logging() {
         let (dir, logging) = temp_logging(true, false);
-        logging.write_audit("u", "UPLOAD", "/a", "ok");
-        logging.write_audit("u", "DELETE", "/b", "nope");
+        logging.write_gui_file_op("u", "UPLOAD", "/a", "ok");
+        logging.write_gui_file_op("u", "DELETE", "/b", "nope");
 
         // 审计内容经 tracing 写入文件需要全局 subscriber；此处直接构造文件验证读取路径
         let file_op = dir.path().join("file-ops.2026-10-21.log");

@@ -2,8 +2,8 @@
 # FFTPS Windows zip 交付物打包脚本（x86_64 / arm64）
 #
 # 产出统一放到 dist/：
-#   dist/fftps-http_<version>_windows-x64.zip
-#   dist/fftps-http_<version>_windows-arm64.zip
+#   dist/fftps_<version>_windows-x64.zip
+#   dist/fftps_<version>_windows-arm64.zip
 #
 # zip 内容（扁平结构，解压后双击 install.bat 即装）：
 #   fftpd.exe / fftp-http.exe / fftp-http-launcher.exe
@@ -117,7 +117,7 @@ if ! grep -q "\$Version = '${VERSION}'" "${STAGE}/install.ps1"; then
     exit 1
 fi
 
-ZIP_FILE="${OUTPUT_DIR}/fftps-http-${VERSION}-windows-${ZIP_ARCH}.zip"
+ZIP_FILE="${OUTPUT_DIR}/fftps-${VERSION}-windows-${ZIP_ARCH}.zip"
 (cd "$STAGE" && zip -9 -q "$ZIP_FILE" *.exe *.bat *.ps1 *.toml)
 
 log_success "构建成功: ${ZIP_FILE} ($(du -h "$ZIP_FILE" | cut -f1))"

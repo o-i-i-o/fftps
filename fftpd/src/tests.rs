@@ -545,7 +545,7 @@ async fn log_forwarder_pushes_file_op_events_to_subscribers() {
     tokio::time::sleep(Duration::from_millis(100)).await;
     env.state
         .logging
-        .write_audit("admin", "save_config", "config.toml", "修改端口");
+        .write_gui_file_op("admin", "MKDIR", "/home/u/Desktop", "创建用户主目录");
 
     let event = tokio::time::timeout(Duration::from_secs(2), rx.recv())
         .await
@@ -554,7 +554,7 @@ async fn log_forwarder_pushes_file_op_events_to_subscribers() {
     match event {
         Event::FileOp { entry } => {
             assert_eq!(entry.username, "admin");
-            assert_eq!(entry.operation, "save_config");
+            assert_eq!(entry.operation, "MKDIR");
         }
         Event::Log { .. } => panic!("意外的程序日志推送"),
     }
@@ -562,7 +562,7 @@ async fn log_forwarder_pushes_file_op_events_to_subscribers() {
 }
 
 #[tokio::test]
-async fn write_audit_records_to_file_op_buffer() {
+async fn write_audit_records_to_program_log_buffer() {
     let env = TestEnv::new();
 
     let data = env
@@ -576,11 +576,35 @@ async fn write_audit_records_to_file_op_buffer() {
         .expect("WriteAuditLog");
     assert_eq!(data["recorded"], json!(true));
 
+    // 管理审计写入程序日志缓冲，不进文件操作审计
+    let recent = env.state.logging.log_buffer().recent(10);
+    assert_eq!(recent.len(), 1);
+    assert_eq!(recent[0].username, "admin");
+    assert_eq!(recent[0].action, "save_config");
+    assert_eq!(recent[0].message, "config.toml: 修改端口");
+    assert!(env.state.logging.file_op_buffer().is_empty());
+}
+
+#[tokio::test]
+async fn write_file_op_log_records_to_file_op_buffer() {
+    let env = TestEnv::new();
+
+    let data = env
+        .call(Command::WriteFileOpLog {
+            username: "admin".to_string(),
+            operation: "MKDIR".to_string(),
+            file_path: "/home/u/Desktop".to_string(),
+            details: "创建用户主目录".to_string(),
+        })
+        .await
+        .expect("WriteFileOpLog");
+    assert_eq!(data["recorded"], json!(true));
+
     let recent = env.state.logging.file_op_buffer().recent(10);
     assert_eq!(recent.len(), 1);
     assert_eq!(recent[0].username, "admin");
-    assert_eq!(recent[0].operation, "save_config");
-    assert_eq!(recent[0].file_path, "config.toml");
+    assert_eq!(recent[0].operation, "MKDIR");
+    assert_eq!(recent[0].file_path, "/home/u/Desktop");
     assert_eq!(recent[0].protocol, "GUI");
 }
 

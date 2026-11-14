@@ -1,11 +1,11 @@
-# FFTPS RPM 规格（fftp-http Web 管理版）
+# FFTPS RPM 规格（fftp suite：fftpd + fftp-http）
 #
 # 由 scripts/build-rpm.sh 调用，使用预编译的 fftpd / fftp-http：
 #   rpmbuild -bb --target aarch64 \
 #       --define "_fftp_version 0.1.1" \
 #       --define "_fftp_bin_dir $PWD/dist/aarch64-unknown-linux-gnu" \
 #       --define "_fftp_project_dir $PWD" \
-#       deploy/rpm/fftp-http.spec
+#       deploy/rpm/fftps.spec
 
 %global debug_package %{nil}
 # 交叉打包 aarch64 时宿主 strip 无法处理目标 ELF；二进制在 Cargo 构建时已 strip
@@ -16,13 +16,13 @@
 %{!?_fftp_bin_dir:%global _fftp_bin_dir %{_sourcedir}}
 %{!?_fftp_project_dir:%global _fftp_project_dir .}
 
-Name:           fftp-http
+Name:           fftps
 Version:        %{_fftp_version}
 Release:        1
 Summary:        SFTP/FTP(FTPS) server suite with Web management frontend
 License:        GPL-3.0
 URL:            https://github.com/fftps/fftps
-Conflicts:      fftps
+Conflicts:      fftp-http
 Conflicts:      fftp-gui
 Requires:       glibc
 # 交叉架构打包时关闭宿主依赖扫描，依赖已显式声明
@@ -58,8 +58,8 @@ install -m 0644 %{_fftp_project_dir}/deploy/common/config.toml %{buildroot}/usr/
 install -m 0644 %{_fftp_project_dir}/deploy/common/fftp-http.toml \
     %{buildroot}/usr/share/fftpd/fftp-http.toml
 
-install -d %{buildroot}/usr/share/licenses/fftp-http
-install -m 0644 %{_fftp_project_dir}/LICENSE %{buildroot}/usr/share/licenses/fftp-http/LICENSE
+install -d %{buildroot}/usr/share/licenses/fftps
+install -m 0644 %{_fftp_project_dir}/LICENSE %{buildroot}/usr/share/licenses/fftps/LICENSE
 
 %post
 if command -v update-desktop-database >/dev/null 2>&1; then
@@ -138,7 +138,7 @@ exit 0
 
 %files
 %defattr(-,root,root,-)
-%license /usr/share/licenses/fftp-http/LICENSE
+%license /usr/share/licenses/fftps/LICENSE
 /usr/bin/fftpd
 /usr/bin/fftp-http
 /usr/lib/systemd/user/fftpd.service

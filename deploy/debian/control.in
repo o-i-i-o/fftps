@@ -1,11 +1,11 @@
-Package: fftp-http
+Package: fftps
 Version: @VERSION@
 Section: net
 Priority: optional
 Architecture: @ARCH@
 Maintainer: fftps developers <developers@fftps.dev>
-Conflicts: fftps, fftp-gui
-Replaces: fftps, fftp-gui
+Conflicts: fftp-http, fftp-gui
+Replaces: fftp-http, fftp-gui
 Homepage: https://github.com/fftps/fftps
 Depends: libc6
 Installed-Size: @INSTALLED_SIZE@

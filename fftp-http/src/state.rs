@@ -80,7 +80,7 @@ impl AppState {
         *self.admins.write_recover() = Arc::new(users);
     }
 
-    /// 写审计日志（经 fftpd 落盘；失败仅告警，不影响主流程）
+    /// 写审计日志（经 fftpd 落盘到程序日志；失败仅告警，不影响主流程）
     pub async fn audit(&self, user: &str, action: &str, target: &str, details: &str) {
         let cmd = Command::WriteAuditLog {
             user: user.to_string(),
@@ -90,6 +90,19 @@ impl AppState {
         };
         if let Err(e) = self.daemon.request(cmd).await {
             tracing::warn!("审计写入失败（action={action} user={user}）: {e}");
+        }
+    }
+
+    /// 写 GUI 文件操作审计（经 fftpd 落盘到 file-ops 审计日志；失败仅告警）
+    pub async fn audit_file_op(&self, username: &str, operation: &str, file_path: &str, details: &str) {
+        let cmd = Command::WriteFileOpLog {
+            username: username.to_string(),
+            operation: operation.to_string(),
+            file_path: file_path.to_string(),
+            details: details.to_string(),
+        };
+        if let Err(e) = self.daemon.request(cmd).await {
+            tracing::warn!("文件操作审计写入失败（operation={operation} user={username}）: {e}");
         }
     }
 }

@@ -6,11 +6,10 @@
 //! - [`fftp_common::config::Config`]：IP 黑白名单、匿名开关、FTP 根目录；
 //! - [`fftp_common::fail2ban::Fail2BanManager`]：失败统计与封禁；
 //! - [`fftp_common::rate_limit::ConnectionLimiter`]：并发连接数治理；
-//! - [`fftp_common::logging::Logging`]：审计与日志。
 //!
 //! 认证链顺序：用户名合法性 → IP 黑白名单 → fail2ban 封禁 → 连接数登记 →
 //! 匿名分支 / 用户名口令校验；成功登记会话并清零失败计数，失败注销连接登记、
-//! 累计失败并写审计。
+//! 累计失败计数。登录/拒绝事件经 tracing 写入程序日志，不进文件操作审计。
 
 use fftp_common::sync::{MutexExt, RwLockExt};
 use std::collections::HashMap;
@@ -27,7 +26,6 @@ use unftp_sbe_restrict::{UserWithPermissions, VfsOperations};
 use unftp_sbe_rooter::UserWithRoot;
 
 use fftp_common::fail2ban::Fail2BanManager;
-use fftp_common::logging::Logging;
 use fftp_common::rate_limit::ConnectionLimiter;
 use fftp_common::users::is_safe_username;
 use fftp_common::{Config, Permissions, UserManager};
@@ -320,7 +318,6 @@ pub struct FtpAuthenticator {
     fail2ban: Arc<Fail2BanManager>,
     connections: Arc<ConnectionLimiter>,
     sessions: Arc<SessionTracker>,
-    logging: Arc<Logging>,
     /// 未知用户恒定时间校验用的哑哈希
     dummy_hash: String,
 }
@@ -341,7 +338,6 @@ impl FtpAuthenticator {
         fail2ban: Arc<Fail2BanManager>,
         connections: Arc<ConnectionLimiter>,
         sessions: Arc<SessionTracker>,
-        logging: Arc<Logging>,
     ) -> Self {
         FtpAuthenticator {
             users,
@@ -349,12 +345,11 @@ impl FtpAuthenticator {
             fail2ban,
             connections,
             sessions,
-            logging,
             dummy_hash: generate_dummy_hash(),
         }
     }
 
-    /// 认证失败统一处理：注销连接登记、累计失败、写审计
+    /// 认证失败统一处理：注销连接登记、累计失败计数
     ///
     /// `registered` 表示本次请求是否已通过连接数登记；未登记（用户名非法、
     /// IP 被拒、连接超限等）时不能注销，否则可被用来压低已有会话的计数。
@@ -369,26 +364,16 @@ impl FtpAuthenticator {
             self.connections.unregister(client_ip);
         }
         self.fail2ban.add_failure(client_ip).await;
-        self.logging.write_audit(
-            username,
-            "AUTH_FAIL",
-            "ftp",
-            &format!("{reason} (from {client_ip})"),
-        );
+        // 登录失败属程序日志（tracing），不写文件操作审计
         tracing::warn!(username, ip = client_ip, "FTP 认证失败: {reason}");
         AuthenticationError::BadPassword
     }
 
-    /// 认证成功统一处理：登记会话、清零失败计数、写审计
+    /// 认证成功统一处理：登记会话、清零失败计数
     async fn accept(&self, username: &str, client_ip: &str) -> Principal {
         self.sessions.register(username, client_ip.to_string());
         self.fail2ban.reset_failures(client_ip).await;
-        self.logging.write_audit(
-            username,
-            "LOGIN",
-            "ftp",
-            &format!("登录成功 (from {client_ip})"),
-        );
+        // 登录成功属程序日志（tracing），不写文件操作审计
         tracing::info!(username, ip = client_ip, "FTP 用户登录成功");
         Principal {
             username: username.to_string(),
@@ -443,12 +428,7 @@ impl Authenticator for FtpAuthenticator {
                 &cfg.security.denied_ips,
                 &client_ip,
             ) {
-                self.logging.write_audit(
-                    username,
-                    "IP_BLOCKED",
-                    "ftp",
-                    &format!("IP 被安全策略拒绝 (from {client_ip})"),
-                );
+                // IP 策略拒绝属程序日志（tracing），不写文件操作审计
                 tracing::warn!(ip = %client_ip, "FTP 连接被 IP 策略拒绝");
                 return Err(AuthenticationError::IpDisallowed);
             }
