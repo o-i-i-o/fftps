@@ -17,7 +17,8 @@ tracing = { workspace = true }
 chrono = { workspace = true }
 
 # SSH/SFTP 协议层（russh 传输 + 并入的 russh-sftp 协议实现）
-russh = "0.64"
+# 加密后端统一 ring（default 含 aws-lc-rs，见 ftp/Cargo.toml 说明）
+russh = { version = "0.64", default-features = false, features = ["flate2", "ring", "rsa"] }
 bytes = { workspace = true }
 serde = { workspace = true }
 serde_bytes = { workspace = true }

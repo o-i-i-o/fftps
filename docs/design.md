@@ -198,8 +198,8 @@ enable_gui_logging = true
 
 ## 7. 交叉编译
 
-- 目标矩阵：`x86_64-unknown-linux-gnu`、`aarch64-unknown-linux-gnu`、`x86_64-unknown-linux-musl`、`x86_64-pc-windows-gnu`（可选 `x86_64-pc-windows-msvc`）；
-- 工具：`cargo-zigbuild`（linux 全目标 + windows-gnu），windows-gnu 需 mingw 链接器；本机已装 rustup 目标与 cargo-zigbuild；
+- 目标矩阵：`x86_64-unknown-linux-gnu`、`aarch64-unknown-linux-gnu`、`x86_64-unknown-linux-musl`、`x86_64-pc-windows-gnu`、`aarch64-pc-windows-msvc`；
+- 工具：`cargo-zigbuild`（linux 全目标 + windows-gnu），windows-gnu 需 mingw 链接器；ARM64 Windows 走 `aarch64-pc-windows-msvc` + `cargo-xwin`（clang-cl）；本机已装 rustup 目标与 cargo-zigbuild；
 - `scripts/build.sh <target>`：统一入口，产物落 `dist/<target>/{fftpd,fftp-http}`（Windows 另含 `fftp-http-launcher.exe`）；
 - 阶段3：deploy/common/（fftpd.service、fftp-http.service、桌面入口）+ Windows NSIS 安装器（`deploy/windows/fftps-http.nsi`，经 `scripts/build-nsis.sh` 打包）；CI 走 GitHub Actions 矩阵。
 

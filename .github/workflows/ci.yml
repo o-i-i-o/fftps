@@ -2,7 +2,7 @@
 #
 # 单一产品形态：fftpd 后端 + fftp-http Web 管理前端
 #   - Linux: deb / rpm / tar.gz（amd64 + arm64），附 systemd --user 单元与桌面入口
-#   - Windows: NSIS 安装器（setup.exe，x86_64），注册 fftpd 服务并创建快捷方式
+#   - Windows: NSIS 安装器（setup.exe，x86_64 + arm64），注册 fftpd 服务并创建快捷方式
 # 推送 v* 标签时自动构建并创建 GitHub Release
 # 注：cargo fmt 检查暂未纳入——common/ipc/ftp/sftp 在当前 stable rustfmt
 # 下存在全量格式漂移（迁移前遗留，另行列清理项）；clippy 同样不加 -D warnings，
@@ -67,6 +67,7 @@ jobs:
           - aarch64-unknown-linux-gnu
           - x86_64-unknown-linux-musl
           - x86_64-pc-windows-gnu
+          - aarch64-pc-windows-msvc
     steps:
       - name: 检出代码
         uses: actions/checkout@v5
@@ -85,24 +86,35 @@ jobs:
       - name: 安装 cargo-zigbuild
         run: cargo install cargo-zigbuild --locked
 
+      # ARM64 Windows（msvc）交叉编译走 cargo-xwin + clang-cl
+      - name: 安装 cargo-xwin（arm64 Windows）
+        if: matrix.target == 'aarch64-pc-windows-msvc'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang llvm
+          cargo install cargo-xwin --locked
+
       - name: 缓存 Cargo 构建产物
         uses: Swatinem/rust-cache@v2
         with:
           key: ${{ matrix.target }}
 
-      # 统一入口：linux 全目标与 windows-gnu 均走 cargo-zigbuild
+      # 统一入口：linux 全目标与 windows-gnu 走 cargo-zigbuild，arm64 msvc 走 cargo-xwin
       - name: 构建（scripts/build.sh）
         run: ./scripts/build.sh ${{ matrix.target }}
 
       - name: 安装 NSIS
-        if: matrix.target == 'x86_64-pc-windows-gnu'
+        if: contains(matrix.target, 'windows')
         run: |
           sudo apt-get update
           sudo apt-get install -y nsis
 
       - name: 构建 Windows 安装器（NSIS）
-        if: matrix.target == 'x86_64-pc-windows-gnu'
-        run: ./scripts/build-nsis.sh
+        if: contains(matrix.target, 'windows')
+        run: |
+          ARCH="x86_64"
+          [[ "${{ matrix.target }}" == aarch64* ]] && ARCH="arm64"
+          ./scripts/build-nsis.sh -a "$ARCH"
 
       - name: 上传构建产物
         uses: actions/upload-artifact@v4

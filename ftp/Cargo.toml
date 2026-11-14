@@ -25,7 +25,9 @@ argon2 = { workspace = true }
 chrono = { workspace = true }
 
 # FTP/FTPS 服务端（版本对齐 wftpd-windows/wftpd/Cargo.toml）
-libunftp = { version = "0.23.1", default-features = false, features = ["aws_lc_rs"] }
+# TLS 后端统一 ring（与 rustls provider 一致；aws_lc_rs 会引入 aws-lc-sys 的 C 构建，
+# 在 aarch64-pc-windows-msvc 交叉编译下无法通过）
+libunftp = { version = "0.23.1", default-features = false, features = ["ring"] }
 unftp-core = "0.1.1"
 unftp-sbe-fs = "0.4.1"
 unftp-sbe-rooter = "0.3.1"

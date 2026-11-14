@@ -10,10 +10,13 @@
 #   aarch64-unknown-linux-gnu    fftpd / fftp-http
 #   x86_64-unknown-linux-musl    fftpd / fftp-http
 #   x86_64-pc-windows-gnu        fftpd.exe / fftp-http.exe / fftp-http-launcher.exe
+#   aarch64-pc-windows-msvc      fftpd.exe / fftp-http.exe / fftp-http-launcher.exe
 #
 # 工具策略: linux 目标与 windows-gnu 均用 cargo-zigbuild；
 # 若 cargo-zigbuild 对 windows-gnu 不可用（缺 zig / 构建失败），回退
 # cargo + mingw-w64 原生链接器（x86_64-w64-mingw32-gcc）。
+# ARM64 Windows 用 aarch64-pc-windows-msvc（Tier 2 官方 ABI）+ cargo-xwin
+# （clang-cl + Windows SDK CRT；zig 无 MSVC CRT 头，不可用于该目标）。
 # 产物统一落 dist/<target>/，release profile。
 
 set -euo pipefail
@@ -39,6 +42,7 @@ TARGETS=(
     "aarch64-unknown-linux-gnu"
     "x86_64-unknown-linux-musl"
     "x86_64-pc-windows-gnu"
+    "aarch64-pc-windows-msvc"
 )
 
 show_help() {
@@ -50,6 +54,7 @@ show_help() {
     aarch64-unknown-linux-gnu     ARM64 Linux (glibc)
     x86_64-unknown-linux-musl     x86_64 Linux (静态 musl)
     x86_64-pc-windows-gnu         x86_64 Windows (fftpd.exe / fftp-http.exe / fftp-http-launcher.exe)
+    aarch64-pc-windows-msvc       ARM64 Windows (fftpd.exe / fftp-http.exe / fftp-http-launcher.exe)
     all                           全矩阵顺序构建
 
 产物: dist/<target>/{fftpd,fftp-http}[.exe]（release profile）
@@ -134,9 +139,23 @@ check_zigbuild() {
 }
 
 check_mingw() {
-    if ! command -v x86_64-w64-mingw32-gcc &> /dev/null; then
-        log_error "回退 mingw 需要 x86_64-w64-mingw32-gcc"
+    local gcc="x86_64-w64-mingw32-gcc"
+    if ! command -v "$gcc" &> /dev/null; then
+        log_error "回退 mingw 需要 ${gcc}"
         log_info "请执行: sudo apt-get install -y mingw-w64"
+        exit 1
+    fi
+    echo "$gcc"
+}
+
+# ARM64 Windows（msvc）依赖：cargo-xwin + clang-cl
+check_xwin() {
+    if ! command -v cargo-xwin &> /dev/null; then
+        log_error "未找到 cargo-xwin（cargo install cargo-xwin 可安装）"
+        exit 1
+    fi
+    if ! command -v clang-cl &> /dev/null; then
+        log_error "cargo-xwin 需要 clang-cl（sudo apt-get install -y clang llvm）"
         exit 1
     fi
 }
@@ -197,9 +216,16 @@ build_target() {
     collect_artifacts "$target"
 }
 
-# windows-gnu：优先 cargo-zigbuild，失败或缺工具时回退 mingw 原生 target
+# windows-gnu：优先 cargo-zigbuild，失败或缺工具时回退 mingw 原生 target；
+# arm64 msvc：走 cargo-xwin（clang-cl + Windows SDK CRT）
 build_windows() {
     local target="$1"
+    if [[ "$target" == aarch64-pc-windows-msvc ]]; then
+        check_xwin
+        log_info "使用 cargo-xwin 编译: ${target}"
+        cargo xwin build --release --target "$target" -p fftpd -p fftp-http
+        return 0
+    fi
     if check_zigbuild; then
         log_info "使用 cargo-zigbuild 编译: ${target}"
         if cargo zigbuild --release --target "$target" -p fftpd -p fftp-http; then
@@ -210,9 +236,10 @@ build_windows() {
         log_warning "cargo-zigbuild 不可用，使用 mingw 原生编译"
     fi
 
-    check_mingw
+    local mingw_gcc
+    mingw_gcc=$(check_mingw)
     log_info "使用 mingw 链接器编译: ${target}"
-    CARGO_TARGET_X86_64_PC_WINDOWS_GNU_LINKER=x86_64-w64-mingw32-gcc \
+    CARGO_TARGET_X86_64_PC_WINDOWS_GNU_LINKER="$mingw_gcc" \
         cargo build --release --target "$target" -p fftpd -p fftp-http
 }
 
@@ -236,7 +263,7 @@ if [ "$TARGET" = "all" ]; then
     log_success "全矩阵构建完成，产物位于 dist/"
 else
     case "$TARGET" in
-        x86_64-unknown-linux-gnu|aarch64-unknown-linux-gnu|x86_64-unknown-linux-musl|x86_64-pc-windows-gnu)
+        x86_64-unknown-linux-gnu|aarch64-unknown-linux-gnu|x86_64-unknown-linux-musl|x86_64-pc-windows-gnu|aarch64-pc-windows-msvc)
             build_target "$TARGET"
             ;;
         *)

@@ -1,14 +1,15 @@
 ; FFTPS Web 管理版 Windows 安装器（NSIS 3 / Unicode）
 ;
 ; 构建示例（Linux CI）:
-;   ./scripts/build-nsis.sh
+;   ./scripts/build-nsis.sh                # x86_64
+;   ./scripts/build-nsis.sh -a arm64       # ARM64
 ; 或直接调用 makensis:
-;   makensis -DAPP_VERSION=0.1.0 \
+;   makensis -DAPP_VERSION=0.1.0 -DARCH=x86_64 \
 ;            -DDIST_DIR=dist/x86_64-pc-windows-gnu \
 ;            -DOUT_DIR=dist \
 ;            deploy/windows/fftps-http.nsi
 ;
-; 安装内容：
+; 安装内容（安装的 fftpd/fftp-http 为 DIST_DIR 内对应架构的原生二进制）：
 ;   - %ProgramFiles%\fftps\{fftpd,fftp-http,fftp-http-launcher}.exe
 ;   - %ProgramData%\fftpd 下的初始配置模板（已存在时绝不覆盖）
 ;   - fftpd 自动启动 Windows 服务（SCM，开机自启）
@@ -28,6 +29,9 @@ SetCompressorDictSize 32
 !ifndef APP_VERSION
   !define APP_VERSION "0.1.0"
 !endif
+!ifndef ARCH
+  !define ARCH "x86_64"
+!endif
 !ifndef DIST_DIR
   !define DIST_DIR "dist/x86_64-pc-windows-gnu"
 !endif
@@ -45,7 +49,7 @@ SetCompressorDictSize 32
 !define UNINST_KEY "Software\Microsoft\Windows\CurrentVersion\Uninstall\FFTPS"
 
 Name "${APP_NAME}"
-OutFile "${OUT_DIR}/fftps-http-${APP_VERSION}-windows-x86_64-setup.exe"
+OutFile "${OUT_DIR}/fftps-http-${APP_VERSION}-windows-${ARCH}-setup.exe"
 InstallDir "$PROGRAMFILES64\fftps"
 InstallDirRegKey HKLM "${UNINST_KEY}" "InstallLocation"
 RequestExecutionLevel admin

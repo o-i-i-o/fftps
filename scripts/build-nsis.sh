@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
-# FFTPS Windows NSIS 安装器打包脚本
+# FFTPS Windows NSIS 安装器打包脚本（x86_64 / arm64）
 #
 # 产出统一放到 dist/：
 #   dist/fftps-http_<version>_windows-x86_64-setup.exe
+#   dist/fftps-http_<version>_windows-arm64-setup.exe
 #
 # 打包物料统一位于 deploy/：
 #   deploy/windows/   NSIS 脚本（fftps-http.nsi）
@@ -10,8 +11,8 @@
 #
 # 示例:
 #   ./scripts/build-nsis.sh                            # 使用 dist/x86_64-pc-windows-gnu 产物
-#   ./scripts/build-nsis.sh --cross                    # 先交叉编译再打包
-#   ./scripts/build-nsis.sh -b dist/x86_64-pc-windows-gnu -v 0.1.1
+#   ./scripts/build-nsis.sh -a arm64                   # 打包 arm64 安装器
+#   ./scripts/build-nsis.sh -b dist/win -v 0.1.1
 
 set -euo pipefail
 
@@ -30,13 +31,15 @@ show_help() {
 用法: $0 [选项]
 
 选项:
-    -b, --bin-dir DIR    预编译产物目录 [默认: dist/x86_64-pc-windows-gnu]
+    -a, --arch ARCH      目标架构 (x86_64, arm64) [默认: x86_64]
+    -b, --bin-dir DIR    预编译产物目录 [默认: dist/<windows-target>]
     -o, --output DIR     产物输出目录 [默认: dist]
     -v, --version VER    包版本 [默认: 读取 Cargo.toml]
     -h, --help           显示此帮助
 
 示例:
     $0                                   # 使用 dist/x86_64-pc-windows-gnu 产物打包
+    $0 -a arm64                          # 打包 arm64 安装器（dist/aarch64-pc-windows-gnu）
     $0 -b dist/win -o out                # 指定产物目录与输出目录
 EOF
 }
@@ -47,13 +50,15 @@ DEPLOY_DIR="${PROJECT_DIR}/deploy"
 DIST_DIR="${PROJECT_DIR}/dist"
 NSI_SCRIPT="${DEPLOY_DIR}/windows/fftps-http.nsi"
 
-TARGET="x86_64-pc-windows-gnu"
+TARGET=""
+ARCH="x86_64"
 BIN_DIR=""
 OUTPUT_DIR="$DIST_DIR"
 CUSTOM_VERSION=""
 
 while [ $# -gt 0 ]; do
     case "$1" in
+        -a|--arch) ARCH="$2"; shift 2 ;;
         -b|--bin-dir) BIN_DIR="$2"; shift 2 ;;
         -o|--output) OUTPUT_DIR="$2"; shift 2 ;;
         -v|--version) CUSTOM_VERSION="$2"; shift 2 ;;
@@ -61,6 +66,12 @@ while [ $# -gt 0 ]; do
         *) log_error "未知选项: $1"; show_help; exit 1 ;;
     esac
 done
+
+case "$ARCH" in
+    x86_64|amd64) ARCH=x86_64; TARGET=x86_64-pc-windows-gnu ;;
+    arm64|aarch64) ARCH=arm64; TARGET=aarch64-pc-windows-msvc ;;
+    *) log_error "不支持的架构: $ARCH（仅支持 x86_64 / arm64）"; exit 1 ;;
+esac
 
 if [ -n "$CUSTOM_VERSION" ]; then
     VERSION="$CUSTOM_VERSION"
@@ -97,12 +108,13 @@ cd "${PROJECT_DIR}"
 
 makensis \
     -DAPP_VERSION="${VERSION}" \
+    -DARCH="${ARCH}" \
     -DDIST_DIR="$(cd "$BIN_DIR" && pwd)" \
     -DOUT_DIR="${OUTPUT_DIR}" \
     -DREPO_ROOT="${PROJECT_DIR}" \
     "${NSI_SCRIPT}"
 
-SETUP_FILE="${OUTPUT_DIR}/fftps-http-${VERSION}-windows-x86_64-setup.exe"
+SETUP_FILE="${OUTPUT_DIR}/fftps-http-${VERSION}-windows-${ARCH}-setup.exe"
 if [ ! -f "$SETUP_FILE" ]; then
     log_error "NSIS 安装器构建失败: ${SETUP_FILE}"
     exit 1
