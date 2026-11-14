@@ -1,8 +1,8 @@
 [Desktop Entry]
 Version=1.0
 Type=Application
-Name=FFTPS Web Management
-Name[zh_CN]=FFTPS Web 管理
+Name=FFTPS
+Name[zh_CN]=FFTPS
 GenericName=SFTP/FTP Server Manager
 GenericName[zh_CN]=SFTP/FTP 服务器管理
 Comment=Start the Web management service and open it in your browser

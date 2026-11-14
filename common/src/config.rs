@@ -87,7 +87,7 @@ impl Default for FtpConfig {
         Self {
             enabled: true,
             bind_ip: "0.0.0.0".to_string(),
-            port: 21,
+            port: default_ftp_port(),
             welcome_message: "Welcome to fftpd".to_string(),
             encoding: "UTF-8".to_string(),
             connection_mode: ConnectionMode::PassiveOnly,
@@ -103,6 +103,19 @@ impl Default for FtpConfig {
             ftps: FtpsConfig::default(),
         }
     }
+}
+
+/// FTP 默认监听端口。
+/// Windows 下 fftpd 以 SCM 服务（LocalSystem）运行，可绑定标准端口 21；
+/// Linux 下为无特权用户态服务，绑定 <1024 端口会 EPERM，默认改用 2121。
+#[cfg(target_os = "windows")]
+const fn default_ftp_port() -> u16 {
+    21
+}
+
+#[cfg(not(target_os = "windows"))]
+const fn default_ftp_port() -> u16 {
+    2121
 }
 
 impl FtpConfig {
@@ -560,7 +573,7 @@ mod tests {
         let config = Config::default();
         assert!(config.ftp.enabled);
         assert_eq!(config.ftp.bind_ip, "0.0.0.0");
-        assert_eq!(config.ftp.port, 21);
+        assert_eq!(config.ftp.port, default_ftp_port());
         assert_eq!(config.ftp.welcome_message, "Welcome to fftpd");
         assert_eq!(config.ftp.encoding, "UTF-8");
         assert_eq!(config.ftp.connection_mode, ConnectionMode::PassiveOnly);
@@ -616,7 +629,7 @@ mod tests {
     fn partial_toml_falls_back_to_defaults() {
         let config: Config = toml::from_str("[ftp]\nenabled = false\n").unwrap();
         assert!(!config.ftp.enabled);
-        assert_eq!(config.ftp.port, 21);
+        assert_eq!(config.ftp.port, default_ftp_port());
         assert_eq!(config.sftp.port, 2222);
     }
 

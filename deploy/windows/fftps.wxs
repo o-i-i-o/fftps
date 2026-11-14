@@ -15,7 +15,7 @@
 <Wix xmlns="http://wixtoolset.org/schemas/v4/wxs"
      xmlns:util="http://wixtoolset.org/schemas/v4/wxs/util">
 
-  <?define ProductName = "FFTPS Web 管理" ?>
+  <?define ProductName = "FFTPS" ?>
   <?define ServiceName = "fftpd" ?>
 
   <Package Name="$(ProductName)"
@@ -55,7 +55,7 @@
           <!-- fftpd 自启服务：等价于 sc create fftpd（binPath 引号包裹 exe 并追加 service 参数） -->
           <ServiceInstall Id="SvcInstall_fftpd"
                           Name="$(ServiceName)"
-                          DisplayName="fftps FTP/SFTP Server"
+                          DisplayName="FFTPS FTP/SFTP Server"
                           Description="FFTPS FTP/SFTP 服务端（开机自启）"
                           Type="ownProcess"
                           Start="auto"

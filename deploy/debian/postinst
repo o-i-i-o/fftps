@@ -79,10 +79,20 @@ case "$1" in
             # 载入（升级后的）单元文件；用户管理器不会自动重读
             user_systemctl "$uid" "$user_name" daemon-reload || true
 
-            # 首次安装：启用并立即启动 fftpd（安装后桌面入口即可连接后端）。
+            # 首次安装：开启 linger（登出后用户管理器与服务持续驻守）、
+            # 启用并立即启动 fftpd（安装后桌面入口即可连接后端）。
             # 升级：只重启已启用且在运行的服务，未启用/未运行则不打扰用户。
             for service in $SERVICES; do
                 if [ -z "$OLD_VERSION" ] && [ "$service" = "fftpd" ]; then
+                    # linger 使登出后 fftpd 继续运行；记录 uid，卸载时随包回收
+                    if loginctl enable-linger "$user_name" 2> /dev/null; then
+                        mkdir -p /var/lib/fftpd
+                        grep -qxF "$uid" /var/lib/fftpd/linger.list 2> /dev/null || \
+                            echo "$uid" >> /var/lib/fftpd/linger.list
+                        echo "已为用户 ${user_name} 开启 linger（登出后服务持续运行）"
+                    else
+                        echo "警告: 无法为用户 ${user_name} 开启 linger，登出后 fftpd 将停止；可登录后手动执行 loginctl enable-linger ${user_name}" >&2
+                    fi
                     if user_systemctl "$uid" "$user_name" enable --now "$service"; then
                         echo "已为用户 ${user_name} 启用并启动 ${service} 用户服务"
                     else
@@ -102,14 +112,14 @@ case "$1" in
 
         echo "FFTPS 安装完成。"
         if [ -z "$OLD_VERSION" ]; then
-            echo "已尝试为活跃桌面用户启用并启动 fftpd；若安装时没有活跃会话，"
-            echo "请登录后执行：systemctl --user enable --now fftpd"
+            echo "已尝试为活跃桌面用户开启 linger 并启用启动 fftpd；若安装时没有活跃会话，"
+            echo "请登录后执行：loginctl enable-linger $USER && systemctl --user enable --now fftpd"
         else
             echo "启用后台服务（以桌面用户运行，无需 root）："
             echo "  systemctl --user enable --now fftpd"
         fi
         echo "启动 Web 管理界面："
-        echo "  从应用菜单打开「FFTPS Web 管理」，或执行 fftp-http launch"
+        echo "  从应用菜单打开「FFTPS」，或执行 fftp-http launch"
         echo "  首次启动会自动进入本机 setup 引导页（默认 http://127.0.0.1:8080）"
         ;;
 esac

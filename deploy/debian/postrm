@@ -11,6 +11,17 @@ case "$1" in
         if command -v update-desktop-database &> /dev/null; then
             update-desktop-database -q || true
         fi
+        # 回收安装时开启的 linger（仅限本包记录的 uid，不动用户自行开启的）
+        if [ -f /var/lib/fftpd/linger.list ]; then
+            if command -v loginctl &> /dev/null; then
+                while read -r linger_uid; do
+                    [ -n "$linger_uid" ] || continue
+                    loginctl disable-linger "$linger_uid" 2> /dev/null || true
+                done < /var/lib/fftpd/linger.list
+            fi
+            rm -f /var/lib/fftpd/linger.list
+            rmdir /var/lib/fftpd 2> /dev/null || true
+        fi
         # 用户管理器残留单元引用清理（单元文件已随包移除）
         for runtime_dir in /run/user/[0-9]*; do
             [ -d "$runtime_dir" ] || continue

@@ -23,7 +23,7 @@ $InstallDir = Join-Path $env:ProgramFiles 'fftps'
 $DataDir = Join-Path $env:ProgramData 'fftpd'
 $SrcDir = $PSScriptRoot
 $ServiceName = 'fftpd'
-$AppName = 'FFTPS Web 管理'
+$AppName = 'FFTPS'
 $UninstKey = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\FFTPS'
 $Version = '0.1.1'   # build-zip.sh 打包时替换
 
@@ -61,7 +61,7 @@ if ($existing) {
     Start-Sleep -Seconds 2
 }
 # binPath 引号嵌套确保带空格路径正确写入 SCM
-& sc.exe create $ServiceName binPath= "`"$InstallDir\fftpd.exe`" --service" DisplayName= 'fftps FTP/SFTP Server' start= auto | Out-Null
+& sc.exe create $ServiceName binPath= "`"$InstallDir\fftpd.exe`" --service" DisplayName= 'FFTPS FTP/SFTP Server' start= auto | Out-Null
 & sc.exe start $ServiceName | Out-Null
 Write-Host '  fftpd 服务已注册并启动（开机自启）'
 

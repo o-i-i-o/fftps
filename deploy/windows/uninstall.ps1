@@ -17,7 +17,7 @@ if ($args -contains '/S') { $Silent = $true } else { $Silent = $false }
 $InstallDir = Join-Path $env:ProgramFiles 'fftps'
 $DataDir = Join-Path $env:ProgramData 'fftpd'
 $ServiceName = 'fftpd'
-$AppName = 'FFTPS Web 管理'
+$AppName = 'FFTPS'
 $UninstKey = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\FFTPS'
 
 Write-Host "=== $AppName 卸载 ==="

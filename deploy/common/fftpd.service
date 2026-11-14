@@ -15,9 +15,12 @@ TimeoutStopSec=10
 # 可写路径全部在 XDG 目录（~/.config/fftpd、~/.local/state/fftpd），
 # UDS 套接字位于 $XDG_RUNTIME_DIR/fftpd/fftpd.sock（0600）。
 
+# 注意：用户单元不可启用 PrivateDevices=yes——systemd 会随之从
+# CapabilityBoundingSet 摘除 CAP_MKNOD，而 PR_CAPBSET_DROP 需要 CAP_SETPCAP，
+# 无特权的用户管理器没有该能力，导致服务以 218/CAPABILITIES 退出无法启动。
+# fftpd 本身就是无特权进程，不需要设备隔离。
 NoNewPrivileges=true
 PrivateTmp=yes
-PrivateDevices=yes
 
 LimitNOFILE=65536
 

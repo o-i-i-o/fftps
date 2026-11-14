@@ -342,7 +342,7 @@ echo "安装时会为活跃桌面用户自动启用并启动 fftpd（无需 root
 echo "若安装时没有活跃会话，请登录后执行:"
 echo "  systemctl --user enable --now fftpd"
 echo "启动 Web 管理界面:"
-echo "  从应用菜单打开「FFTPS Web 管理」，或执行 fftp-http launch"
+echo "  从应用菜单打开「FFTPS」，或执行 fftp-http launch"
 echo ""
 echo "卸载方法:"
 echo "  sudo apt remove fftp-http"

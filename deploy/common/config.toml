@@ -8,7 +8,15 @@
 [ftp]
 enabled = true
 bind_ip = "0.0.0.0"
-port = 21
+# FTP 监听端口：未设置时按平台取默认值——
+#   Windows（LocalSystem 服务）默认 21；Linux 用户态服务无特权端口，默认 2121。
+# 如需固定端口请取消注释填写。Linux 监听 21 需非默认授权：
+#   1) sudo setcap 'cap_net_bind_service=+ep' /usr/bin/fftpd 且单元去掉
+#      NoNewPrivileges=true（内核在 NNP 下会忽略文件能力）；每次升级需重打 cap
+#   2) 或 sysctl net.ipv4.ip_unprivileged_port_start=21（全局生效）
+# 用户单元内 CapabilityBoundingSet/AmbientCapabilities 不可用（管理器无能力可授，
+# 会导致 218/CAPABILITIES 启动失败）。
+# port = 21
 welcome_message = "Welcome to fftpd"
 encoding = "UTF-8"
 # passive_only | active_only | active_and_passive

@@ -72,8 +72,15 @@ for runtime_dir in /run/user/[0-9]*; do
     [ -n "$user_name" ] || continue
     XDG_RUNTIME_DIR="$runtime_dir" su -s /bin/sh "$user_name" \
         -c "systemctl --user daemon-reload" >/dev/null 2>&1 || :
-    # $1 == 1 首次安装：启用并启动 fftpd；升级时只重启已启用且在运行的服务
+    # $1 == 1 首次安装：开启 linger（登出后服务持续驻守）并启用启动 fftpd；
+    # 升级时只重启已启用且在运行的服务
     if [ "$1" -eq 1 ]; then
+        if command -v loginctl >/dev/null 2>&1 \
+            && loginctl enable-linger "$user_name" >/dev/null 2>&1; then
+            mkdir -p /var/lib/fftpd
+            grep -qxF "$uid" /var/lib/fftpd/linger.list 2>/dev/null \
+                || echo "$uid" >> /var/lib/fftpd/linger.list
+        fi
         XDG_RUNTIME_DIR="$runtime_dir" su -s /bin/sh "$user_name" \
             -c "systemctl --user enable --now fftpd" >/dev/null 2>&1 || :
     else
@@ -109,6 +116,15 @@ exit 0
 %postun
 if command -v update-desktop-database >/dev/null 2>&1; then
     update-desktop-database -q || :
+fi
+# 卸载（$1 == 0）时回收安装时开启的 linger（仅限本包记录的 uid）
+if [ "$1" -eq 0 ] && [ -f /var/lib/fftpd/linger.list ] && command -v loginctl >/dev/null 2>&1; then
+    while read -r linger_uid; do
+        [ -n "$linger_uid" ] || continue
+        loginctl disable-linger "$linger_uid" >/dev/null 2>&1 || :
+    done < /var/lib/fftpd/linger.list
+    rm -f /var/lib/fftpd/linger.list
+    rmdir /var/lib/fftpd 2>/dev/null || :
 fi
 for runtime_dir in /run/user/[0-9]*; do
     [ -d "$runtime_dir" ] || continue
