@@ -598,8 +598,9 @@ mod tests {
     fn packaged_example_matches_builtin_defaults() {
         let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("..")
-            .join("debian")
-            .join("config_example.toml");
+            .join("deploy")
+            .join("common")
+            .join("config.toml");
         let content = std::fs::read_to_string(&path)
             .unwrap_or_else(|e| panic!("读取 {} 失败: {e}", path.display()));
         let example: Config = toml::from_str(&content).expect("示例配置必须可解析");
@@ -607,7 +608,7 @@ mod tests {
         assert_eq!(
             serde_json::to_value(&example).unwrap(),
             serde_json::to_value(Config::default()).unwrap(),
-            "debian/config_example.toml 与内置默认值不一致"
+            "deploy/common/config.toml 与内置默认值不一致"
         );
     }
 

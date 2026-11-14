@@ -567,7 +567,7 @@ mod tests {
     #[test]
     fn example_file_parses_with_documented_defaults() {
         let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../examples/fftp-http.toml.example");
+            .join("../deploy/common/fftp-http.toml");
         let raw = std::fs::read_to_string(&path)
             .unwrap_or_else(|e| panic!("读取示例配置失败 {}: {e}", path.display()));
         let cfg: HttpConfig = toml::from_str(&raw).expect("示例配置应为合法 TOML 且字段有效");

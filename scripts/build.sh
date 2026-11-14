@@ -99,6 +99,7 @@ resolve_zig() {
 
     local candidate
     for candidate in \
+        "${SCRIPT_DIR}/node_modules/.bin/zig" \
         "${PROJECT_DIR}/node_modules/.bin/zig" \
         "${HOME}/.local/bin/zig" \
         "${HOME}/node_modules/.bin/zig"; do

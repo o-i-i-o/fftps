@@ -1,10 +1,12 @@
 ; FFTPS Web 管理版 Windows 安装器（NSIS 3 / Unicode）
 ;
 ; 构建示例（Linux CI）:
+;   ./scripts/build-nsis.sh
+; 或直接调用 makensis:
 ;   makensis -DAPP_VERSION=0.1.0 \
 ;            -DDIST_DIR=dist/x86_64-pc-windows-gnu \
 ;            -DOUT_DIR=dist \
-;            scripts/windows/fftps-http.nsi
+;            deploy/windows/fftps-http.nsi
 ;
 ; 安装内容：
 ;   - %ProgramFiles%\fftps\{fftpd,fftp-http,fftp-http-launcher}.exe
@@ -94,11 +96,11 @@ Section "FFTPS" SecMain
   CreateDirectory "$APPDATA\fftpd\logs"
   SetOutPath "$PLUGINSDIR"
   ${IfNot} ${FileExists} "$APPDATA\fftpd\config.toml"
-    File /oname=config.toml "${REPO_ROOT}/debian/config_example.toml"
+    File /oname=config.toml "${REPO_ROOT}/deploy/common/config.toml"
     CopyFiles /SILENT "$PLUGINSDIR\config.toml" "$APPDATA\fftpd\config.toml"
   ${EndIf}
   ${IfNot} ${FileExists} "$APPDATA\fftpd\fftp-http.toml"
-    File /oname=fftp-http.toml "${REPO_ROOT}/examples/fftp-http.toml.example"
+    File /oname=fftp-http.toml "${REPO_ROOT}/deploy/common/fftp-http.toml"
     CopyFiles /SILENT "$PLUGINSDIR\fftp-http.toml" "$APPDATA\fftpd\fftp-http.toml"
   ${EndIf}
   ; 允许普通用户维护配置/日志（服务与按需前端均需写入）

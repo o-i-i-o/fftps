@@ -1,0 +1,21 @@
+Package: fftp-http
+Version: @VERSION@
+Section: net
+Priority: optional
+Architecture: @ARCH@
+Maintainer: fftps developers <developers@fftps.dev>
+Conflicts: fftps, fftp-gui
+Replaces: fftps, fftp-gui
+Homepage: https://github.com/fftps/fftps
+Depends: libc6
+Installed-Size: @INSTALLED_SIZE@
+Description: SFTP/FTP(FTPS) server suite with Web management frontend
+ Contains the fftpd FTP(FTPS)/SFTP server backend and the fftp-http
+ Web (HTTP/HTTPS) management frontend, each with its own systemd
+ user service unit. A desktop entry starts the Web service on demand
+ and opens it in the default browser.
+ Pure Rust headless deployment: manage the servers from a browser.
+Description-zh_CN: SFTP/FTP(FTPS) 服务套件（Web 管理版）
+ 自带 fftpd 服务端后端与 fftp-http Web 管理前端，
+ 两者各带一个 systemd 用户服务单元；桌面入口按需启动 Web 服务并打开浏览器。
+ 使用纯 Rust 实现，可用浏览器管理服务器。

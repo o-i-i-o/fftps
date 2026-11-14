@@ -102,12 +102,7 @@ jobs:
 
       - name: 构建 Windows 安装器（NSIS）
         if: matrix.target == 'x86_64-pc-windows-gnu'
-        run: |
-          VERSION="$(grep -m1 '^version = ' Cargo.toml | sed 's/version = "\(.*\)"/\1/')"
-          makensis -DAPP_VERSION="$VERSION" \
-                   -DDIST_DIR="dist/${{ matrix.target }}" \
-                   -DOUT_DIR=dist \
-                   scripts/windows/fftps-http.nsi
+        run: ./scripts/build-nsis.sh
 
       - name: 上传构建产物
         uses: actions/upload-artifact@v4
@@ -146,7 +141,7 @@ jobs:
           merge-multiple: true
 
       - name: 构建 deb 包
-        run: sudo ./debian/build-deb.sh -a ${{ matrix.arch }} -b dist/${{ matrix.target }} -o dist -n
+        run: sudo ./scripts/build-deb.sh -a ${{ matrix.arch }} -b dist/${{ matrix.target }} -o dist -n
 
       - name: 上传 deb 产物
         uses: actions/upload-artifact@v4
@@ -184,7 +179,7 @@ jobs:
           merge-multiple: true
 
       - name: 构建 rpm 包
-        run: ./rpm/build-rpm.sh -a ${{ matrix.arch }} -b dist/${{ matrix.target }} -o dist
+        run: ./scripts/build-rpm.sh -a ${{ matrix.arch }} -b dist/${{ matrix.target }} -o dist
 
       - name: 上传 rpm 产物
         uses: actions/upload-artifact@v4
@@ -230,10 +225,10 @@ jobs:
             NAME="fftp-http-${TAG_VERSION}-${t}"
             mkdir -p "dist/${NAME}"
             cp "dist/${t}/fftpd" "dist/${t}/fftp-http" "dist/${NAME}/"
-            cp debian/config_example.toml "dist/${NAME}/config.toml"
-            cp examples/fftp-http.toml.example "dist/${NAME}/fftp-http.toml"
-            cp debian/fftpd.service debian/fftp-http.service "dist/${NAME}/"
-            cp debian/fftp-http.desktop debian/fftp-http.svg "dist/${NAME}/"
+            cp deploy/common/config.toml "dist/${NAME}/config.toml"
+            cp deploy/common/fftp-http.toml "dist/${NAME}/fftp-http.toml"
+            cp deploy/common/fftpd.service deploy/common/fftp-http.service "dist/${NAME}/"
+            cp deploy/common/fftp-http.desktop deploy/common/fftp-http.svg "dist/${NAME}/"
             chmod 755 "dist/${NAME}/fftpd" "dist/${NAME}/fftp-http"
             tar -czf "dist/${NAME}.tar.gz" -C dist "${NAME}"
             rm -rf "dist/${NAME}"

@@ -49,8 +49,9 @@ fftps/
 ├── fftpd/                  # 服务端二进制 fftpd（组装 + IPC dispatch + 服务入口）
 ├── fftp-http/              # Web 管理前端二进制 fftp-http（axum + 内嵌 ui/）
 ├── docs/design.md
-├── debian/                 # [阶段3] deb + systemd 单元
-├── scripts/                # [阶段3] 交叉编译/打包脚本
+├── scripts/                # [阶段3] 交叉编译/打包脚本（build.sh、build-deb.sh、build-rpm.sh、build-nsis.sh）
+├── deploy/                 # [阶段3] 打包物料（common/ systemd 单元+桌面入口+配置模板、debian/、rpm/、windows/ NSIS）
+├── dist/                   # [阶段3] 打包产物（按 rust target 分目录 + deb/rpm/tar.gz/setup.exe）
 └── .github/workflows/      # [阶段3] CI 矩阵
 ```
 
@@ -200,7 +201,7 @@ enable_gui_logging = true
 - 目标矩阵：`x86_64-unknown-linux-gnu`、`aarch64-unknown-linux-gnu`、`x86_64-unknown-linux-musl`、`x86_64-pc-windows-gnu`（可选 `x86_64-pc-windows-msvc`）；
 - 工具：`cargo-zigbuild`（linux 全目标 + windows-gnu），windows-gnu 需 mingw 链接器；本机已装 rustup 目标与 cargo-zigbuild；
 - `scripts/build.sh <target>`：统一入口，产物落 `dist/<target>/{fftpd,fftp-http}`（Windows 另含 `fftp-http-launcher.exe`）；
-- 阶段3：debian/（fftpd.service、fftp-http.service、桌面入口）+ Windows NSIS 安装器（`scripts/windows/fftps-http.nsi`）；CI 走 GitHub Actions 矩阵。
+- 阶段3：deploy/common/（fftpd.service、fftp-http.service、桌面入口）+ Windows NSIS 安装器（`deploy/windows/fftps-http.nsi`，经 `scripts/build-nsis.sh` 打包）；CI 走 GitHub Actions 矩阵。
 
 ## 8. 分阶段实施与验收
 

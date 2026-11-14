@@ -1,0 +1,10 @@
+fftp-http (@VERSION@) stable; urgency=medium
+
+  * Release version @VERSION@
+  * Support SFTP and FTP(FTPS) server management
+  * Frontend: fftp-http Web (HTTP/HTTPS) management interface
+  * Desktop entry starts the Web service on demand and opens the browser
+  * Includes the fftpd backend (per-user systemd service, no root needed)
+  * Multi-architecture support (amd64 / arm64)
+
+ -- fftps developers <developers@fftps.dev>  @DATE@

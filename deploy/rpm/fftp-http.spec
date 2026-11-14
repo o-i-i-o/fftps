@@ -1,11 +1,11 @@
 # FFTPS RPM 规格（fftp-http Web 管理版）
 #
-# 由 rpm/build-rpm.sh 调用，使用预编译的 fftpd / fftp-http：
+# 由 scripts/build-rpm.sh 调用，使用预编译的 fftpd / fftp-http：
 #   rpmbuild -bb --target aarch64 \
 #       --define "_fftp_version 0.1.1" \
 #       --define "_fftp_bin_dir $PWD/dist/aarch64-unknown-linux-gnu" \
 #       --define "_fftp_project_dir $PWD" \
-#       rpm/fftp-http.spec
+#       deploy/rpm/fftp-http.spec
 
 %global debug_package %{nil}
 # 交叉打包 aarch64 时宿主 strip 无法处理目标 ELF；二进制在 Cargo 构建时已 strip
@@ -41,21 +41,21 @@ install -m 0755 %{_fftp_bin_dir}/fftpd %{buildroot}/usr/bin/fftpd
 install -m 0755 %{_fftp_bin_dir}/fftp-http %{buildroot}/usr/bin/fftp-http
 
 install -d %{buildroot}/usr/lib/systemd/user
-install -m 0644 %{_fftp_project_dir}/debian/fftpd.service %{buildroot}/usr/lib/systemd/user/fftpd.service
-install -m 0644 %{_fftp_project_dir}/debian/fftp-http.service %{buildroot}/usr/lib/systemd/user/fftp-http.service
+install -m 0644 %{_fftp_project_dir}/deploy/common/fftpd.service %{buildroot}/usr/lib/systemd/user/fftpd.service
+install -m 0644 %{_fftp_project_dir}/deploy/common/fftp-http.service %{buildroot}/usr/lib/systemd/user/fftp-http.service
 
 install -d %{buildroot}/usr/share/applications
-install -m 0644 %{_fftp_project_dir}/debian/fftp-http.desktop %{buildroot}/usr/share/applications/fftp-http.desktop
+install -m 0644 %{_fftp_project_dir}/deploy/common/fftp-http.desktop %{buildroot}/usr/share/applications/fftp-http.desktop
 
 install -d %{buildroot}/usr/share/icons/hicolor/scalable/apps
-install -m 0644 %{_fftp_project_dir}/debian/fftp-http.svg \
+install -m 0644 %{_fftp_project_dir}/deploy/common/fftp-http.svg \
     %{buildroot}/usr/share/icons/hicolor/scalable/apps/fftp-http.svg
 install -d %{buildroot}/usr/share/pixmaps
-install -m 0644 %{_fftp_project_dir}/debian/fftp-http.svg %{buildroot}/usr/share/pixmaps/fftp-http.svg
+install -m 0644 %{_fftp_project_dir}/deploy/common/fftp-http.svg %{buildroot}/usr/share/pixmaps/fftp-http.svg
 
 install -d %{buildroot}/usr/share/fftpd
-install -m 0644 %{_fftp_project_dir}/debian/config_example.toml %{buildroot}/usr/share/fftpd/config.toml
-install -m 0644 %{_fftp_project_dir}/examples/fftp-http.toml.example \
+install -m 0644 %{_fftp_project_dir}/deploy/common/config.toml %{buildroot}/usr/share/fftpd/config.toml
+install -m 0644 %{_fftp_project_dir}/deploy/common/fftp-http.toml \
     %{buildroot}/usr/share/fftpd/fftp-http.toml
 
 install -d %{buildroot}/usr/share/licenses/fftp-http

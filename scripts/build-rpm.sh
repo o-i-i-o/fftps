@@ -5,6 +5,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
+DEPLOY_DIR="${PROJECT_DIR}/deploy"
 
 ARCH=""
 BIN_DIR=""
@@ -94,7 +95,7 @@ rpmbuild -bb \
     --define "_fftp_version ${VERSION}" \
     --define "_fftp_bin_dir $(cd "$BIN_DIR" && pwd)" \
     --define "_fftp_project_dir ${PROJECT_DIR}" \
-    "${SCRIPT_DIR}/fftp-http.spec"
+    "${DEPLOY_DIR}/rpm/fftp-http.spec"
 
 RPM_FILE=$(find "$TOP_DIR/RPMS" -name '*.rpm' -type f | head -n 1)
 if [ -z "$RPM_FILE" ]; then
