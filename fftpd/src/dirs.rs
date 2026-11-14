@@ -28,9 +28,16 @@ pub fn ensure_user_directories(state: &AppState) -> Result<Value, HandlerError> 
 
     let users = state.users.lock_recover();
     for user in users.get_users().values() {
-        if !user.home_dir.trim().is_empty() {
-            candidates.push(PathBuf::from(&user.home_dir));
+        if user.home_dir.trim().is_empty() {
+            continue;
         }
+        let home = validate_directory_path(&user.home_dir).map_err(|e| {
+            HandlerError::validation(format!(
+                "用户 {} 的主目录无效: {}",
+                user.username, e.message
+            ))
+        })?;
+        candidates.push(home);
     }
     drop(users);
 
@@ -81,13 +88,17 @@ pub fn setup_directory_permissions(path: &str) -> Result<Value, HandlerError> {
     }))
 }
 
-/// 校验并规范化目录路径
+/// 校验目录路径的结构与已有目标的有效性
 ///
-/// 目录创建/权限接口会 `create_dir_all` 并 `chown`/`chmod 0700`，若接受任意
-/// 绝对路径，管理端可对系统目录动手。用户态服务限定：绝对路径、无 `..`、
-/// 位于当前用户主目录下，且既有的目标必须是真实目录而非符号链接。
+/// 目录创建/权限接口会 `create_dir_all` 并 `chown`/`chmod 0700`。管理端可以
+/// 填写任意目录（不限于桌面或主目录），但路径必须是绝对路径、不能含 `..`、
+/// 不能是文件系统根；已存在的目标必须是真实目录且不能是符号链接（避免把
+/// 创建/改权限操作带到链接目标）。目标不存在是允许的：创建接口会补建，
+/// 权限接口则返回 NotFound。实际的读写/属主权限由随后的文件操作校验，
+/// 失败时返回带系统错误信息的明确提示。
 fn validate_directory_path(path: &str) -> Result<PathBuf, HandlerError> {
-    if path.trim().is_empty() {
+    let path = path.trim();
+    if path.is_empty() {
         return Err(HandlerError::validation("目录路径不能为空"));
     }
 
@@ -105,17 +116,9 @@ fn validate_directory_path(path: &str) -> Result<PathBuf, HandlerError> {
             "目录路径不能包含 ..: {path}"
         )));
     }
-
-    let home = fftp_common::paths::home_dir();
-    // 单元测试使用临时目录（HOME 未指向测试目录），仅在测试构建放开
-    #[cfg(test)]
-    let allowed = dir.starts_with(&home) || dir.starts_with(std::env::temp_dir());
-    #[cfg(not(test))]
-    let allowed = dir.starts_with(&home);
-    if !allowed {
+    if dir.parent().is_none() {
         return Err(HandlerError::validation(format!(
-            "目录必须位于用户主目录 {} 下: {path}",
-            home.display()
+            "不能把文件系统根目录当作业务目录: {path}"
         )));
     }
 
@@ -135,8 +138,14 @@ fn validate_directory_path(path: &str) -> Result<PathBuf, HandlerError> {
 
 /// 创建目录（含父目录）
 fn create_dir(dir: &Path) -> Result<(), HandlerError> {
-    std::fs::create_dir_all(dir)
-        .map_err(|e| HandlerError::internal(format!("创建目录 {} 失败: {e}", dir.display())))
+    std::fs::create_dir_all(dir).map_err(|e| {
+        let msg = format!("创建目录 {} 失败: {e}", dir.display());
+        if e.kind() == std::io::ErrorKind::PermissionDenied {
+            HandlerError::validation(format!("没有权限创建目录：{msg}"))
+        } else {
+            HandlerError::internal(msg)
+        }
+    })
 }
 
 /// Linux：属主设为当前用户、权限 `0700`；Windows：空实现（合理简化）
@@ -148,10 +157,20 @@ fn set_owner_and_mode(dir: &Path) -> Result<(), HandlerError> {
         let uid = nix::unistd::Uid::current();
         let gid = nix::unistd::Gid::current();
         nix::unistd::chown(dir, Some(uid), Some(gid)).map_err(|e| {
-            HandlerError::internal(format!("设置目录 {} 属主失败: {e}", dir.display()))
+            let msg = format!("设置目录 {} 属主失败: {e}", dir.display());
+            if matches!(e, nix::errno::Errno::EPERM | nix::errno::Errno::EACCES) {
+                HandlerError::validation(format!("没有权限修改目录属主：{msg}"))
+            } else {
+                HandlerError::internal(msg)
+            }
         })?;
         std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700)).map_err(|e| {
-            HandlerError::internal(format!("设置目录 {} 权限失败: {e}", dir.display()))
+            let msg = format!("设置目录 {} 权限失败: {e}", dir.display());
+            if e.kind() == std::io::ErrorKind::PermissionDenied {
+                HandlerError::validation(format!("没有权限修改目录权限：{msg}"))
+            } else {
+                HandlerError::internal(msg)
+            }
         })?;
     }
     #[cfg(windows)]

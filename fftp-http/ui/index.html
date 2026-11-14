@@ -36,7 +36,8 @@
   <section id="tab-service">
     <div class="grid-2">
       <div class="card">
-        <h3>运行状态</h3>
+        <h3>FTP/SFTP 协议服务</h3>
+        <p class="hint">由 fftpd 守护进程提供；这里的启停只影响 FTP/SFTP 协议监听，不会启动或停止 fftpd 进程本身。</p>
         <div class="svc-row"><span class="svc-name">FTP</span><span id="ftp-badge" class="badge off">已停止</span></div>
         <div class="svc-row"><span class="svc-name">SFTP</span><span id="sftp-badge" class="badge off">已停止</span></div>
         <div class="meta-list">
@@ -47,7 +48,8 @@
         </div>
       </div>
       <div class="card">
-        <h3>服务操作</h3>
+        <h3>协议服务操作</h3>
+        <p class="hint">仅操作 fftpd 内部的 FTP/SFTP 监听；要启停 fftpd 守护进程本身，请使用下方的「系统服务」。</p>
         <table class="ops">
           <thead><tr><th></th><th>FTP</th><th>SFTP</th><th>全部</th></tr></thead>
           <tbody>
@@ -64,16 +66,19 @@
     <div class="grid-2">
       <div class="card">
         <div class="card-head">
-          <h3>系统服务（fftpd）</h3>
+          <h3>fftpd 守护进程（系统服务）</h3>
           <span id="sys-svc-badge" class="badge off">检测中…</span>
         </div>
-        <p class="hint">由操作系统托管 fftpd 并开机自启。Linux 使用 <code>systemctl --user</code>，Windows 使用 <code>sc.exe</code>（需要管理员权限）。</p>
+        <p class="hint">由操作系统托管 <strong>fftpd 进程本身</strong>并负责开机自启，与上方 FTP/SFTP 协议服务相互独立。Linux 使用 <code>systemctl --user</code>，Windows 使用 <code>sc.exe</code>（需要管理员权限）。</p>
         <div class="meta-list">
           <div><label>平台</label><span id="sys-svc-platform">—</span></div>
           <div><label>状态</label><span id="sys-svc-detail" class="mono">—</span></div>
         </div>
         <div class="form-actions left">
-          <button type="button" class="btn primary" data-sys-act="install">安装/修复服务</button>
+          <button type="button" class="btn primary" data-sys-act="start">启动 fftpd</button>
+          <button type="button" class="btn" data-sys-act="stop">停止 fftpd</button>
+          <button type="button" class="btn" data-sys-act="restart">重启 fftpd</button>
+          <button type="button" class="btn" data-sys-act="install">安装/修复服务</button>
           <button type="button" class="btn" data-sys-act="autostart-on">开启开机自启</button>
           <button type="button" class="btn ghost" data-sys-act="autostart-off">关闭开机自启</button>
           <button type="button" class="btn danger" data-sys-act="uninstall">卸载服务</button>
@@ -226,7 +231,7 @@
         <h3>用户列表</h3>
         <button id="user-add" type="button" class="btn primary">添加用户</button>
       </div>
-      <p class="hint">增删改即时写入用户库并由 fftpd 热重载；口令仅在创建或重置时输入，保存后不可查看。</p>
+      <p class="hint">增删改即时写入用户库并由 fftpd 热重载；口令仅在创建或重置时输入，保存后不可查看。为方便填写，主目录默认建议桌面（<code>~/Desktop</code>），也可填写任意有权限的绝对路径；创建目录/设置权限时后端会校验路径结构、存在性与操作权限。</p>
       <div id="users-table" class="table-wrap">加载中…</div>
     </div>
 
@@ -236,7 +241,7 @@
         <button id="dirs-ensure" class="btn">为全部用户补建主目录</button>
       </div>
       <div class="form-grid">
-        <label>目录路径 <input id="dirs-path" type="text" placeholder="/home/fftp/user1"></label>
+        <label>目录路径 <input id="dirs-path" type="text" placeholder="/home/user/Desktop/user1"></label>
         <div class="form-actions left">
           <button type="button" id="dirs-create" class="btn">创建目录</button>
           <button type="button" id="dirs-perms" class="btn">设置目录权限</button>
@@ -342,7 +347,7 @@
     <div class="form-grid">
       <label>用户名 <input id="ud-name" type="text" autocomplete="off"></label>
       <label>口令 <input id="ud-pass" type="password" autocomplete="new-password"></label>
-      <label class="wide">主目录 <input id="ud-home" type="text" list="ud-home-list" placeholder="/home/fftp/user1"></label>
+      <label class="wide">主目录 <input id="ud-home" type="text" list="ud-home-list" placeholder="默认：桌面（~/Desktop）"></label>
       <datalist id="ud-home-list"></datalist>
       <label>配额（MB） <input id="ud-quota" type="number" min="0" step="1" placeholder="空 = 不限"></label>
       <label>限速（KB/s） <input id="ud-speed" type="number" min="0" step="1" placeholder="空 = 不限"></label>

@@ -1,11 +1,12 @@
-//! 系统服务管理：fftpd 的安装/卸载/开机自启/状态
+//! 系统服务管理：fftpd 守护进程的安装/卸载/启停/开机自启/状态
 //!
 //! Linux 走 `systemctl --user`（用户态服务，无需 root），Windows 走 `sc.exe`
 //! （注册/删除 SCM 服务，需要管理员权限）。所有命令固定参数、不拼接用户输入，
 //! 阻塞进程调用经 `spawn_blocking` 挪出异步运行时。
 //!
-//! 本模块只管理后端 `fftpd`；`fftp-http` 本身由桌面入口按需启动/由 SCM 托管，
-//! 页面上的「关闭 Web 服务」走空闲模块的自身关停路径。
+//! 注意：本模块管理的是**fftpd 守护进程本身**，不是 fftpd 内部的 FTP/SFTP
+//! 协议监听（后者走 `/api/service/*` 的 IPC 命令）。`fftp-http` 本身由桌面
+//! 入口按需启动/由 SCM 托管，页面上的「关闭 Web 服务」走空闲模块的自身关停路径。
 
 use serde::Serialize;
 
@@ -16,6 +17,12 @@ pub enum Action {
     Install,
     /// 卸载（停止 + 删除/禁用）
     Uninstall,
+    /// 启动守护进程
+    Start,
+    /// 停止守护进程
+    Stop,
+    /// 重启守护进程
+    Restart,
     /// 开启开机自启
     AutostartOn,
     /// 关闭开机自启
@@ -29,6 +36,9 @@ impl Action {
         match value {
             "install" => Some(Self::Install),
             "uninstall" => Some(Self::Uninstall),
+            "start" => Some(Self::Start),
+            "stop" => Some(Self::Stop),
+            "restart" => Some(Self::Restart),
             "autostart-on" => Some(Self::AutostartOn),
             "autostart-off" => Some(Self::AutostartOff),
             _ => None,
@@ -41,6 +51,9 @@ impl Action {
         match self {
             Self::Install => "install",
             Self::Uninstall => "uninstall",
+            Self::Start => "start",
+            Self::Stop => "stop",
+            Self::Restart => "restart",
             Self::AutostartOn => "autostart-on",
             Self::AutostartOff => "autostart-off",
         }
@@ -52,6 +65,9 @@ impl Action {
         match self {
             Self::Install => "系统服务已安装并启动",
             Self::Uninstall => "系统服务已卸载",
+            Self::Start => "fftpd 守护进程已启动",
+            Self::Stop => "fftpd 守护进程已停止",
+            Self::Restart => "fftpd 守护进程已重启",
             Self::AutostartOn => "已开启开机自启",
             Self::AutostartOff => "已关闭开机自启",
         }
@@ -100,6 +116,9 @@ fn run_action(action: Action) -> Result<String, String> {
     let args: &[&str] = match action {
         Action::Install => &["--user", "enable", "--now", "fftpd"],
         Action::Uninstall => &["--user", "disable", "--now", "fftpd"],
+        Action::Start => &["--user", "start", "fftpd"],
+        Action::Stop => &["--user", "stop", "fftpd"],
+        Action::Restart => &["--user", "restart", "fftpd"],
         Action::AutostartOn => &["--user", "enable", "fftpd"],
         Action::AutostartOff => &["--user", "disable", "fftpd"],
     };
@@ -131,9 +150,9 @@ fn query_status() -> Result<ServiceStatus, String> {
 
 #[cfg(windows)]
 fn run_action(action: Action) -> Result<String, String> {
-    let bin_path = format!("\"{}\" --service", fftpd_exe_path()?.display());
     match action {
         Action::Install => {
+            let bin_path = format!("\"{}\" --service", fftpd_exe_path()?.display());
             // 已存在时先清理旧服务，保证 binPath 指向当前安装目录
             let _ = run_command("sc.exe", &["stop", "fftpd"]);
             let _ = run_command("sc.exe", &["delete", "fftpd"]);
@@ -155,6 +174,14 @@ fn run_action(action: Action) -> Result<String, String> {
         Action::Uninstall => {
             let _ = run_command("sc.exe", &["stop", "fftpd"]);
             run_command("sc.exe", &["delete", "fftpd"])
+        }
+        Action::Start => run_command("sc.exe", &["start", "fftpd"]),
+        Action::Stop => run_command("sc.exe", &["stop", "fftpd"]),
+        Action::Restart => {
+            // 未运行时 stop 会失败，忽略后仍继续启动
+            let _ = run_command("sc.exe", &["stop", "fftpd"]);
+            std::thread::sleep(std::time::Duration::from_millis(500));
+            run_command("sc.exe", &["start", "fftpd"])
         }
         Action::AutostartOn => run_command("sc.exe", &["config", "fftpd", "start=", "auto"]),
         Action::AutostartOff => run_command("sc.exe", &["config", "fftpd", "start=", "demand"]),
@@ -239,4 +266,34 @@ fn command(program: &str) -> std::process::Command {
         cmd.creation_flags(CREATE_NO_WINDOW);
     }
     cmd
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn action_parse_covers_lifecycle_and_autostart() {
+        for (text, expected) in [
+            ("install", Action::Install),
+            ("uninstall", Action::Uninstall),
+            ("start", Action::Start),
+            ("stop", Action::Stop),
+            ("restart", Action::Restart),
+            ("autostart-on", Action::AutostartOn),
+            ("autostart-off", Action::AutostartOff),
+        ] {
+            assert_eq!(Action::parse(text), Some(expected));
+            assert_eq!(expected.as_str(), text);
+        }
+        assert_eq!(Action::parse("bogus"), None);
+    }
+
+    #[test]
+    fn ok_text_distinguishes_daemon_and_autostart_actions() {
+        assert!(Action::Start.ok_text().contains("守护进程"));
+        assert!(Action::Stop.ok_text().contains("守护进程"));
+        assert!(Action::Restart.ok_text().contains("守护进程"));
+        assert!(Action::AutostartOn.ok_text().contains("自启"));
+    }
 }

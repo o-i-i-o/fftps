@@ -10,11 +10,10 @@
 //! 订阅顺序：先 `subscribe_events()` 取广播接收端，再发订阅/取历史
 //! （服务端"先订阅后补推历史"，反序会丢历史）。
 //!
-//! 两条流的分野：程序日志流经 `SubscribeLogs` 由 IPC 服务端补推历史
-//! （`Event::Log`）；文件操作审计流经 `GetRecentFileOps` 在本层补推
-//! 历史，再转发广播中的 `Event::FileOp` 实时条目。
+//! 两条流的分野：程序日志流订阅 `SubscribeLogs`，文件操作审计流订阅
+//! `SubscribeFileOps`；历史补推与实时事件过滤均由 IPC 服务端按订阅类别
+//! 完成（见 `fftp_ipc::server`），本层只负责序列化为对应 SSE 事件名。
 
-use std::collections::VecDeque;
 use std::convert::Infallible;
 use std::pin::Pin;
 use std::sync::Arc;
@@ -26,13 +25,12 @@ use axum::http::HeaderMap;
 use axum::http::StatusCode;
 use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{IntoResponse, Response};
-use serde::Deserialize;
 use tokio::sync::OwnedSemaphorePermit;
 use tokio_stream::Stream;
 use tokio_stream::wrappers::{BroadcastStream, errors::BroadcastStreamRecvError};
 
 use fftp_ipc::client::Client;
-use fftp_ipc::protocol::{Command, Event as IpcEvent, FileOpLogEntry};
+use fftp_ipc::protocol::{Command, Event as IpcEvent};
 
 use crate::auth::{AuthedUser, session_token_from_cookie};
 use crate::error::ApiError;
@@ -86,7 +84,6 @@ pub async fn logs_stream(
     Ok(sse_response(EventStream {
         inner: BroadcastStream::new(events),
         client: Some(client),
-        pending: VecDeque::new(),
         fileop: false,
         state,
         token,
@@ -98,7 +95,7 @@ pub async fn logs_stream(
 /// GET /api/fileop/stream → 文件操作审计 SSE 流（事件 `fileop`）
 ///
 /// # Errors
-/// 连接 fftpd 失败时返回错误；历史读取失败仅告警并降级为只推实时条目
+/// 连接 fftpd 失败或订阅失败时返回错误
 pub async fn fileop_stream(
     user: AuthedUser,
     State(state): State<Arc<AppState>>,
@@ -111,33 +108,16 @@ pub async fn fileop_stream(
         .await
         .map_err(|e| ApiError::internal(format!("连接 fftpd 失败: {e:#}")))?;
 
-    // 先取广播接收端再取历史：间隙条目经广播补上（可能与历史重复，少见可接受）
+    // 先取广播接收端，再订阅（服务端先订阅后补推历史，保证不丢）
     let events = client.subscribe_events();
-    let pending = if q.tail > 0 {
-        match client
-            .request(Command::GetRecentFileOps { count: q.tail })
-            .await
-        {
-            Ok(data) => match serde_json::from_value::<FileOpEntries>(data) {
-                Ok(parsed) => parsed.entries,
-                Err(e) => {
-                    tracing::warn!("读取订阅历史审计条目失败: {e}");
-                    Vec::new()
-                }
-            },
-            Err(e) => {
-                tracing::warn!("读取订阅历史审计条目失败: {e}");
-                Vec::new()
-            }
-        }
-    } else {
-        Vec::new()
-    };
+    client
+        .request(Command::SubscribeFileOps { tail_count: q.tail })
+        .await
+        .map_err(ApiError::from)?;
 
     Ok(sse_response(EventStream {
         inner: BroadcastStream::new(events),
         client: Some(client),
-        pending: pending.into(),
         fileop: true,
         state,
         token,
@@ -160,20 +140,11 @@ fn sse_response(stream: EventStream) -> Response {
         .into_response()
 }
 
-/// `GetRecentFileOps` 响应
-#[derive(Debug, Deserialize)]
-struct FileOpEntries {
-    #[serde(default)]
-    entries: Vec<FileOpLogEntry>,
-}
-
 /// SSE 事件流：持有专用 IPC 连接直至流结束
 struct EventStream {
     inner: BroadcastStream<IpcEvent>,
     /// `None` 表示连接已释放
     client: Option<Client>,
-    /// 待补推的历史审计条目（仅 fileop 流；程序日志的补推由 IPC 服务端完成）
-    pending: VecDeque<FileOpLogEntry>,
     /// true = 文件操作审计流（转发 `Event::FileOp`），false = 程序日志流（`Event::Log`）
     fileop: bool,
     /// 运行期复核会话所需的共享状态
@@ -229,13 +200,6 @@ impl Stream for EventStream {
         if self.session_expired() {
             self.release();
             return Poll::Ready(None);
-        }
-
-        // 先补推历史条目（仅 fileop 流有存量）
-        while let Some(entry) = self.pending.pop_front() {
-            if let Some(item) = Self::emit(&entry, "fileop") {
-                return Poll::Ready(Some(item));
-            }
         }
 
         loop {

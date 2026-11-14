@@ -690,7 +690,7 @@ async fn ensure_user_directories_creates_missing_dirs_once() {
 }
 
 #[tokio::test]
-async fn directory_helpers_validate_and_set_permissions() {
+async fn directory_helpers_reject_invalid_paths() {
     let env = TestEnv::new();
 
     // 空路径校验
@@ -709,7 +709,47 @@ async fn directory_helpers_validate_and_set_permissions() {
         .expect_err("空路径应被拒绝");
     assert_eq!(err.code, ErrorCode::Validation);
 
-    // 创建用户目录（含父目录）
+    // 结构非法：相对路径、含 `..` 的绝对路径
+    for bad in [
+        "relative/dir".to_string(),
+        format!("{}/../escape", env.dir.path().display()),
+    ] {
+        let err = env
+            .call(Command::CreateUserDirectory { path: bad })
+            .await
+            .expect_err("非法结构应被拒绝");
+        assert_eq!(err.code, ErrorCode::Validation);
+    }
+
+    // 文件系统根不能当作业务目录
+    #[cfg(unix)]
+    {
+        let err = env
+            .call(Command::CreateUserDirectory {
+                path: "/".to_string(),
+            })
+            .await
+            .expect_err("文件系统根应被拒绝");
+        assert_eq!(err.code, ErrorCode::Validation);
+    }
+
+    // 已存在的普通文件不能当作目录
+    let file_path = env.dir.path().join("not-a-dir");
+    std::fs::write(&file_path, b"x").expect("创建测试文件");
+    let err = env
+        .call(Command::CreateUserDirectory {
+            path: file_path.display().to_string(),
+        })
+        .await
+        .expect_err("文件路径应被拒绝");
+    assert_eq!(err.code, ErrorCode::Validation);
+}
+
+#[tokio::test]
+async fn directory_helpers_create_and_set_permissions() {
+    let env = TestEnv::new();
+
+    // 任意有权限的目录（不限于 HOME/桌面）均可创建
     let user_dir = env.dir.path().join("homes").join("bob");
     let data = env
         .call(Command::CreateUserDirectory {
@@ -726,10 +766,40 @@ async fn directory_helpers_validate_and_set_permissions() {
         assert_eq!(mode, 0o700, "新建目录应为 0700");
     }
 
+    // 目标本身是符号链接时拒绝改权限；经符号链接的中间组件按目标继续
+    #[cfg(unix)]
+    {
+        let outside = env.dir.path().join("outside");
+        std::fs::create_dir_all(&outside).unwrap();
+        let link = env.dir.path().join("homes").join("link");
+        std::os::unix::fs::symlink(&outside, &link).unwrap();
+        let err = env
+            .call(Command::CreateUserDirectory {
+                path: link.display().to_string(),
+            })
+            .await
+            .expect_err("符号链接目录应被拒绝");
+        assert_eq!(err.code, ErrorCode::Validation);
+
+        let through = link.join("sub");
+        env.call(Command::CreateUserDirectory {
+            path: through.display().to_string(),
+        })
+        .await
+        .expect("经符号链接中间组件的目录应可用");
+        assert!(outside.join("sub").is_dir());
+    }
+
     // 权限设置：不存在 → NotFound；存在 → 返回权限标识
     let err = env
         .call(Command::SetupDirectoryPermissions {
-            path: env.dir.path().join("nope").display().to_string(),
+            path: env
+                .dir
+                .path()
+                .join("homes")
+                .join("nope")
+                .display()
+                .to_string(),
         })
         .await
         .expect_err("不存在的目录应报 NotFound");

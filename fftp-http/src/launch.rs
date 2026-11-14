@@ -1,8 +1,8 @@
 //! `fftp-http launch`：桌面快捷方式入口
 //!
-//! 流程：读取配置 → 健康探测（校验 app 身份）→ 必要时启动 fftpd 与
-//! fftp-http（systemd 用户服务优先，失败回退脱离终端启动）→ 等待就绪 →
-//! 用默认浏览器打开。服务已运行时只打开浏览器，不重复启动。
+//! 流程：读取配置 → 确保 fftpd 已启动 → 健康探测（校验 app 身份）→
+//! 必要时启动 fftp-http（systemd 用户服务优先，失败回退脱离终端启动）→
+//! 等待就绪 → 用默认浏览器打开。Web 服务已运行时只打开浏览器，不重复启动。
 //!
 //! 首次启动且无管理员账户时，打开 `/setup?token=...` 引导页；令牌由
 //! 服务启动时写入 0600 文件（见 [`crate::setup`]）。
@@ -41,6 +41,10 @@ pub fn run() -> Result<()> {
     cfg.validate()?;
     let url = browser_url(&cfg)?;
 
+    // 无论 Web 前端是否已在运行，都先确保后台 fftpd 已启动：否则从桌面
+    // 入口打开管理页时，前端可能已在线而 fftpd 仍处于停止状态。
+    start_backend();
+
     if let Ok(health) = probe(&cfg) {
         return open_target(&url, health);
     }
@@ -64,7 +68,6 @@ pub fn run() -> Result<()> {
         return open_target(&url, health);
     }
 
-    start_backend();
     if !start_frontend() {
         let _ = spawn_detached();
     }

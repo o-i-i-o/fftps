@@ -315,8 +315,7 @@ impl<R: AsyncRead + Unpin> AsyncRead for RateLimitedReader<R> {
 
         self.limiter.try_refill();
 
-        let available =
-            usize::try_from(self.limiter.get_available_tokens()).unwrap_or(usize::MAX);
+        let available = usize::try_from(self.limiter.get_available_tokens()).unwrap_or(usize::MAX);
         if available == 0 {
             let bytes_per_second = self.limiter.bytes_per_second;
             let wait_ms = wait_millis(

@@ -262,6 +262,15 @@ pub fn socket_path() -> PathBuf {
 
 // ---------- 跨平台派生路径 ----------
 
+/// 桌面目录：单用户桌面环境下前端默认建议的 FTP/SFTP 用户根目录
+///
+/// Linux 为 `~/Desktop`，Windows 为 `C:\Users\<用户>\Desktop`。仅用于
+/// 快速填充，管理端仍可填写任意有权限的目录。
+#[must_use]
+pub fn desktop_dir() -> PathBuf {
+    home_dir().join("Desktop")
+}
+
 #[must_use]
 pub fn users_path() -> PathBuf {
     config_dir().join("users.json")
@@ -410,6 +419,13 @@ mod tests {
         assert!(config_dir().ends_with("fftpd"));
         assert!(http_config_path().ends_with("fftp-http.toml"));
         assert!(ipc_token_path().ends_with("ipc.token"));
+    }
+
+    #[test]
+    fn test_desktop_dir_is_under_home() {
+        let desktop = desktop_dir();
+        assert!(desktop.ends_with("Desktop"));
+        assert!(desktop.starts_with(home_dir()));
     }
 
     #[test]

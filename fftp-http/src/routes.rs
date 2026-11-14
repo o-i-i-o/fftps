@@ -517,7 +517,7 @@ async fn self_shutdown(State(state): State<Arc<AppState>>, user: AuthedUser) -> 
     Json(serde_json::json!({"ok": true}))
 }
 
-// ---------- 系统服务（fftpd 安装/卸载/自启） ----------
+// ---------- 系统服务（fftpd 守护进程 安装/卸载/启停/自启） ----------
 
 /// GET /api/system-service/status → fftpd 系统服务状态
 async fn system_service_status() -> ApiResult<Json<system_service::ServiceStatus>> {
@@ -527,7 +527,7 @@ async fn system_service_status() -> ApiResult<Json<system_service::ServiceStatus
         .map_err(|e| ApiError::new(StatusCode::BAD_GATEWAY, "system_service", e))
 }
 
-/// POST /api/system-service/{install|uninstall|autostart-on|autostart-off}
+/// POST /api/system-service/{install|uninstall|start|stop|restart|autostart-on|autostart-off}
 async fn system_service_action(
     State(state): State<Arc<AppState>>,
     user: AuthedUser,
@@ -753,8 +753,11 @@ async fn put_admin_users(
 
 /// POST /api/user-directories/suggest → 按用户名给出主目录候选
 ///
-/// 本地计算（不访问文件系统，便于跨平台）：HOME 下常用目录、带用户名
-/// 的候选，以及 Linux 的 /srv/ftp、/var/ftp（Windows 为 C:\ftp）。
+/// 单用户桌面环境下，为了在**不允许遍历目录**的前提下提升填写体验，这里只
+/// 返回词法拼接的桌面路径（`~/Desktop` 与 `~/Desktop/<用户名>`）。管理端仍
+/// 可填写任意有权限的目录；候选仅作快速填充，不表示目录已存在或必须位于
+/// 桌面。函数**不探测文件系统**（不遍历、不判断 `is_dir`），避免管理前端被
+/// 用作目录探测器。
 async fn suggest_user_dirs(
     _user: AuthedUser,
     Json(body): Json<SuggestBody>,
@@ -764,60 +767,20 @@ async fn suggest_user_dirs(
     })
 }
 
-/// 建议的主目录候选（保留顺序去重）
+/// 建议的主目录候选：桌面本身 + 桌面下以用户名命名的子目录
 fn suggested_dirs(username: &str) -> Vec<String> {
     let name = username.trim();
-    if name.is_empty()
-        || name
-            .chars()
-            .any(|c| c.is_whitespace() || c.is_control() || "/\\\"'".contains(c))
-    {
+    // 与 FTP/SFTP 认证使用同一套用户名规则，避免把 "." / ".." 拼进路径
+    if !fftp_common::users::is_safe_username(name) {
         return Vec::new();
     }
 
-    let mut dirs: Vec<String> = Vec::new();
-    #[cfg(windows)]
-    {
-        if let Ok(profile) = std::env::var("USERPROFILE") {
-            let base = std::path::PathBuf::from(&profile);
-            dirs.push(profile);
-            for sub in ["Desktop", "Documents", "Downloads"] {
-                let path = base.join(sub);
-                if path.is_dir() {
-                    dirs.push(path.to_string_lossy().into_owned());
-                }
-            }
-            dirs.push(
-                base.join(format!("ftp-{name}"))
-                    .to_string_lossy()
-                    .into_owned(),
-            );
-        }
-        dirs.push(format!("C:\\ftp\\{name}"));
+    let desktop = fftp_common::paths::desktop_dir();
+    let mut dirs = vec![desktop.to_string_lossy().into_owned()];
+    let named = desktop.join(name);
+    if named != desktop {
+        dirs.push(named.to_string_lossy().into_owned());
     }
-    #[cfg(not(windows))]
-    {
-        if let Ok(home) = std::env::var("HOME") {
-            let base = std::path::PathBuf::from(&home);
-            dirs.push(home);
-            for sub in ["Desktop", "Documents", "Downloads"] {
-                let path = base.join(sub);
-                if path.is_dir() {
-                    dirs.push(path.to_string_lossy().into_owned());
-                }
-            }
-            dirs.push(
-                base.join(format!("ftp-{name}"))
-                    .to_string_lossy()
-                    .into_owned(),
-            );
-        }
-        dirs.push(format!("/srv/ftp/{name}"));
-        dirs.push(format!("/var/ftp/{name}"));
-    }
-
-    let mut seen = std::collections::HashSet::new();
-    dirs.retain(|d| seen.insert(d.clone()));
     dirs
 }
 
@@ -950,4 +913,44 @@ async fn fileop_content(
         })
         .await?;
     Ok(Json(data))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn suggested_dirs_are_lexical_desktop_paths() {
+        let desktop = fftp_common::paths::desktop_dir();
+        let dirs = suggested_dirs("alice");
+        assert_eq!(
+            dirs,
+            vec![
+                desktop.to_string_lossy().into_owned(),
+                desktop.join("alice").to_string_lossy().into_owned(),
+            ]
+        );
+        // 仅做词法拼接，不探测目录是否存在
+        assert!(
+            dirs.iter()
+                .all(|dir| std::path::Path::new(dir).starts_with(&desktop))
+        );
+    }
+
+    #[test]
+    fn suggested_dirs_reject_unsafe_usernames() {
+        for name in [
+            "",
+            " ",
+            ".",
+            "..",
+            "../escape",
+            "a/b",
+            "a\\b",
+            "-lead",
+            "中文",
+        ] {
+            assert!(suggested_dirs(name).is_empty(), "应拒绝用户名: {name:?}");
+        }
+    }
 }

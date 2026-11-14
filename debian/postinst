@@ -7,10 +7,13 @@
 #      预置到活跃用户的 ~/.config/fftpd/ 下；
 #   2. 为每个活跃桌面会话执行 systemctl --user daemon-reload，
 #      让用户管理器载入（升级后的）单元文件；
-#   3. 已启用且正在运行的用户服务重启一次，加载升级后的二进制。
+#   3. 首次安装时启用并启动 fftpd 守护进程；升级时只重启已启用且正在
+#      运行的用户服务，避免覆盖用户主动禁用/停止的选择。
 
 set -e
 
+# $2 为空表示首次安装，否则为被升级的旧版本号
+OLD_VERSION="${2:-}"
 SERVICES="fftpd"
 if [ -x /usr/bin/fftp-http ]; then
     SERVICES="$SERVICES fftp-http"
@@ -76,8 +79,17 @@ case "$1" in
             # 载入（升级后的）单元文件；用户管理器不会自动重读
             user_systemctl "$uid" "$user_name" daemon-reload || true
 
-            # 已启用且在运行：重启以加载新二进制（未启用/未运行则不打扰用户）
+            # 首次安装：启用并立即启动 fftpd（安装后桌面入口即可连接后端）。
+            # 升级：只重启已启用且在运行的服务，未启用/未运行则不打扰用户。
             for service in $SERVICES; do
+                if [ -z "$OLD_VERSION" ] && [ "$service" = "fftpd" ]; then
+                    if user_systemctl "$uid" "$user_name" enable --now "$service"; then
+                        echo "已为用户 ${user_name} 启用并启动 ${service} 用户服务"
+                    else
+                        echo "警告: 无法为用户 ${user_name} 启用 ${service}，请登录后手动执行 systemctl --user enable --now fftpd" >&2
+                    fi
+                    continue
+                fi
                 if user_systemctl "$uid" "$user_name" is-enabled "$service" 2> /dev/null | grep -q '^enabled'; then
                     if user_systemctl "$uid" "$user_name" is-active --quiet "$service" 2> /dev/null; then
                         if user_systemctl "$uid" "$user_name" restart "$service"; then
@@ -89,8 +101,13 @@ case "$1" in
         done
 
         echo "FFTPS 安装完成。"
-        echo "启用后台服务（以桌面用户运行，无需 root）："
-        echo "  systemctl --user enable --now fftpd"
+        if [ -z "$OLD_VERSION" ]; then
+            echo "已尝试为活跃桌面用户启用并启动 fftpd；若安装时没有活跃会话，"
+            echo "请登录后执行：systemctl --user enable --now fftpd"
+        else
+            echo "启用后台服务（以桌面用户运行，无需 root）："
+            echo "  systemctl --user enable --now fftpd"
+        fi
         echo "启动 Web 管理界面："
         echo "  从应用菜单打开「FFTPS Web 管理」，或执行 fftp-http launch"
         echo "  首次启动会自动进入本机 setup 引导页（默认 http://127.0.0.1:8080）"

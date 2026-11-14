@@ -72,16 +72,22 @@ for runtime_dir in /run/user/[0-9]*; do
     [ -n "$user_name" ] || continue
     XDG_RUNTIME_DIR="$runtime_dir" su -s /bin/sh "$user_name" \
         -c "systemctl --user daemon-reload" >/dev/null 2>&1 || :
-    for service in fftpd fftp-http; do
-        if XDG_RUNTIME_DIR="$runtime_dir" su -s /bin/sh "$user_name" \
-            -c "systemctl --user is-enabled $service" 2>/dev/null | grep -q '^enabled'; then
+    # $1 == 1 首次安装：启用并启动 fftpd；升级时只重启已启用且在运行的服务
+    if [ "$1" -eq 1 ]; then
+        XDG_RUNTIME_DIR="$runtime_dir" su -s /bin/sh "$user_name" \
+            -c "systemctl --user enable --now fftpd" >/dev/null 2>&1 || :
+    else
+        for service in fftpd fftp-http; do
             if XDG_RUNTIME_DIR="$runtime_dir" su -s /bin/sh "$user_name" \
-                -c "systemctl --user is-active --quiet $service" >/dev/null 2>&1; then
-                XDG_RUNTIME_DIR="$runtime_dir" su -s /bin/sh "$user_name" \
-                    -c "systemctl --user restart $service" >/dev/null 2>&1 || :
+                -c "systemctl --user is-enabled $service" 2>/dev/null | grep -q '^enabled'; then
+                if XDG_RUNTIME_DIR="$runtime_dir" su -s /bin/sh "$user_name" \
+                    -c "systemctl --user is-active --quiet $service" >/dev/null 2>&1; then
+                    XDG_RUNTIME_DIR="$runtime_dir" su -s /bin/sh "$user_name" \
+                        -c "systemctl --user restart $service" >/dev/null 2>&1 || :
+                fi
             fi
-        fi
-    done
+        done
+    fi
 done
 exit 0
 

@@ -379,6 +379,9 @@ function showShutdownNotice() {
 // ---------- 系统服务（fftpd） ----------
 
 const SYS_ACT_LABELS = {
+  start: "启动 fftpd",
+  stop: "停止 fftpd",
+  restart: "重启 fftpd",
   install: "安装/修复服务",
   uninstall: "卸载服务",
   "autostart-on": "开启开机自启",
@@ -414,7 +417,8 @@ document.querySelectorAll("[data-sys-act]").forEach((btn) => {
   btn.addEventListener("click", async () => {
     const act = btn.dataset.sysAct;
     const label = SYS_ACT_LABELS[act] || act;
-    if ((act === "uninstall" || act === "autostart-off") && !confirm(`确认${label}？`)) return;
+    const needsConfirm = ["uninstall", "autostart-off", "stop", "restart"].includes(act);
+    if (needsConfirm && !confirm(`确认${label}？`)) return;
     btn.disabled = true;
     btn.classList.add("busy");
     try {
@@ -1131,9 +1135,14 @@ async function refreshHomeSuggestions() {
       method: "POST",
       body: { username: name },
     });
-    list.innerHTML = (res.directories || [])
+    const dirs = res.directories || [];
+    list.innerHTML = dirs
       .map((d) => `<option value="${escapeHtml(d)}"></option>`)
       .join("");
+    // 新增用户时默认填入桌面根目录，编辑已有用户时绝不覆盖
+    if (!editingUser && !$("ud-home").value.trim() && dirs.length) {
+      $("ud-home").value = dirs[0];
+    }
   } catch (_) { /* 建议失败不影响手工填写 */ }
 }
 

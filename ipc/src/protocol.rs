@@ -159,6 +159,15 @@ pub enum Command {
         tail_count: u32,
     },
     UnsubscribeLogs,
+    /// 订阅文件操作审计：先由服务端补推 `tail_count` 条历史，随后持续推送
+    ///
+    /// 与 [`Command::SubscribeLogs`] 一样按 IPC 连接记账，每个 SSE 流独占一条连接，
+    /// 由服务端按事件类型分流，避免程序日志流与审计流互相串流。
+    SubscribeFileOps {
+        #[serde(default)]
+        tail_count: u32,
+    },
+    UnsubscribeFileOps,
     GetLogFiles,
     GetLogFileContent {
         path: String,
@@ -311,6 +320,66 @@ mod tests {
                 }
                 OpResult::Ok { .. } => panic!("unexpected: ok"),
             },
+            other => panic!("unexpected: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn file_op_subscription_commands_roundtrip() {
+        let subscribe = Message::Request(Request {
+            id: 9,
+            cmd: Command::SubscribeFileOps { tail_count: 25 },
+        });
+        let json = serde_json::to_string(&subscribe).unwrap();
+        assert!(json.contains(r#""cmd":"subscribe_file_ops""#));
+        assert!(json.contains(r#""tail_count":25"#));
+        match roundtrip(&subscribe) {
+            Message::Request(req) => match req.cmd {
+                Command::SubscribeFileOps { tail_count } => assert_eq!(tail_count, 25),
+                other => panic!("unexpected: {other:?}"),
+            },
+            other => panic!("unexpected: {other:?}"),
+        }
+
+        let unsubscribe = Message::Request(Request {
+            id: 10,
+            cmd: Command::UnsubscribeFileOps,
+        });
+        match roundtrip(&unsubscribe) {
+            Message::Request(req) => assert!(matches!(req.cmd, Command::UnsubscribeFileOps)),
+            other => panic!("unexpected: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn file_op_notification_roundtrip() {
+        let msg = Message::Notification(Notification {
+            event: Event::FileOp {
+                entry: FileOpLogEntry {
+                    timestamp: "t".into(),
+                    username: "alice".into(),
+                    client_ip: "127.0.0.1".into(),
+                    operation: "UPLOAD".into(),
+                    file_path: "/Desktop/a.txt".into(),
+                    file_size: 12,
+                    protocol: "FTP".into(),
+                    success: true,
+                    message: String::new(),
+                },
+            },
+        });
+        assert!(
+            serde_json::to_string(&msg)
+                .unwrap()
+                .contains(r#""event":"file_op""#)
+        );
+        match roundtrip(&msg) {
+            Message::Notification(Notification {
+                event: Event::FileOp { entry },
+            }) => {
+                assert_eq!(entry.username, "alice");
+                assert_eq!(entry.operation, "UPLOAD");
+            }
             other => panic!("unexpected: {other:?}"),
         }
     }
