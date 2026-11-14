@@ -2,7 +2,8 @@
 #
 # 单一产品形态：fftpd 后端 + fftp-http Web 管理前端
 #   - Linux: deb / rpm / tar.gz（amd64 + arm64），附 systemd --user 单元与桌面入口
-#   - Windows: NSIS 安装器（setup.exe，x86_64 + arm64），注册 fftpd 服务并创建快捷方式
+#   - Windows: 每架构一个 zip（含 install/uninstall 脚本）+ MSI（WiX，原生 msiexec 双架构），
+#     注册 fftpd 服务并创建快捷方式
 # 推送 v* 标签时自动构建并创建 GitHub Release
 # 注：cargo fmt 检查暂未纳入——common/ipc/ftp/sftp 在当前 stable rustfmt
 # 下存在全量格式漂移（迁移前遗留，另行列清理项）；clippy 同样不加 -D warnings，
@@ -103,18 +104,12 @@ jobs:
       - name: 构建（scripts/build.sh）
         run: ./scripts/build.sh ${{ matrix.target }}
 
-      - name: 安装 NSIS
-        if: contains(matrix.target, 'windows')
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y nsis
-
-      - name: 构建 Windows 安装器（NSIS）
+      - name: 构建 Windows zip 交付物
         if: contains(matrix.target, 'windows')
         run: |
           ARCH="x86_64"
           [[ "${{ matrix.target }}" == aarch64* ]] && ARCH="arm64"
-          ./scripts/build-nsis.sh -a "$ARCH"
+          ./scripts/build-zip.sh -a "$ARCH"
 
       - name: 上传构建产物
         uses: actions/upload-artifact@v4
@@ -200,11 +195,48 @@ jobs:
           path: dist/*.rpm
           if-no-files-found: error
 
+  # MSI 绑定依赖 Windows 原生 msi.dll，必须在 windows runner 上构建
+  # （Linux 上 WiX 编译 Directory/@Name 亦会因路径根语义差异误报 WIX0389）
+  msi:
+    name: MSI（x64 + arm64）
+    needs: build
+    runs-on: windows-latest
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v5
+
+      - name: 安装 dotnet 与 WiX 5
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 9.x
+
+      - name: 下载 Windows 构建产物
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          pattern: dist-*-windows-*
+          merge-multiple: true
+
+      - name: 构建 MSI（x64 + arm64）
+        shell: bash
+        run: |
+          dotnet tool install --global wix --version 5.0.2
+          wix extension add -g WixToolset.Util.wixext
+          ./scripts/build-msi.sh -a x86_64 -b dist/x86_64-pc-windows-gnu
+          ./scripts/build-msi.sh -a arm64 -b dist/aarch64-pc-windows-msvc
+
+      - name: 上传 MSI 产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: dist-msi
+          path: dist/*.msi
+          if-no-files-found: error
+
   release:
     name: 发布 Release
     # 仅在推送 v* 标签时触发，且 CI 全部通过后才发布
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: [lint, test, build, deb, rpm]
+    needs: [lint, test, build, deb, rpm, msi]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -230,7 +262,7 @@ jobs:
 
       - name: 打包 Linux tarball（附 systemd 用户单元与桌面入口）
         # 单一形态：fftpd + fftp-http，附带两个 systemd --user 单元。
-        # Windows 使用 NSIS 安装器（setup.exe），不再提供 zip + cmd 脚本。
+        # Windows 交付物：每架构 zip（含安装/卸载脚本）+ MSI（WiX，windows runner 原生构建）。
         run: |
           TAG_VERSION="${GITHUB_REF_NAME#v}"
           for t in x86_64-unknown-linux-gnu aarch64-unknown-linux-gnu x86_64-unknown-linux-musl; do
@@ -252,7 +284,8 @@ jobs:
         with:
           files: |
             dist/*.tar.gz
-            dist/*-setup.exe
+            dist/*.zip
+            dist/*.msi
             dist/*.deb
             dist/*.rpm
           generate_release_notes: true

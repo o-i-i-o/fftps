@@ -1,0 +1,118 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- FFTPS Web 管理版 Windows MSI 安装包（WiX 5）
+
+     双架构由 scripts/build-msi.sh 以 arch 参数（x64 / arm64）分别构建，
+     安装的二进制为 -D BinDir 指定的对应架构原生 exe。
+
+     安装语义（与原 NSIS 安装器对齐）：
+       - %ProgramFiles%\fftps\{fftpd,fftp-http,fftp-http-launcher}.exe
+       - fftpd 注册 SCM 自启服务（binPath 附带 service 启动参数）
+       - %ProgramData%\fftpd 下配置模板（组件 Permanent，用户修改过的文件
+         依 Windows Installer 非版本化文件规则自动保留），Users 组可写
+       - 桌面/开始菜单快捷方式 → fftp-http-launcher.exe
+       - 卸载经「设置 → 应用」标准入口（MajorUpgrade 防降级）
+-->
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs"
+     xmlns:util="http://wixtoolset.org/schemas/v4/wxs/util">
+
+  <?define ProductName = "FFTPS Web 管理" ?>
+  <?define ServiceName = "fftpd" ?>
+
+  <Package Name="$(ProductName)"
+           Manufacturer="fftps developers"
+           Version="$(var.Version)"
+           UpgradeCode="9C0F2A6E-3B47-4C1D-8E5A-6F2B9D3C7A10"
+           Scope="perMachine"
+           InstallerVersion="500"
+           Language="2052"
+           Codepage="65001">
+
+    <MajorUpgrade DowngradeErrorMessage="已安装更高版本的 $(ProductName)。" />
+
+    <!-- 卸载/添加删除程序图标：直接取自 launcher exe 内嵌图标 -->
+    <?define LauncherExe = "$(var.BinDir)/fftp-http-launcher.exe" ?>
+    <Icon Id="LauncherIcon" SourceFile="$(LauncherExe)" />
+    <Property Id="ARPPRODUCTICON" Value="LauncherIcon" />
+    <Property Id="ARPHELPLINK" Value="https://github.com/fftps/fftps" />
+
+    <MediaTemplate EmbedCab="yes" />
+
+    <Feature Id="Main" Title="$(ProductName)" Level="1">
+      <ComponentRef Id="fftpdExe" />
+      <ComponentRef Id="fftpHttpExe" />
+      <ComponentRef Id="fftpLauncherExe" />
+      <ComponentRef Id="DataDir" />
+      <ComponentRef Id="LogDir" />
+      <ComponentRef Id="ConfigTemplate" />
+      <ComponentRef Id="HttpTemplate" />
+    </Feature>
+
+    <!-- ============ 程序目录 ============ -->
+    <StandardDirectory Id="ProgramFiles64Folder">
+      <Directory Id="INSTALLFOLDER" Name="fftps">
+        <Component Id="fftpdExe" Guid="1D9C2A4B-6E3F-4F8A-B2C1-7D5E8A9F0B12">
+          <File Id="F_fftpd" Name="fftpd.exe" Source="$(var.BinDir)/fftpd.exe" KeyPath="yes" />
+          <!-- fftpd 自启服务：等价于 sc create fftpd（binPath 引号包裹 exe 并追加 service 参数） -->
+          <ServiceInstall Id="SvcInstall_fftpd"
+                          Name="$(ServiceName)"
+                          DisplayName="fftps FTP/SFTP Server"
+                          Description="FFTPS FTP/SFTP 服务端（开机自启）"
+                          Type="ownProcess"
+                          Start="auto"
+                          ErrorControl="normal"
+                          Arguments="--service" />
+          <ServiceControl Id="SvcControl_fftpd"
+                          Name="$(ServiceName)"
+                          Start="install"
+                          Stop="both"
+                          Remove="uninstall"
+                          Wait="yes" />
+        </Component>
+        <Component Id="fftpHttpExe" Guid="2E0D3B5C-7F40-4A9B-C3D2-8E6F9B0A1C23">
+          <File Id="F_fftphttp" Name="fftp-http.exe" Source="$(var.BinDir)/fftp-http.exe" KeyPath="yes" />
+        </Component>
+        <Component Id="fftpLauncherExe" Guid="3F1E4C6D-8051-4BAC-D4E3-9F70AC1B2D34">
+          <File Id="F_launcher" Name="fftp-http-launcher.exe" Source="$(LauncherExe)" KeyPath="yes">
+            <!-- 非通告快捷方式：目标 launcher，图标取 fftp-http.exe -->
+            <Shortcut Id="S_Desktop" Directory="DesktopFolder" Name="$(ProductName)" Icon="LauncherIcon" />
+            <Shortcut Id="S_StartMenu" Directory="SMFOLDER" Name="$(ProductName)" Icon="LauncherIcon" />
+          </File>
+          <RemoveFolder Id="R_SMFOLDER" Directory="SMFOLDER" On="uninstall" />
+          <RegistryValue Root="HKLM" Key="Software\fftps" Name="installed" Type="integer" Value="1" />
+        </Component>
+      </Directory>
+    </StandardDirectory>
+
+    <!-- ============ 数据目录（%ProgramData%\fftpd，即 CommonAppData） ============ -->
+    <StandardDirectory Id="CommonAppDataFolder">
+      <Directory Id="DATADIR" Name="fftpd">
+        <Component Id="DataDir" Guid="4A2F5D7E-9162-4CBD-E5F4-0A81BD2C3E45" Permanent="yes">
+          <CreateFolder>
+            <!-- Users 组可写：配置/日志由服务（LocalSystem）与按需前端（普通用户）共同维护 -->
+            <util:PermissionEx User="Users" GenericRead="yes" GenericWrite="yes"
+                               GenericExecute="yes" ChangePermission="no"
+                               CreateFile="yes" CreateChild="yes" DeleteChild="yes"
+                               Delete="yes" Traverse="yes" />
+          </CreateFolder>
+        </Component>
+        <Directory Id="LOGDIR" Name="logs" />
+        <Component Id="LogDir" Guid="5B3A6E8F-0273-4DCE-F6A5-1B92CE3D4F56" Permanent="yes">
+          <CreateFolder />
+        </Component>
+        <Component Id="ConfigTemplate" Guid="6C4B7F90-1384-4EDF-A7B6-2CA3DF4E5A67" Permanent="yes">
+          <File Id="F_config" Name="config.toml" Source="$(var.ProjectRoot)/deploy/common/config.toml" KeyPath="yes" />
+        </Component>
+        <Component Id="HttpTemplate" Guid="7D5C8A01-2495-4FE0-B8C7-3DB4EA5F6B78" Permanent="yes">
+          <File Id="F_httpconfig" Name="fftp-http.toml" Source="$(var.ProjectRoot)/deploy/common/fftp-http.toml" KeyPath="yes" />
+        </Component>
+      </Directory>
+    </StandardDirectory>
+
+    <!-- ============ 快捷方式容器目录 ============ -->
+    <StandardDirectory Id="ProgramMenuFolder">
+      <Directory Id="SMFOLDER" Name="FFTPS" />
+    </StandardDirectory>
+    <StandardDirectory Id="DesktopFolder" />
+
+  </Package>
+</Wix>

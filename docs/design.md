@@ -201,7 +201,7 @@ enable_gui_logging = true
 - 目标矩阵：`x86_64-unknown-linux-gnu`、`aarch64-unknown-linux-gnu`、`x86_64-unknown-linux-musl`、`x86_64-pc-windows-gnu`、`aarch64-pc-windows-msvc`；
 - 工具：`cargo-zigbuild`（linux 全目标 + windows-gnu），windows-gnu 需 mingw 链接器；ARM64 Windows 走 `aarch64-pc-windows-msvc` + `cargo-xwin`（clang-cl）；本机已装 rustup 目标与 cargo-zigbuild；
 - `scripts/build.sh <target>`：统一入口，产物落 `dist/<target>/{fftpd,fftp-http}`（Windows 另含 `fftp-http-launcher.exe`）；
-- 阶段3：deploy/common/（fftpd.service、fftp-http.service、桌面入口）+ Windows NSIS 安装器（`deploy/windows/fftps-http.nsi`，经 `scripts/build-nsis.sh` 打包）；CI 走 GitHub Actions 矩阵。
+- 阶段3：deploy/common/（fftpd.service、fftp-http.service、桌面入口）+ Windows 双交付物——每架构一个 zip（deploy/windows/{install,uninstall}.{ps1,bat}，经 `scripts/build-zip.sh`，Linux CI 构建）与 WiX MSI（`deploy/windows/fftps.wxs`，经 `scripts/build-msi.sh`；绑定依赖 msi.dll，CI 在 windows runner 原生构建）；CI 走 GitHub Actions 矩阵。
 
 ## 8. 分阶段实施与验收
 
