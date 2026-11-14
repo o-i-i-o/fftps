@@ -21,7 +21,7 @@ port = 8080
 [tls]
 enabled = false
 cert_path = ""          # PEM 证书链路径
-key_path = ""           # PEM 私钥路径
+key_path = ""           # PEM 私钥路径（启用后经 ALPN 自动协商 HTTP/2）
 
 [ip_filter]
 whitelist = []          # 空 = 不限制；支持单 IP 与 CIDR（如 "192.168.1.0/24"）

@@ -9,6 +9,10 @@ use tokio_rustls::TlsAcceptor;
 
 use crate::config::TlsConfig;
 
+/// ALPN：HTTP/2 over TLS 优先，回退 HTTP/1.1
+const ALPN_H2: &[u8] = b"h2";
+const ALPN_HTTP11: &[u8] = b"http/1.1";
+
 /// 构建 TLS acceptor（PEM 证书链 + PEM 私钥）
 ///
 /// # Errors
@@ -17,7 +21,7 @@ pub fn build_acceptor(tls: &TlsConfig) -> Result<TlsAcceptor> {
     let certs = load_certs(&tls.cert_path)?;
     let key = load_key(&tls.key_path)?;
 
-    let config = rustls::ServerConfig::builder_with_provider(
+    let mut config = rustls::ServerConfig::builder_with_provider(
         rustls::crypto::ring::default_provider().into(),
     )
     .with_safe_default_protocol_versions()
@@ -25,6 +29,10 @@ pub fn build_acceptor(tls: &TlsConfig) -> Result<TlsAcceptor> {
     .with_no_client_auth()
     .with_single_cert(certs, key)
     .with_context(|| format!("TLS 证书/私钥不匹配: {} + {}", tls.cert_path, tls.key_path))?;
+
+    // 声明 h2 支持：浏览器/客户端经 ALPN 协商后直接使用 HTTP/2，
+    // 未协商（或仅支持 http/1.1）的客户端自动回退
+    config.alpn_protocols = vec![ALPN_H2.to_vec(), ALPN_HTTP11.to_vec()];
 
     Ok(TlsAcceptor::from(std::sync::Arc::new(config)))
 }

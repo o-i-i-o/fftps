@@ -23,7 +23,8 @@ address = "127.0.0.1"
 port = 8080
 
 [tls]
-# 启用后同一端口提供 HTTPS，会话 Cookie 追加 Secure 属性。
+# 启用后同一端口提供 HTTPS，会话 Cookie 追加 Secure 属性；
+# 客户端经 ALPN 自动协商 HTTP/2（h2），不支持时回退 HTTP/1.1。
 # cert_path 为 PEM 证书链（服务器证书在前，可含中间 CA），key_path 为 PEM 私钥。
 # 启用时两者必须指向已存在的文件，否则启动失败。
 enabled = false

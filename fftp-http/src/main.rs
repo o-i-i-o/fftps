@@ -226,11 +226,19 @@ async fn handle_conn(
         .http1()
         .timer(TokioTimer::new())
         .header_read_timeout(Some(HEADER_READ_TIMEOUT));
+    // HTTP/2：TLS 下由 ALPN 协商（见 `tls`），明文下支持 h2c prior-knowledge
+    builder.http2().timer(TokioTimer::new());
 
     let result = match acceptor {
         Some(acceptor) => {
             match tokio::time::timeout(TLS_HANDSHAKE_TIMEOUT, acceptor.accept(tcp)).await {
                 Ok(Ok(stream)) => {
+                    if let Some(alpn) = stream.get_ref().1.alpn_protocol() {
+                        tracing::debug!(
+                            "TLS 握手成功（{peer}），协商协议: {}",
+                            String::from_utf8_lossy(alpn)
+                        );
+                    }
                     builder
                         .serve_connection_with_upgrades(TokioIo::new(stream), svc)
                         .await
