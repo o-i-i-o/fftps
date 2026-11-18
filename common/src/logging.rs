@@ -3,7 +3,7 @@
 //! - tracing 初始化：控制台 / 程序日志文件 / file-ops 审计文件三层；
 //!   程序日志支持 JSON 与文本两种格式（[`LoggingConfig::enable_json`]），审计日志恒为 JSON 行；
 //!   两类文件均按「日期 + 单文件大小」轮转，保留 [`LoggingConfig::max_log_files`] 份；
-//! - 内存环形缓冲（[`RingBuffer`]）：程序日志经常驻的 [`MemoryLogLayer`] 捕获
+//! - 内存环形缓冲（[`RingBuffer`]）：程序日志经常驻的 `MemoryLogLayer` 捕获
 //!   （逐条按 `enable_gui_logging` 判断，运行期切换即时生效）；审计条目由
 //!   [`Logging::write_file_op`] 直接写入，供 IPC 拉取（`recent`）与订阅（`subscribe`）；
 //! - GUI 管理审计（[`Logging::write_audit`]，登录/配置变更等）只进程序日志；
@@ -12,15 +12,8 @@
 //! - 日志文件管理：[`Logging::list_log_files`] / [`Logging::read_log_file`]（程序日志）与
 //!   [`Logging::list_file_op_log_files`] / [`Logging::read_file_op_log`]（审计）。
 //!
-//! 线格式对应关系（common 不依赖 fftp-ipc，此处定义字段完全一致的本地结构，
-//! 与 `fftp_ipc::protocol::{LogEntry, FileOpLogEntry, LogFileInfo}` 逐字段对应，
-//! serde 形状相同，可直接按字段拷贝/`serde_json` 转换）：
-//!
-//! | 本模块 | fftp-ipc 线格式 |
-//! |---|---|
-//! | [`LogEntry`] | `LogEntry`：`timestamp/level/source/message/client_ip/username/action` |
-//! | [`FileOpLogEntry`] | `FileOpLogEntry`：`timestamp/username/client_ip/operation/file_path/file_size/protocol/success/message` |
-//! | [`LogFileInfo`] | `LogFileInfo`：`name/path` |
+//! 线格式：日志类型定义在本模块，`fftp_ipc::protocol` 直接重新导出
+//! [`LogEntry`] / [`FileOpLogEntry`] / [`LogFileInfo`]，IPC 与共享层无需逐字段转换。
 
 use crate::sync::MutexExt;
 use anyhow::{Context, Result, bail};
@@ -52,7 +45,7 @@ pub const AUDIT_TARGET: &str = "file_ops";
 /// 内存层排除该 target，避免与 [`Logging::write_audit`] 的直接 push 重复）
 pub const GUI_AUDIT_TARGET: &str = "gui_audit";
 
-/// 程序日志条目（与 `fftp_ipc::protocol::LogEntry` 字段一一对应）
+/// 程序日志条目（IPC 线格式直接复用此类型）
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LogEntry {
     /// RFC3339 时间戳
@@ -70,7 +63,7 @@ pub struct LogEntry {
     pub action: String,
 }
 
-/// 文件操作审计条目（与 `fftp_ipc::protocol::FileOpLogEntry` 字段一一对应）
+/// 文件操作审计条目（IPC 线格式直接复用此类型）
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FileOpLogEntry {
     /// RFC3339 时间戳
@@ -88,7 +81,7 @@ pub struct FileOpLogEntry {
     pub message: String,
 }
 
-/// 日志文件信息（与 `fftp_ipc::protocol::LogFileInfo` 字段一一对应）
+/// 日志文件信息（IPC 线格式直接复用此类型）
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LogFileInfo {
     /// 文件名（不含扩展名），如 `fftpd.2026-10-21`
@@ -142,9 +135,6 @@ impl<T: Clone> RingBuffer<T> {
     }
 
     /// 追加一条记录到环形缓冲（满时淘汰最旧一条），并广播给订阅者
-    ///
-    /// # Panics
-    /// 内部互斥锁中毒时自动恢复（见 [`crate::sync`]）
     pub fn push(&self, entry: T) {
         {
             let mut entries = self.inner.entries.lock_recover();
@@ -158,9 +148,6 @@ impl<T: Clone> RingBuffer<T> {
     }
 
     /// 最近 `count` 条记录，按时间正序返回（最旧→最新）
-    ///
-    /// # Panics
-    /// 内部互斥锁中毒时自动恢复（见 [`crate::sync`]）
     #[must_use]
     pub fn recent(&self, count: usize) -> Vec<T> {
         let entries = self.inner.entries.lock_recover();
@@ -175,9 +162,6 @@ impl<T: Clone> RingBuffer<T> {
     }
 
     /// 当前缓冲中的条目数
-    ///
-    /// # Panics
-    /// 内部互斥锁中毒时自动恢复（见 [`crate::sync`]）
     #[must_use]
     pub fn len(&self) -> usize {
         self.inner.entries.lock_recover().len()
@@ -267,7 +251,7 @@ static RELOAD_HANDLE: OnceLock<Handle<Targets, Registry>> = OnceLock::new();
 pub struct Logging {
     config: LoggingConfig,
     /// 运行期可热更新的参数副本（IPC `SaveLogConfig` 后经 [`Logging::update_config`] 替换）；
-    /// Arc 共享给 [`MemoryLogLayer`]，使 `enable_gui_logging` 运行期切换即时生效；
+    /// Arc 共享给 `MemoryLogLayer`，使 `enable_gui_logging` 运行期切换即时生效；
     /// 文件管理与审计写入按此副本生效，初始值与 [`Self::config`] 相同
     live_config: Arc<StdMutex<LoggingConfig>>,
     log_buffer: LogBuffer,
@@ -1034,7 +1018,10 @@ mod tests {
         assert_eq!(entry.source, GUI_AUDIT_TARGET);
         assert_eq!(entry.message, "config.toml: 修改端口");
         assert!(entry.timestamp.contains('T'), "时间戳应为 RFC3339");
-        assert!(logging.file_op_buffer().is_empty(), "管理审计不应进文件操作缓冲");
+        assert!(
+            logging.file_op_buffer().is_empty(),
+            "管理审计不应进文件操作缓冲"
+        );
     }
 
     #[test]

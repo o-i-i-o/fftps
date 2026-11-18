@@ -1,6 +1,6 @@
 //! 登录防护（docs/design.md §4「防护」：Windows `fail2ban.rs` 为基础，合并 Linux `server/login_tracker.rs` 的统计字段）
 //!
-//! - 失败尝试记录：按 IP 记录窗口内失败时刻与首次失败时间（[`FailureRecord`]）；
+//! - 失败尝试记录：按 IP 记录窗口内失败时刻与首次失败时间（`FailureRecord`）；
 //! - 阈值封禁：[`SecurityConfig::fail2ban_threshold`] 次失败封禁 [`SecurityConfig::fail2ban_ban_time`] 秒；
 //! - 解封回调：[`Fail2BanManager::register_callback`] 注册 [`BanEvent`] 通知；
 //! - 封禁持久化：`<data_dir>/fail2ban.json`，封禁/解封时落盘，进程重启后仍生效
@@ -133,33 +133,22 @@ impl Fail2BanManager {
     }
 
     /// 注册封禁/解封回调
-    ///
-    /// # Panics
-    /// 内部互斥锁中毒时自动恢复（见 [`crate::sync`]）
     pub fn register_callback(&self, callback: Arc<BanCallback>) {
         self.callbacks.lock_recover().push(callback);
     }
 
     /// 配置热更新（对应 IPC `save_config` 后的生效路径）
-    ///
-    /// # Panics
-    /// 内部互斥锁中毒时自动恢复（见 [`crate::sync`]）
     pub fn update_config(&self, security: &SecurityConfig) {
         *self.config.lock_recover() = security.clone();
         tracing::info!("Fail2Ban: Configuration updated");
     }
 
     /// 当前生效的安全配置
-    ///
-    /// # Panics
-    /// 内部互斥锁中毒时自动恢复（见 [`crate::sync`]）
     #[must_use]
     pub fn get_config(&self) -> SecurityConfig {
         self.config.lock_recover().clone()
     }
 
-    /// # Panics
-    /// 内部互斥锁中毒时自动恢复（见 [`crate::sync`]）
     fn trigger_callbacks(&self, ip: &str, event: BanEvent) {
         for callback in self.callbacks.lock_recover().iter() {
             callback(ip, event);
@@ -167,9 +156,6 @@ impl Fail2BanManager {
     }
 
     /// 落盘封禁清单（失败仅告警，不影响内存态）
-    ///
-    /// # Panics
-    /// 内部互斥锁中毒时自动恢复（见 [`crate::sync`]）
     fn persist_bans(&self) {
         let list = BanList {
             banned: self.state.lock_recover().banned_ips.clone(),
@@ -265,17 +251,11 @@ impl Fail2BanManager {
     }
 
     /// 清除 IP 的失败记录（登录成功后调用）
-    ///
-    /// # Panics
-    /// 内部互斥锁中毒时自动恢复（见 [`crate::sync`]）
     pub async fn reset_failures(&self, ip: &str) {
         self.state.lock_recover().failed_attempts.remove(ip);
     }
 
     /// 窗口内的失败次数
-    ///
-    /// # Panics
-    /// 内部互斥锁中毒时自动恢复（见 [`crate::sync`]）
     #[must_use]
     pub async fn get_failure_count(&self, ip: &str) -> usize {
         self.state
@@ -286,9 +266,6 @@ impl Fail2BanManager {
     }
 
     /// 首次失败时间（Linux `login_tracker` 统计字段）
-    ///
-    /// # Panics
-    /// 内部互斥锁中毒时自动恢复（见 [`crate::sync`]）
     #[must_use]
     pub async fn get_first_attempt(&self, ip: &str) -> Option<DateTime<Utc>> {
         self.state
@@ -299,9 +276,6 @@ impl Fail2BanManager {
     }
 
     /// 剩余可尝试次数（按 [`SecurityConfig::max_login_attempts`]，封禁中为 0）
-    ///
-    /// # Panics
-    /// 内部互斥锁中毒时自动恢复（见 [`crate::sync`]）
     #[must_use]
     pub async fn get_remaining_attempts(&self, ip: &str) -> u32 {
         let max_attempts = self.config.lock_recover().max_login_attempts;
@@ -317,9 +291,6 @@ impl Fail2BanManager {
     }
 
     /// 当前被封禁的 IP 列表
-    ///
-    /// # Panics
-    /// 内部互斥锁中毒时自动恢复（见 [`crate::sync`]）
     #[must_use]
     pub async fn get_banned_ips(&self) -> Vec<String> {
         self.state
@@ -331,9 +302,6 @@ impl Fail2BanManager {
     }
 
     /// 清理：解除到期封禁（触发回调）、丢弃窗口外的失败记录
-    ///
-    /// # Panics
-    /// 内部互斥锁中毒时自动恢复（见 [`crate::sync`]）
     pub async fn cleanup(&self) {
         let now = Utc::now();
 

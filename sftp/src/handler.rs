@@ -37,9 +37,6 @@ impl SessionTracker {
     }
 
     /// 会话建立（认证成功后调用）
-    ///
-    /// # Panics
-    /// 内部互斥锁中毒时 panic（`fftp-common` 语义）
     pub fn increment(&self, username: &str) {
         let mut sessions = self.active_sessions.lock_recover();
         let counter = sessions
@@ -50,9 +47,6 @@ impl SessionTracker {
     }
 
     /// 会话结束（Handler Drop 时调用），归零后移除条目
-    ///
-    /// # Panics
-    /// 内部互斥锁中毒时 panic（`fftp-common` 语义）
     pub fn decrement(&self, username: &str) {
         let mut sessions = self.active_sessions.lock_recover();
         if let Some(counter) = sessions.get(username) {
@@ -73,9 +67,6 @@ impl SessionTracker {
     }
 
     /// 当前并发会话数
-    ///
-    /// # Panics
-    /// 内部互斥锁中毒时 panic（`fftp-common` 语义）
     #[must_use]
     pub fn get_count(&self, username: &str) -> u32 {
         self.active_sessions

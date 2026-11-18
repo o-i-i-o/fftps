@@ -32,10 +32,21 @@ use tokio_stream::wrappers::{BroadcastStream, errors::BroadcastStreamRecvError};
 use fftp_ipc::client::Client;
 use fftp_ipc::protocol::{Command, Event as IpcEvent};
 
-use crate::auth::{AuthedUser, session_token_from_cookie};
+use crate::auth::AuthedUser;
 use crate::error::ApiError;
-use crate::routes::TailQuery;
+use crate::session::session_token_from_cookie;
 use crate::state::{AppState, MAX_SSE_STREAMS};
+
+/// SSE 尾随条数查询参数
+#[derive(Debug, serde::Deserialize)]
+pub struct TailQuery {
+    #[serde(default = "default_tail")]
+    pub tail: u32,
+}
+
+fn default_tail() -> u32 {
+    200
+}
 
 /// 已建立 SSE 流的会话复核间隔
 ///

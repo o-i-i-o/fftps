@@ -8,10 +8,10 @@ use tokio::sync::{Semaphore, watch};
 
 use fftp_common::sync::RwLockExt;
 
-use crate::auth::{LoginLimiter, SessionStore};
 use crate::config::{AdminUser, HttpConfig};
 use crate::daemon::Daemon;
 use crate::idle::{IdleState, ShutdownReason};
+use crate::session::{LoginLimiter, SessionStore};
 
 /// 同时活跃的 SSE 日志流上限（每流独占一条 IPC 连接，需防止耗尽）
 pub const MAX_SSE_STREAMS: usize = 32;
@@ -94,7 +94,13 @@ impl AppState {
     }
 
     /// 写 GUI 文件操作审计（经 fftpd 落盘到 file-ops 审计日志；失败仅告警）
-    pub async fn audit_file_op(&self, username: &str, operation: &str, file_path: &str, details: &str) {
+    pub async fn audit_file_op(
+        &self,
+        username: &str,
+        operation: &str,
+        file_path: &str,
+        details: &str,
+    ) {
         let cmd = Command::WriteFileOpLog {
             username: username.to_string(),
             operation: operation.to_string(),

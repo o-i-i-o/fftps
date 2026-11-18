@@ -6,7 +6,7 @@
 //!
 //! 用法：`fftp-http serve`（前台服务，默认） | `fftp-http launch`（桌面入口）
 //!       `fftp-http hash <口令>`（生成口令哈希）
-//!       Windows 下另支持 `fftp-http --service`（SCM 服务方式，见 [`service_windows`]）
+//!       Windows 下另支持 `fftp-http --service`（SCM 服务方式，见 `service_windows`）
 
 mod auth;
 mod config;
@@ -18,6 +18,7 @@ mod launch;
 mod routes;
 #[cfg(windows)]
 mod service_windows;
+mod session;
 mod setup;
 mod sse;
 mod state;
@@ -71,12 +72,19 @@ fn main() -> Result<()> {
     Ok(())
 }
 
-/// 前台服务入口（Windows 服务线程走 [`run_async`]，带 SCM 停止信号）
+/// 前台服务入口（Windows 服务线程走 [`run_blocking`]，带 SCM 停止信号）
 fn run() -> Result<()> {
+    run_blocking(None)
+}
+
+/// 在独立 tokio 运行时中运行 Web 服务（前台入口与 Windows 服务线程共用）
+///
+/// `service_stop` 为 Windows 服务停止信号（`None` = 前台运行，仅响应 Ctrl-C）
+fn run_blocking(service_stop: Option<watch::Receiver<bool>>) -> Result<()> {
     tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()?
-        .block_on(run_async(None))
+        .block_on(run_async(service_stop))
 }
 
 /// 服务主体（前台入口与 Windows 服务线程共用）

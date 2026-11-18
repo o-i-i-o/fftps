@@ -1,8 +1,9 @@
 //! TLS 支持（rustls，显式 ring provider）
 //!
-//! 进程内同时存在两套 rustls provider（libunftp 传递引入 aws-lc-rs），
-//! 任何 rustls 构建路径都必须显式 [`rustls::crypto::ring`]，不能依赖
-//! 进程默认 provider（否则运行时 panic: no process-level `CryptoProvider`）。
+//! workspace 统一以 ring 作为 rustls crypto provider（见根 `Cargo.toml`），
+//! 这里仍显式传入 provider 而不依赖进程级默认值：任何构建路径（包括测试或
+//! 后续引入的其他依赖）都能得到一致的加密后端，不会因默认 provider 未设置
+//! 而在握手阶段失败。
 
 use anyhow::{Context, Result};
 use tokio_rustls::TlsAcceptor;
@@ -59,7 +60,7 @@ mod tests {
 
     #[test]
     fn explicit_ring_provider_builds_config() {
-        // 锁定"显式 ring provider"路径可用（双 provider 进程下默认路径会 panic）
+        // 锁定显式 ring provider 路径可用，不依赖进程级默认 provider
         let provider = rustls::crypto::ring::default_provider();
         let builder = rustls::ServerConfig::builder_with_provider(provider.into())
             .with_safe_default_protocol_versions();

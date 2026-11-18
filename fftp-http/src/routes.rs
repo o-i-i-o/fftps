@@ -120,13 +120,6 @@ pub struct CountQuery {
     pub count: u32,
 }
 
-/// SSE 尾随条数查询参数
-#[derive(Debug, Deserialize)]
-pub struct TailQuery {
-    #[serde(default = "default_count")]
-    pub tail: u32,
-}
-
 fn default_count() -> u32 {
     200
 }
@@ -292,7 +285,7 @@ async fn do_setup(
         return ApiError::forbidden("首次设置仅允许本机访问").into_response();
     }
     match crate::setup::read_token() {
-        Some(expected) if auth::ct_eq(expected.as_str(), body.token.trim()) => {}
+        Some(expected) if crate::session::ct_eq(expected.as_str(), body.token.trim()) => {}
         Some(_) => {
             return ApiError::forbidden("引导令牌无效，请从桌面快捷方式重新打开").into_response();
         }

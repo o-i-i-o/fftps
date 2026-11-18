@@ -11,7 +11,84 @@
 //! 环境变量 `FFTPD_CONFIG_DIR` / `FFTPD_STATE_DIR` 可强制覆盖配置与状态目录，
 //! 便于测试与多实例共存。
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+
+#[cfg(windows)]
+use std::path::Component;
+
+/// 去掉 Windows 扩展长度前缀 `\\?\`（canonicalize 的产物）
+#[must_use]
+pub fn strip_extended_prefix(path: &Path) -> PathBuf {
+    let path_str = path.to_string_lossy();
+    let stripped = path_str.strip_prefix(r"\\?\").unwrap_or(&path_str);
+    PathBuf::from(stripped)
+}
+
+/// 路径前缀包含判断：Windows 按路径成分忽略大小写比较，Unix 严格比较
+///
+/// Windows 下必须按 `Component` 逐段比较：字符串前缀会把
+/// `C:\Users\alice2` 误判为 `C:\Users\alice` 的子路径。
+#[must_use]
+pub fn path_starts_with_ignore_case<P: AsRef<Path>>(path: &Path, prefix: P) -> bool {
+    #[cfg(windows)]
+    {
+        let mut path_components = path.components();
+        for prefix_component in prefix.as_ref().components() {
+            match path_components.next() {
+                Some(component) if component_eq_ignore_case(&component, &prefix_component) => {}
+                _ => return false,
+            }
+        }
+        true
+    }
+    #[cfg(not(windows))]
+    {
+        path.starts_with(prefix.as_ref())
+    }
+}
+
+/// 单个路径成分的大小写不敏感比较（Windows 专用）
+#[cfg(windows)]
+fn component_eq_ignore_case(a: &Component<'_>, b: &Component<'_>) -> bool {
+    fn eq_os(a: &std::ffi::OsStr, b: &std::ffi::OsStr) -> bool {
+        a.to_string_lossy().to_lowercase() == b.to_string_lossy().to_lowercase()
+    }
+
+    match (a, b) {
+        (Component::Prefix(pa), Component::Prefix(pb)) => eq_os(pa.as_os_str(), pb.as_os_str()),
+        (Component::RootDir, Component::RootDir) => true,
+        (Component::CurDir, Component::CurDir) => true,
+        (Component::ParentDir, Component::ParentDir) => true,
+        (Component::Normal(a), Component::Normal(b)) => eq_os(a, b),
+        _ => false,
+    }
+}
+
+/// 路径相等判断：Windows 按成分忽略大小写，Unix 严格比较
+#[must_use]
+pub fn paths_equal_ignore_case<P1: AsRef<Path>, P2: AsRef<Path>>(path1: P1, path2: P2) -> bool {
+    #[cfg(windows)]
+    {
+        path_starts_with_ignore_case(path1.as_ref(), path2.as_ref())
+            && path_starts_with_ignore_case(path2.as_ref(), path1.as_ref())
+    }
+    #[cfg(not(windows))]
+    {
+        path1.as_ref() == path2.as_ref()
+    }
+}
+
+/// 是否客户端绝对虚路径（`/` 或 `\` 开头，或带盘符前缀）
+#[must_use]
+pub fn is_absolute_ftp_path(path: &str) -> bool {
+    if path.is_empty() {
+        return false;
+    }
+    if Path::new(path).is_absolute() {
+        return true;
+    }
+    matches!(path.chars().next(), Some('/' | '\\'))
+}
 
 /// 环境变量覆盖目录（`FFTPD_CONFIG_DIR` / `FFTPD_STATE_DIR`），空值视为未设置
 fn override_dir(env_var: &str) -> Option<PathBuf> {
@@ -290,11 +367,6 @@ pub fn default_log_dir() -> PathBuf {
 #[must_use]
 pub fn default_host_key_path() -> PathBuf {
     state_dir().join("ssh").join("ssh_host_ed25519_key")
-}
-
-#[must_use]
-pub fn audit_log_path() -> PathBuf {
-    default_log_dir().join("audit.log")
 }
 
 /// IPC 认证令牌文件路径

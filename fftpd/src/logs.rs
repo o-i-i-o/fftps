@@ -40,7 +40,6 @@ pub fn recent_logs(state: &AppState, count: u32) -> Value {
         .log_buffer()
         .recent(recent_limit(count))
         .into_iter()
-        .map(to_ipc_entry)
         .collect();
     json!({ "entries": entries })
 }
@@ -56,7 +55,6 @@ pub fn recent_file_ops(state: &AppState, count: u32) -> Value {
         .file_op_buffer()
         .recent(recent_limit(count))
         .into_iter()
-        .map(to_ipc_file_op)
         .collect();
     json!({ "entries": entries })
 }
@@ -64,12 +62,8 @@ pub fn recent_file_ops(state: &AppState, count: u32) -> Value {
 /// 程序日志文件列表（新→旧），形状 `{"files": [LogFileInfo, ...]}`
 #[must_use]
 pub fn log_files(state: &AppState) -> Value {
-    let files: Vec<fftp_ipc::protocol::LogFileInfo> = state
-        .logging
-        .list_log_files()
-        .into_iter()
-        .map(to_ipc_file_info)
-        .collect();
+    let files: Vec<fftp_ipc::protocol::LogFileInfo> =
+        state.logging.list_log_files().into_iter().collect();
     json!({ "files": files })
 }
 
@@ -84,7 +78,6 @@ pub fn log_file_content(state: &AppState, path: &str, count: u32) -> Result<Valu
         .read_log_file(&path, recent_limit(count))
         .map_err(|e| HandlerError::internal(format!("读取日志文件失败: {e:#}")))?
         .into_iter()
-        .map(to_ipc_entry)
         .collect();
     Ok(json!({ "entries": entries }))
 }
@@ -92,12 +85,8 @@ pub fn log_file_content(state: &AppState, path: &str, count: u32) -> Result<Valu
 /// file-ops 审计日志文件列表（新→旧），形状 `{"files": [...]}`
 #[must_use]
 pub fn file_op_log_files(state: &AppState) -> Value {
-    let files: Vec<fftp_ipc::protocol::LogFileInfo> = state
-        .logging
-        .list_file_op_log_files()
-        .into_iter()
-        .map(to_ipc_file_info)
-        .collect();
+    let files: Vec<fftp_ipc::protocol::LogFileInfo> =
+        state.logging.list_file_op_log_files().into_iter().collect();
     json!({ "files": files })
 }
 
@@ -116,7 +105,6 @@ pub fn file_op_log_content(
         .read_file_op_log(&path, recent_limit(count))
         .map_err(|e| HandlerError::internal(format!("读取审计日志文件失败: {e:#}")))?
         .into_iter()
-        .map(to_ipc_file_op)
         .collect();
     Ok(json!({ "entries": entries }))
 }
@@ -314,7 +302,7 @@ pub fn spawn_log_forwarder(
                         }
                         // 无订阅者时 send 返回 Err，属常态（订阅者随时上下线），继续转发
                         let _ = events.send(Event::Log {
-                            entry: to_ipc_entry(entry),
+                            entry,
                         });
                     }
                     Err(broadcast::error::RecvError::Lagged(n)) => {
@@ -328,7 +316,7 @@ pub fn spawn_log_forwarder(
                             continue;
                         }
                         let _ = events.send(Event::FileOp {
-                            entry: to_ipc_file_op(entry),
+                            entry,
                         });
                     }
                     Err(broadcast::error::RecvError::Lagged(n)) => {
@@ -339,42 +327,4 @@ pub fn spawn_log_forwarder(
             }
         }
     })
-}
-
-/// 共享层条目 → IPC 线格式（字段一一对应）
-fn to_ipc_entry(entry: fftp_common::logging::LogEntry) -> fftp_ipc::protocol::LogEntry {
-    fftp_ipc::protocol::LogEntry {
-        timestamp: entry.timestamp,
-        level: entry.level,
-        source: entry.source,
-        message: entry.message,
-        client_ip: entry.client_ip,
-        username: entry.username,
-        action: entry.action,
-    }
-}
-
-/// 共享层审计条目 → IPC 线格式
-fn to_ipc_file_op(
-    entry: fftp_common::logging::FileOpLogEntry,
-) -> fftp_ipc::protocol::FileOpLogEntry {
-    fftp_ipc::protocol::FileOpLogEntry {
-        timestamp: entry.timestamp,
-        username: entry.username,
-        client_ip: entry.client_ip,
-        operation: entry.operation,
-        file_path: entry.file_path,
-        file_size: entry.file_size,
-        protocol: entry.protocol,
-        success: entry.success,
-        message: entry.message,
-    }
-}
-
-/// 共享层日志文件信息 → IPC 线格式
-fn to_ipc_file_info(info: fftp_common::logging::LogFileInfo) -> fftp_ipc::protocol::LogFileInfo {
-    fftp_ipc::protocol::LogFileInfo {
-        name: info.name,
-        path: info.path,
-    }
 }

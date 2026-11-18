@@ -1,7 +1,7 @@
 //! SFTP 服务组装与生命周期管理
 //!
 //! [`SftpService`] 是可长期持有的服务描述（配置/用户库引用 + 可注入的
-//! 防护/配额/限速/日志组件），[`RunningService::start`] 启动监听并返回
+//! 防护/配额/限速/日志组件），[`SftpService::start`] 启动监听并返回
 //! [`RunningService`] 运行句柄（地址查询、优雅停止）。配置变更时可
 //! `stop()` 后重新 `start()`。
 
@@ -48,9 +48,6 @@ impl SftpService {
     /// 默认组件：配额管理器（`state_dir` 持久化）、`Fail2Ban`（按
     /// `security.fail2ban_*` 配置）、连接数治理（按 `security.max_connections*`）。
     /// 组件可被 `with_*` 方法替换。
-    ///
-    /// # Panics
-    /// 内部配置互斥锁中毒时 panic（`fftp-common` 语义）
     #[must_use]
     pub fn new(config: Arc<StdRwLock<Config>>, user_manager: Arc<StdMutex<UserManager>>) -> Self {
         let (quota_manager, fail2ban, connection_limiter) = {
@@ -116,9 +113,6 @@ impl SftpService {
     ///
     /// # Errors
     /// 配置校验失败、主机密钥处理失败、地址非法或监听失败时返回错误
-    ///
-    /// # Panics
-    /// 内部配置互斥锁中毒时 panic（`fftp-common` 语义）
     // 启动流程（配置读取 → 密钥 → 监听 → accept 循环）单函数内联，拆分会割裂生命周期管理
     #[allow(clippy::too_many_lines)]
     pub async fn start(&self) -> Result<RunningService> {

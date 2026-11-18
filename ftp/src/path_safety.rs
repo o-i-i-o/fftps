@@ -6,7 +6,8 @@
 //! - 真实路径防逃逸 [`resolve_in_root`]：canonicalize 后检查仍在根目录之下，
 //!   并按 [`allow_symlinks`](resolve_in_root) 策略拒绝符号链接逃逸。
 //!
-//! 与 `fftp-common` 的 `paths`（只做目录定位）互补：本模块只做净化与越界防护。
+//! 通用的字节级路径比较工具复用 [`fftp_common::paths`]；本模块负责
+//! FTP 特有的虚拟路径净化与越界防护。
 //!
 //! 路径成分校验（非法字符、Windows 保留名）**全平台统一应用**，保证同一份
 //! 配置与用例在 Linux / Windows 上行为一致，也避免共享目录同步到 Windows
@@ -59,71 +60,9 @@ impl std::fmt::Display for PathError {
 
 impl std::error::Error for PathError {}
 
-/// 路径前缀包含判断（Windows 按路径成分忽略大小写，Unix 严格比较）
-///
-/// Windows 下不能做字符串前缀比较，否则 `C:\Users\alice2` 会被误判为
-/// `C:\Users\alice` 的子路径，导致跨用户越权。
-pub fn path_starts_with_ignore_case<P: AsRef<Path>>(path: &Path, prefix: P) -> bool {
-    #[cfg(windows)]
-    {
-        let mut path_components = path.components();
-        for prefix_component in prefix.as_ref().components() {
-            match path_components.next() {
-                Some(component) if component_eq_ignore_case(&component, &prefix_component) => {}
-                _ => return false,
-            }
-        }
-        true
-    }
-    #[cfg(not(windows))]
-    {
-        path.starts_with(prefix.as_ref())
-    }
-}
-
-/// 单个路径成分的大小写不敏感比较（Windows 专用）
-#[cfg(windows)]
-fn component_eq_ignore_case(a: &std::path::Component<'_>, b: &std::path::Component<'_>) -> bool {
-    use std::path::Component;
-
-    fn eq_os(a: &OsStr, b: &OsStr) -> bool {
-        a.to_string_lossy().to_lowercase() == b.to_string_lossy().to_lowercase()
-    }
-
-    match (a, b) {
-        (Component::Prefix(pa), Component::Prefix(pb)) => eq_os(pa.as_os_str(), pb.as_os_str()),
-        (Component::RootDir, Component::RootDir) => true,
-        (Component::CurDir, Component::CurDir) => true,
-        (Component::ParentDir, Component::ParentDir) => true,
-        (Component::Normal(a), Component::Normal(b)) => eq_os(a, b),
-        _ => false,
-    }
-}
-
-/// 路径相等判断（Windows 按成分忽略大小写）
-pub fn paths_equal_ignore_case<P1: AsRef<Path>, P2: AsRef<Path>>(path1: P1, path2: P2) -> bool {
-    #[cfg(windows)]
-    {
-        path_starts_with_ignore_case(path1.as_ref(), path2.as_ref())
-            && path_starts_with_ignore_case(path2.as_ref(), path1.as_ref())
-    }
-    #[cfg(not(windows))]
-    {
-        path1.as_ref() == path2.as_ref()
-    }
-}
-
-/// 判断 FTP 路径是否为绝对路径（`/`、`\` 开头或平台绝对路径）
-#[must_use]
-pub fn is_absolute_ftp_path(path: &str) -> bool {
-    if path.is_empty() {
-        return false;
-    }
-    if Path::new(path).is_absolute() {
-        return true;
-    }
-    matches!(path.chars().next(), Some('/' | '\\'))
-}
+pub use fftp_common::paths::{
+    is_absolute_ftp_path, path_starts_with_ignore_case, paths_equal_ignore_case,
+};
 
 /// 校验单个路径成分是否合法（全平台统一严格规则）
 ///

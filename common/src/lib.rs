@@ -18,6 +18,8 @@ pub mod quota;
 pub mod rate_limit;
 pub mod sync;
 pub mod users;
+#[doc(hidden)]
+pub mod windows_service;
 
 pub use config::{
     Config, ConnectionMode, FtpConfig, FtpsConfig, LoggingConfig, SecurityConfig, SftpConfig,

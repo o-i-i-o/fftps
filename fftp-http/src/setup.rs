@@ -5,7 +5,7 @@
 //! `?token=...` 拼到 `/setup` 链接。设置完成后令牌立即删除，setup 路由失效。
 //!
 //! 令牌文件位置：
-//! - Linux/macOS: `$XDG_RUNTIME_DIR/fftpd/setup-token`（无 XDG 时 /tmp/fftpd-<uid>）
+//! - Linux/macOS: `$XDG_RUNTIME_DIR/fftpd/setup-token`（无 XDG 时 `/tmp/fftpd-<uid>`）
 //! - Windows: `%ProgramData%\fftpd\setup-token`
 
 use std::net::{IpAddr, SocketAddr};

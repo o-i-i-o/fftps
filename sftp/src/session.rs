@@ -1,4 +1,4 @@
-//! SFTP 子系统会话：实现协议层 [`protocol::Handler`]，路由到各业务模块
+//! SFTP 子系统会话：实现协议层 [`crate::protocol::Handler`]，路由到各业务模块
 //!
 //! 报文解码、循环与错误应答封装由 [`crate::protocol::run_with_config`] 完成，
 //! 本结构只做参数转发；SYMLINK 的 wire 参数序在 [`Session::symlink`] 中映射。

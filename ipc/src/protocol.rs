@@ -15,6 +15,9 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+// 日志线格式与共享层一致：直接复用 fftp-common 的定义，避免逐字段拷贝。
+pub use fftp_common::logging::{FileOpLogEntry, LogEntry, LogFileInfo};
+
 /// 单帧载荷上限（4 MiB）：防止损坏/恶意帧导致内存耗尽
 pub const MAX_FRAME_SIZE: usize = 4 * 1024 * 1024;
 
@@ -226,43 +229,6 @@ pub enum ErrorCode {
     Conflict,
     /// 服务端内部错误
     Internal,
-}
-
-/// 日志条目（程序日志与实时推送共用）
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct LogEntry {
-    pub timestamp: String,
-    pub level: String,
-    pub source: String,
-    pub message: String,
-    #[serde(default)]
-    pub client_ip: String,
-    #[serde(default)]
-    pub username: String,
-    #[serde(default)]
-    pub action: String,
-}
-
-/// 文件操作审计日志条目
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct FileOpLogEntry {
-    pub timestamp: String,
-    pub username: String,
-    pub client_ip: String,
-    pub operation: String,
-    pub file_path: String,
-    pub file_size: u64,
-    pub protocol: String,
-    pub success: bool,
-    #[serde(default)]
-    pub message: String,
-}
-
-/// 日志文件信息
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct LogFileInfo {
-    pub name: String,
-    pub path: String,
 }
 
 #[cfg(test)]

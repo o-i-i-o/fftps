@@ -182,7 +182,7 @@ pub fn resolve_passive_host(masquerade_address: Option<&str>) -> PassiveHost {
 
 /// 配置连接模式 → libunftp 主动/被动模式
 ///
-/// 审计 P2-8：libunftp 0.23.1 不对主动模式下 `PORT`/`EPRT` 指定的目标地址做
+/// libunftp 0.23.1 不对主动模式下 `PORT`/`EPRT` 指定的目标地址做
 /// 校验，已认证用户可借其让服务端连接任意 `IP:端口`（FTP bounce / 内网探测）。
 /// 在接入目标地址校验之前一律以被动模式运行；非 `passive_only` 配置在
 /// [`FtpService::start`] 中记录告警。
@@ -219,9 +219,6 @@ impl FtpService {
     /// - `logging`：审计/文件操作日志写入口。
     ///
     /// 配额、fail2ban 的持久化数据存于 [`fftp_common::paths::state_dir`]。
-    ///
-    /// # Panics
-    /// 共享配置锁被毒化时 panic（内部约定不跨锁持有 panic）
     #[must_use]
     pub fn new(
         config: Arc<StdRwLock<Config>>,
@@ -301,7 +298,7 @@ impl FtpService {
         self.connections.update_config(&cfg.security);
 
         if cfg.ftp.connection_mode != ConnectionMode::PassiveOnly {
-            // 审计 P2-8：主动模式缺失 PORT/EPRT 目标校验，统一降级为被动模式
+            // 主动模式缺失 PORT/EPRT 目标校验，统一降级为被动模式
             tracing::warn!(
                 "配置项 ftp.connection_mode = {} 已降级为 passive_only：libunftp 0.23.1 \
                  不校验主动模式 PORT/EPRT 的目标地址，开放主动模式可被用于 \
@@ -499,9 +496,9 @@ impl RunningFtpService {
         self.running.load(Ordering::SeqCst)
     }
 
-    /// 优雅停止：通知监听任务退出并等待其结束（上限 [`STOP_WAIT_SECS`] 秒）
+    /// 优雅停止：通知监听任务退出并等待其结束（上限 `STOP_WAIT_SECS` 秒）
     ///
-    /// 宽限期见 [`SHUTDOWN_GRACE_SECS`]。句柄被直接 drop 时同样触发停止
+    /// 宽限期见 `SHUTDOWN_GRACE_SECS`。句柄被直接 drop 时同样触发停止
     /// （停止信号发送方被关闭，监听任务按优雅停止处理）。
     pub async fn stop(mut self) {
         if let Some(tx) = self.shutdown_tx.take() {
@@ -686,7 +683,7 @@ mod tests {
 
     #[test]
     fn map_connection_mode_variants() {
-        // 审计 P2-8：主动模式缺少 PORT/EPRT 目标校验，一律降级为被动模式
+        // 主动模式缺少 PORT/EPRT 目标校验，一律降级为被动模式
         assert_eq!(
             map_connection_mode(ConnectionMode::PassiveOnly),
             ActivePassiveMode::PassiveOnly

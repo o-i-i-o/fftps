@@ -129,9 +129,6 @@ impl SftpState {
     /// 检查当前用户权限（权限位带 30s 缓存，`enabled` 每次实时校验）
     ///
     /// 账号被禁用或删除后立即失效，不必等待权限缓存过期。
-    ///
-    /// # Panics
-    /// 内部用户库互斥锁中毒时 panic（`fftp-common` 语义）
     pub fn check_permission(&mut self, check_fn: impl Fn(&Permissions) -> bool) -> bool {
         let Some(username) = self.username.clone() else {
             return false;
@@ -168,9 +165,6 @@ impl SftpState {
     }
 
     /// 重新加载权限缓存
-    ///
-    /// # Panics
-    /// 内部用户库互斥锁中毒时 panic
     pub fn cache_permissions(&mut self) {
         if let Some(username) = &self.username {
             let users = self.user_manager.lock_recover();

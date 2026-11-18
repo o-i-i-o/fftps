@@ -12,8 +12,6 @@
 
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, UdpSocket};
 
-use crate::ip_utils::{is_private_ipv4, is_private_ipv6};
-
 /// 监听地址类型
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BindAddressType {
@@ -25,17 +23,6 @@ pub enum BindAddressType {
     SpecificIpv6,
 }
 
-/// 客户端来源网络分类
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ConnectionSource {
-    /// 回环
-    Loopback,
-    /// 私有网络
-    PrivateNetwork,
-    /// 公网
-    PublicNetwork,
-}
-
 /// 本机地址集合
 #[derive(Debug, Clone)]
 pub struct LocalIpAddress {
@@ -43,36 +30,6 @@ pub struct LocalIpAddress {
     pub ipv4: Vec<Ipv4Addr>,
     /// 本机 IPv6 地址
     pub ipv6: Vec<Ipv6Addr>,
-}
-
-impl LocalIpAddress {
-    /// 是否没有任何地址
-    #[must_use]
-    pub fn is_empty(&self) -> bool {
-        self.ipv4.is_empty() && self.ipv6.is_empty()
-    }
-
-    /// 日志展示格式
-    #[must_use]
-    pub fn format_for_log(&self) -> String {
-        let mut parts = Vec::new();
-
-        if !self.ipv4.is_empty() {
-            let ipv4_strs: Vec<String> = self.ipv4.iter().map(ToString::to_string).collect();
-            parts.push(format!("IPv4: [{}]", ipv4_strs.join(", ")));
-        }
-
-        if !self.ipv6.is_empty() {
-            let ipv6_strs: Vec<String> = self.ipv6.iter().map(|ip| format!("[{ip}]")).collect();
-            parts.push(format!("IPv6: [{}]", ipv6_strs.join(", ")));
-        }
-
-        if parts.is_empty() {
-            "无地址".to_string()
-        } else {
-            parts.join(", ")
-        }
-    }
 }
 
 /// 分类监听地址
@@ -86,54 +43,10 @@ pub fn classify_bind_address(bind_addr: &IpAddr) -> BindAddressType {
     }
 }
 
-/// 分类客户端来源
-#[must_use]
-pub fn classify_connection_source(client_ip: &IpAddr) -> ConnectionSource {
-    match client_ip {
-        IpAddr::V4(ip) => {
-            if ip.is_loopback() {
-                ConnectionSource::Loopback
-            } else if is_private_ipv4(ip) {
-                ConnectionSource::PrivateNetwork
-            } else {
-                ConnectionSource::PublicNetwork
-            }
-        }
-        IpAddr::V6(ip) => {
-            if ip.is_loopback() {
-                ConnectionSource::Loopback
-            } else if is_private_ipv6(ip) {
-                ConnectionSource::PrivateNetwork
-            } else {
-                ConnectionSource::PublicNetwork
-            }
-        }
-    }
-}
-
-/// 推导实际监听地址（通配地址保持原样）
-#[must_use]
-pub fn determine_listen_address(bind_addr: &IpAddr) -> IpAddr {
-    match bind_addr {
-        IpAddr::V4(ip) if ip.is_unspecified() => IpAddr::V4(Ipv4Addr::UNSPECIFIED),
-        IpAddr::V6(ip) if ip.is_unspecified() => IpAddr::V6(Ipv6Addr::UNSPECIFIED),
-        other => *other,
-    }
-}
-
 /// 是否通配监听
 #[must_use]
 pub fn is_wildcard_bind(bind_addr: &IpAddr) -> bool {
     matches!(classify_bind_address(bind_addr), BindAddressType::Wildcard)
-}
-
-/// 是否指定 IPv6 地址监听
-#[must_use]
-pub fn is_ipv6_bind(bind_addr: &IpAddr) -> bool {
-    matches!(
-        classify_bind_address(bind_addr),
-        BindAddressType::SpecificIpv6
-    )
 }
 
 /// 通过 UDP connect 探测内核为指定目标选择的本机源地址（不发送数据）
@@ -245,42 +158,6 @@ mod tests {
     }
 
     #[test]
-    fn test_classify_connection_source_loopback() {
-        assert_eq!(
-            classify_connection_source(&IpAddr::V4(Ipv4Addr::LOCALHOST)),
-            ConnectionSource::Loopback
-        );
-        assert_eq!(
-            classify_connection_source(&IpAddr::V6(Ipv6Addr::LOCALHOST)),
-            ConnectionSource::Loopback
-        );
-    }
-
-    #[test]
-    fn test_classify_connection_source_private() {
-        assert_eq!(
-            classify_connection_source(&IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1))),
-            ConnectionSource::PrivateNetwork
-        );
-        assert_eq!(
-            classify_connection_source(&IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1))),
-            ConnectionSource::PrivateNetwork
-        );
-        assert_eq!(
-            classify_connection_source(&IpAddr::V4(Ipv4Addr::new(172, 16, 0, 1))),
-            ConnectionSource::PrivateNetwork
-        );
-    }
-
-    #[test]
-    fn test_classify_connection_source_public() {
-        assert_eq!(
-            classify_connection_source(&IpAddr::V4(Ipv4Addr::new(8, 8, 8, 8))),
-            ConnectionSource::PublicNetwork
-        );
-    }
-
-    #[test]
     fn test_is_wildcard_bind() {
         assert!(is_wildcard_bind(&IpAddr::V4(Ipv4Addr::UNSPECIFIED)));
         assert!(is_wildcard_bind(&IpAddr::V6(Ipv6Addr::UNSPECIFIED)));
@@ -290,30 +167,10 @@ mod tests {
     }
 
     #[test]
-    fn test_is_ipv6_bind() {
-        assert!(is_ipv6_bind(&IpAddr::V6(Ipv6Addr::new(
-            0x2001, 0xdb8, 0, 0, 0, 0, 0, 1
-        ))));
-        assert!(!is_ipv6_bind(&IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1))));
-        assert!(!is_ipv6_bind(&IpAddr::V6(Ipv6Addr::UNSPECIFIED)));
-    }
-
-    #[test]
-    fn test_determine_listen_address() {
-        assert_eq!(
-            determine_listen_address(&IpAddr::V4(Ipv4Addr::UNSPECIFIED)),
-            IpAddr::V4(Ipv4Addr::UNSPECIFIED)
-        );
-        let specific = IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1));
-        assert_eq!(determine_listen_address(&specific), specific);
-    }
-
-    #[test]
     fn test_local_ip_addresses_non_empty() {
         let ips = get_local_ip_addresses();
-        assert!(!ips.is_empty());
-        assert_ne!(ips.ipv4, [] as [std::net::Ipv4Addr; 0]);
-        assert_ne!(ips.format_for_log(), "");
+        assert_ne!(ips.ipv4, [] as [Ipv4Addr; 0]);
+        assert_ne!(ips.ipv6, [] as [Ipv6Addr; 0]);
     }
 
     #[test]
@@ -327,15 +184,5 @@ mod tests {
         let formatted = format_listen_addresses("0.0.0.0", 2121);
         assert!(formatted.starts_with("0.0.0.0:2121"));
         assert!(formatted.contains("2121"));
-    }
-
-    #[test]
-    fn test_local_ip_address_format_empty() {
-        let empty = LocalIpAddress {
-            ipv4: Vec::new(),
-            ipv6: Vec::new(),
-        };
-        assert!(empty.is_empty());
-        assert_eq!(empty.format_for_log(), "无地址");
     }
 }

@@ -1,7 +1,6 @@
 //! IP 地址分类工具（迁移自 wftpd-windows `ftp_server/ip_utils.rs`）
 //!
-//! 为 FTP 服务端提供内网/公网/回环地址判定，供主动模式 NAT 判定与
-//! 被动模式地址选择复用。
+//! 为 FTP 服务端提供内网/公网/回环地址判定，供认证策略与配置校验复用。
 
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 

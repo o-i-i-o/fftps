@@ -43,15 +43,15 @@ fftps/
 ├── common/                 # fftp-common：配置/用户/路径/日志/配额/限速/防护
 │   └── src/{config,users,paths,logging,quota,rate_limit,fail2ban}.rs
 ├── ipc/                    # fftp-ipc：协议 + 传输 + client/server 骨架
-│   └── src/{protocol,framing,transport/{unix,named_pipe},client,server}.rs
+│   └── src/{protocol,framing,transport,client,server}.rs
 ├── ftp/                    # fftp-ftp：FTP(FTPS) 服务端（libunftp 组装）
 ├── sftp/                   # fftp-sftp：SFTP 服务端（russh + 手写协议层）
 ├── fftpd/                  # 服务端二进制 fftpd（组装 + IPC dispatch + 服务入口）
 ├── fftp-http/              # Web 管理前端二进制 fftp-http（axum + 内嵌 ui/）
 ├── docs/design.md
-├── scripts/                # [阶段3] 交叉编译/打包脚本（build.sh、build-deb.sh、build-rpm.sh、build-nsis.sh）
-├── deploy/                 # [阶段3] 打包物料（common/ systemd 单元+桌面入口+配置模板、debian/、rpm/、windows/ NSIS）
-├── dist/                   # [阶段3] 打包产物（按 rust target 分目录 + deb/rpm/tar.gz/setup.exe）
+├── scripts/                # [阶段3] 交叉编译/打包脚本（build.sh、build-deb.sh、build-rpm.sh、build-zip.sh、build-msi.sh）
+├── deploy/                 # [阶段3] 打包物料（common/ systemd 单元+桌面入口+配置模板、debian/、rpm/、windows/ WiX）
+├── dist/                   # [阶段3] 打包产物（按 rust target 分目录 + deb/rpm/tar.gz/zip/msi）
 └── .github/workflows/      # [阶段3] CI 矩阵
 ```
 
@@ -96,8 +96,8 @@ fftps/
 pub trait Transport { type Stream; async fn accept(); async fn connect(); }
 ```
 
-- **Linux (`transport::unix`)**：`$XDG_RUNTIME_DIR/fftpd/fftpd.sock`（回退 `/tmp/fftpd-$UID`），bind 前清残留，权限 0600，进程退出 unlink；
-- **Windows (`transport::named_pipe`)**：`\\.\pipe\fftpd`，`first_pipe_instance` 防多实例，accept 循环持续创建新实例，connect 侧 `WaitNamedPipe` 重试 + 超时（移植 wftpd-windows/windows_ipc.rs 的重试逻辑）；
+- **Linux（`transport` 的 unix 分支）**：`$XDG_RUNTIME_DIR/fftpd/fftpd.sock`（回退 `/tmp/fftpd-$UID`），bind 前清残留，权限 0600，进程退出 unlink；
+- **Windows（`transport` 的 named pipe 分支）**：`\\.\pipe\fftpd`，`first_pipe_instance` 防多实例，accept 循环持续创建新实例，connect 侧 `WaitNamedPipe` 重试 + 超时（移植 wftpd-windows/windows_ipc.rs 的重试逻辑）；
 - 连接建立后协议层完全一致（framing/dispatch/订阅不感知平台）。
 
 ## 4. 逐模块择优结论
@@ -108,7 +108,7 @@ pub trait Transport { type Stream; async fn accept(); async fn connect(); }
 | 配置 schema | **Windows** config_types.rs 为基础 + Linux logging 增量字段 | Windows 字段更全（FTPS/ConnectionMode/masquerade/pooled listener/fail2ban/per-IP 连接/allow_symlinks/host key 轮换）；补 Linux 的 `max_log_size/enable_json/enable_gui_logging` |
 | 用户存储 | 两边**几乎一致，取 Linux** users.rs + Windows argon2 参数 | 字段相同（Permissions 10 字段）；密码哈希统一 Argon2id `Params::new(65536,3,4,Some(32))`（Windows 参数），保留 Linux 的哈希升级/迁移测试 |
 | 路径布局 | **拆平台实现**：Linux paths.rs（XDG + 二进制同目录测试友好策略）为源，新增 Windows 分支（ProgramData/config 同目录） | Linux 的路径解析策略更精细（env 覆盖、测试友好）；Windows 侧归一化/防逃逸逻辑（path_utils）并入 SFTP/FTP 存储层的路径解析 |
-| FTP 服务端 | **Windows** 组装路线（unftp-sbe-fs + rooter + restrict + cert_gen + active/passive + UPnP + ip_utils） | 功能显著更全（认证链含 IP 安全/连接数/Fail2Ban/会话注册/失败锁定，rcgen 证书生成）；Linux 的自研 StorageBackend 逻辑并入 restrict/rooter 的封装层 |
+| FTP 服务端 | **Windows** 组装路线（unftp-sbe-fs + rooter + restrict + cert_gen + passive_mode + ip_utils） | 功能显著更全（认证链含 IP 安全/连接数/Fail2Ban/会话注册/失败锁定，rcgen 证书生成）；Linux 的自研 StorageBackend 逻辑并入 restrict/rooter 的封装层 |
 | SFTP 服务端 | **Windows** 手写协议实现（cmd_dispatch + ops 全家桶） | russh-sftp 仅覆盖 v3 基础 + 少量扩展；手写版多出 `copy-file/hardlink@openssh.com`、`LOCK/UNLOCK`(v5+)、link/lock ops。功能并集优先于"库优先"原则（库不满足场景） |
 | 日志 | **Linux** tracing_logger 架构（JSON/文本 + 按天轮转 + file-ops 审计分离 + 内存环形缓冲） | 环形缓冲 + IPC 订阅推送给 Web 前端，比 Windows "GUI 自己 tail 文件" 的耦合更干净；Windows 的 LogEntry 字段并入 |
 | 防护 | **Windows** fail2ban.rs（含持久化）+ 连接数治理（ServerConfig 计数器） | 比 Linux login_tracker 功能全；Linux 的登录统计字段并入 |
@@ -127,8 +127,7 @@ enabled = true
 bind_ip = "0.0.0.0"
 port = 21
 welcome_message = "Welcome to fftpd"
-encoding = "UTF-8"
-connection_mode = "passive_only"        # passive_only | active_only | active_and_passive
+connection_mode = "passive_only"        # 当前仅被动模式可用；其余值告警并降级
 allow_anonymous = false
 anonymous_home = ""
 passive_ports = [50000, 51000]          # 由 (u16,u16) 改为元组兼容两侧格式
@@ -136,7 +135,6 @@ max_speed_kbps = 0
 masquerade_address = ""
 idle_timeout = 15
 pooled_listener_mode = false           # 兼容保留；上游 0.23.1 停止不释放端口，当前实现忽略 true
-allow_nat_clients = true
 ftp_root = ""                           # 空 = 各用户 home
 [ftp.ftps]
 enabled = false

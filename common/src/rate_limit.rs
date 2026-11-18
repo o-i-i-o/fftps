@@ -16,7 +16,7 @@ use std::pin::Pin;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicI64, AtomicU64, AtomicUsize, Ordering};
 use std::task::{Context, Poll};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 use tokio::io::{AsyncRead, ReadBuf};
 
 use crate::config::SecurityConfig;
@@ -208,80 +208,6 @@ impl Default for RateLimiter {
     }
 }
 
-/// 传输速率统计（累计字节 → 平均速率）
-#[derive(Debug)]
-pub struct TransferRateTracker {
-    start_time: Instant,
-    total_bytes: u64,
-}
-
-impl TransferRateTracker {
-    #[must_use]
-    pub fn new() -> Self {
-        Self {
-            start_time: Instant::now(),
-            total_bytes: 0,
-        }
-    }
-
-    pub fn add_bytes(&mut self, bytes: u64) {
-        self.total_bytes += bytes;
-    }
-
-    /// 平均速率（KB/s）
-    #[must_use]
-    pub fn get_rate_kbps(&self) -> u64 {
-        let elapsed_ms = self.start_time.elapsed().as_millis();
-        if elapsed_ms == 0 {
-            return 0;
-        }
-        let kbps = u128::from(self.total_bytes) * 1000 / (elapsed_ms * 1024);
-        u64::try_from(kbps).unwrap_or(u64::MAX)
-    }
-
-    #[must_use]
-    pub fn get_total_bytes(&self) -> u64 {
-        self.total_bytes
-    }
-
-    #[must_use]
-    pub fn get_elapsed_secs(&self) -> u64 {
-        self.start_time.elapsed().as_secs()
-    }
-}
-
-impl Default for TransferRateTracker {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-/// 限速配置句柄（便于按会话创建限速器）
-#[derive(Debug, Clone, Copy)]
-pub struct RateLimitConfig {
-    /// KB/s，0 = 不限速
-    pub speed_limit_kbps: u64,
-}
-
-impl RateLimitConfig {
-    #[must_use]
-    pub fn new(speed_limit_kbps: u64) -> Self {
-        Self { speed_limit_kbps }
-    }
-
-    #[must_use]
-    pub fn unlimited() -> Self {
-        Self {
-            speed_limit_kbps: 0,
-        }
-    }
-
-    #[must_use]
-    pub fn create_limiter(&self) -> RateLimiter {
-        RateLimiter::new(self.speed_limit_kbps)
-    }
-}
-
 /// 包装 `AsyncRead` 的限速读取器
 pub struct RateLimitedReader<R> {
     inner: R,
@@ -388,9 +314,6 @@ impl ConnectionLimiter {
     }
 
     /// 配置热更新
-    ///
-    /// # Panics
-    /// 内部互斥锁中毒时 panic
     pub fn update_config(&self, security: &SecurityConfig) {
         let mut limits = self.limits.lock_recover();
         limits.max_connections = security.max_connections;
@@ -398,9 +321,6 @@ impl ConnectionLimiter {
     }
 
     /// 尝试登记一个新连接：超全局或 per-IP 上限时返回 `false`
-    ///
-    /// # Panics
-    /// 内部互斥锁中毒时 panic
     pub fn try_register(&self, client_ip: &str) -> bool {
         let mut map = self.connection_count_per_ip.lock_recover();
         let limits = *self.limits.lock_recover();
@@ -421,9 +341,6 @@ impl ConnectionLimiter {
     }
 
     /// 连接结束时注销（下溢受保护）
-    ///
-    /// # Panics
-    /// 内部互斥锁中毒时 panic
     pub fn unregister(&self, client_ip: &str) {
         let old_global = self.global_connection_count.fetch_sub(1, Ordering::SeqCst);
         if old_global == 0 {
@@ -447,9 +364,6 @@ impl ConnectionLimiter {
     }
 
     /// 指定 IP 的当前连接数
-    ///
-    /// # Panics
-    /// 内部互斥锁中毒时 panic
     #[must_use]
     pub fn get_ip_count(&self, ip: &str) -> usize {
         self.connection_count_per_ip
@@ -460,9 +374,6 @@ impl ConnectionLimiter {
     }
 
     /// 全部 IP 的连接计数
-    ///
-    /// # Panics
-    /// 内部互斥锁中毒时 panic
     #[must_use]
     pub fn get_all_ip_counts(&self) -> HashMap<String, usize> {
         self.connection_count_per_ip.lock_recover().clone()
@@ -532,37 +443,6 @@ mod tests {
             RateLimiter::new(10240).get_bucket_capacity(),
             MAX_BUCKET_CAPACITY
         );
-    }
-
-    #[test]
-    fn rate_limit_config_creates_limiter() {
-        let config = RateLimitConfig::new(1024);
-        assert_eq!(config.speed_limit_kbps, 1024);
-        assert!(!config.create_limiter().is_unlimited());
-
-        let unlimited = RateLimitConfig::unlimited();
-        assert_eq!(unlimited.speed_limit_kbps, 0);
-        assert!(unlimited.create_limiter().is_unlimited());
-    }
-
-    #[test]
-    fn transfer_rate_tracker_accumulates() {
-        let mut tracker = TransferRateTracker::new();
-        assert_eq!(tracker.get_total_bytes(), 0);
-        assert_eq!(tracker.get_rate_kbps(), 0);
-
-        tracker.add_bytes(1024);
-        assert_eq!(tracker.get_total_bytes(), 1024);
-
-        let defaulted = TransferRateTracker::default();
-        assert_eq!(defaulted.get_total_bytes(), 0);
-    }
-
-    #[test]
-    fn transfer_rate_tracker_elapsed() {
-        let tracker = TransferRateTracker::new();
-        std::thread::sleep(Duration::from_millis(1100));
-        assert!(tracker.get_elapsed_secs() >= 1);
     }
 
     #[test]

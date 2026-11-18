@@ -31,12 +31,18 @@ pub struct Config {
 }
 
 /// FTP 连接模式（`connection_mode`）
+///
+/// 当前版本仅支持被动模式：libunftp 0.23.1 未校验主动模式 `PORT`/`EPRT`
+/// 的目标地址，开放主动模式可被用于 FTP bounce / 内网探测。`ActiveOnly`
+/// 与 `ActiveAndPassive` 仅为配置兼容保留，启动时会记录告警并降级为被动模式。
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ConnectionMode {
     #[default]
     PassiveOnly,
+    /// 配置兼容保留；当前实现降级为被动模式
     ActiveOnly,
+    /// 配置兼容保留；当前实现降级为被动模式
     ActiveAndPassive,
 }
 
@@ -58,7 +64,6 @@ pub struct FtpConfig {
     pub bind_ip: String,
     pub port: u16,
     pub welcome_message: String,
-    pub encoding: String,
     pub connection_mode: ConnectionMode,
     pub allow_anonymous: bool,
     /// 匿名用户主目录，空串 = 未设置
@@ -76,7 +81,6 @@ pub struct FtpConfig {
     /// 上游 libunftp 0.23.1 停止服务时不会关闭池化模式预绑定的被动端口，
     /// 运行期重启会因端口被占用而失败，因此实现侧会忽略 true 并记录告警。
     pub pooled_listener_mode: bool,
-    pub allow_nat_clients: bool,
     /// FTP 根目录，空串 = 各用户 home
     pub ftp_root: String,
     pub ftps: FtpsConfig,
@@ -89,7 +93,6 @@ impl Default for FtpConfig {
             bind_ip: "0.0.0.0".to_string(),
             port: default_ftp_port(),
             welcome_message: "Welcome to fftpd".to_string(),
-            encoding: "UTF-8".to_string(),
             connection_mode: ConnectionMode::PassiveOnly,
             allow_anonymous: false,
             anonymous_home: String::new(),
@@ -98,7 +101,6 @@ impl Default for FtpConfig {
             masquerade_address: String::new(),
             idle_timeout: 15,
             pooled_listener_mode: false,
-            allow_nat_clients: true,
             ftp_root: String::new(),
             ftps: FtpsConfig::default(),
         }
@@ -575,14 +577,12 @@ mod tests {
         assert_eq!(config.ftp.bind_ip, "0.0.0.0");
         assert_eq!(config.ftp.port, default_ftp_port());
         assert_eq!(config.ftp.welcome_message, "Welcome to fftpd");
-        assert_eq!(config.ftp.encoding, "UTF-8");
         assert_eq!(config.ftp.connection_mode, ConnectionMode::PassiveOnly);
         assert_eq!(config.ftp.connection_mode.as_str(), "passive_only");
         assert!(!config.ftp.allow_anonymous);
         assert_eq!(config.ftp.passive_ports, (50000, 51000));
         assert_eq!(config.ftp.idle_timeout, 15);
         assert!(!config.ftp.pooled_listener_mode);
-        assert!(config.ftp.allow_nat_clients);
         assert!(!config.ftp.ftps.enabled);
 
         assert!(config.sftp.enabled);

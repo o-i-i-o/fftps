@@ -10,7 +10,7 @@
 //! - [`path_safety`]：虚拟路径净化与真实路径防逃逸；
 //! - [`cert_gen`]：FTPS 自签证书生成（rcgen）；
 //! - [`listeners`]：libunftp 数据/会话事件 → 审计；
-//! - [`active_mode`] / [`passive_mode`] / [`ip_utils`]：主动/被动模式策略与 IP 分类。
+//! - [`passive_mode`] / [`ip_utils`]：被动模式地址选择与 IP 分类。
 //!
 //! # 存储栈组装（docs/design.md §4 Windows 组装路线）
 //!
@@ -43,7 +43,6 @@
 //! # }
 //! ```
 
-pub mod active_mode;
 pub mod auth;
 pub mod cert_gen;
 pub mod ip_utils;

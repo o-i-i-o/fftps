@@ -5,9 +5,8 @@
 #   - Windows: 每架构一个 zip（含 install/uninstall 脚本）+ MSI（WiX，原生 msiexec 双架构），
 #     注册 fftpd 服务并创建快捷方式
 # 推送 v* 标签时自动构建并创建 GitHub Release
-# 注：cargo fmt 检查暂未纳入——common/ipc/ftp/sftp 在当前 stable rustfmt
-# 下存在全量格式漂移（迁移前遗留，另行列清理项）；clippy 同样不加 -D warnings，
-# pedantic 告警遗留约百处（集中于 common/ftp 旧迁移代码）。
+# 注：cargo fmt 与 cargo clippy 均纳入 CI；clippy 暂不升级为 -D warnings，
+# pedantic 告警作为提示保留。
 name: CI
 
 on:
@@ -30,13 +29,16 @@ jobs:
       - name: 检出代码
         uses: actions/checkout@v5
 
-      - name: 安装 Rust 工具链（含 clippy）
+      - name: 安装 Rust 工具链（含 clippy/rustfmt）
         uses: dtolnay/rust-toolchain@stable
         with:
-          components: clippy
+          components: clippy, rustfmt
 
       - name: 缓存 Cargo 构建产物
         uses: Swatinem/rust-cache@v2
+
+      - name: cargo fmt 检查
+        run: cargo fmt --all -- --check
 
       - name: cargo clippy 检查
         run: cargo clippy --workspace --all-targets

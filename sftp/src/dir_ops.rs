@@ -322,12 +322,10 @@ impl SftpState {
             Ok(()) => {
                 let old_parent = old_full
                     .parent()
-                    .map(|p| p.to_string_lossy().to_string())
-                    .unwrap_or_default();
+                    .map_or_else(String::new, |p| p.to_string_lossy().to_string());
                 let new_parent = new_full
                     .parent()
-                    .map(|p| p.to_string_lossy().to_string())
-                    .unwrap_or_default();
+                    .map_or_else(String::new, |p| p.to_string_lossy().to_string());
                 let operation = if old_parent == new_parent {
                     "RENAME"
                 } else {

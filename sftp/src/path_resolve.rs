@@ -36,82 +36,25 @@ pub enum PathResolveError {
 impl std::fmt::Display for PathResolveError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::PathEscape => write!(f, "Path escape detected"),
-            Self::NotADirectory => write!(f, "Path is not a directory"),
-            Self::NotFound => write!(f, "Path not found"),
-            Self::PathTooDeep => write!(f, "Path depth exceeds maximum limit"),
-            Self::HomeDirectoryNotFound => write!(f, "Home directory not found"),
-            Self::CanonicalizeFailed => write!(f, "Path canonicalization failed"),
-            Self::InvalidPath => write!(f, "Invalid path"),
-            Self::SymlinkNotAllowed => write!(f, "Symlinks not allowed"),
-            Self::PathNotUnderHome => write!(f, "Path not under home directory"),
+            Self::PathEscape => write!(f, "检测到路径逃逸"),
+            Self::NotADirectory => write!(f, "目标不是目录"),
+            Self::NotFound => write!(f, "路径不存在"),
+            Self::PathTooDeep => write!(f, "路径深度超过上限"),
+            Self::HomeDirectoryNotFound => write!(f, "home 目录不存在"),
+            Self::CanonicalizeFailed => write!(f, "路径规范化失败"),
+            Self::InvalidPath => write!(f, "路径包含非法成分"),
+            Self::SymlinkNotAllowed => write!(f, "不允许符号链接"),
+            Self::PathNotUnderHome => write!(f, "不在 home 目录之下"),
         }
     }
 }
 
 impl std::error::Error for PathResolveError {}
 
-/// 去掉 Windows 扩展长度前缀 `\\?\`（canonicalize 的产物）
-#[must_use]
-pub fn strip_extended_prefix(path: &Path) -> PathBuf {
-    let path_str = path.to_string_lossy();
-    let stripped = path_str.strip_prefix(r"\\?\").unwrap_or(&path_str);
-    PathBuf::from(stripped)
-}
-
-/// 路径前缀包含判断：Windows 按路径成分忽略大小写比较，Unix 严格比较
-///
-/// Windows 下必须按 [`Component`] 逐段比较：字符串前缀会把
-/// `C:\Users\alice2` 误判为 `C:\Users\alice` 的子路径。
-#[must_use]
-pub fn path_starts_with_ignore_case<P: AsRef<Path>>(path: &Path, prefix: P) -> bool {
-    #[cfg(windows)]
-    {
-        let mut path_components = path.components();
-        for prefix_component in prefix.as_ref().components() {
-            match path_components.next() {
-                Some(component) if component_eq_ignore_case(&component, &prefix_component) => {}
-                _ => return false,
-            }
-        }
-        true
-    }
-    #[cfg(not(windows))]
-    {
-        path.starts_with(prefix.as_ref())
-    }
-}
-
-/// 单个路径成分的大小写不敏感比较（Windows 专用）
-#[cfg(windows)]
-fn component_eq_ignore_case(a: &Component<'_>, b: &Component<'_>) -> bool {
-    fn eq_os(a: &std::ffi::OsStr, b: &std::ffi::OsStr) -> bool {
-        a.to_string_lossy().to_lowercase() == b.to_string_lossy().to_lowercase()
-    }
-
-    match (a, b) {
-        (Component::Prefix(pa), Component::Prefix(pb)) => eq_os(pa.as_os_str(), pb.as_os_str()),
-        (Component::RootDir, Component::RootDir) => true,
-        (Component::CurDir, Component::CurDir) => true,
-        (Component::ParentDir, Component::ParentDir) => true,
-        (Component::Normal(a), Component::Normal(b)) => eq_os(a, b),
-        _ => false,
-    }
-}
-
-/// 路径相等判断：Windows 按成分忽略大小写，Unix 严格比较
-#[must_use]
-pub fn paths_equal_ignore_case<P1: AsRef<Path>, P2: AsRef<Path>>(path1: P1, path2: P2) -> bool {
-    #[cfg(windows)]
-    {
-        path_starts_with_ignore_case(path1.as_ref(), path2.as_ref())
-            && path_starts_with_ignore_case(path2.as_ref(), path1.as_ref())
-    }
-    #[cfg(not(windows))]
-    {
-        path1.as_ref() == path2.as_ref()
-    }
-}
+pub use fftp_common::paths::{
+    is_absolute_ftp_path, path_starts_with_ignore_case, paths_equal_ignore_case,
+    strip_extended_prefix,
+};
 
 /// 服务器绝对路径 → 客户端虚路径（`/` 起的相对 home 路径）
 ///
@@ -136,18 +79,6 @@ pub fn to_ftp_path(path: &Path, home_dir: &Path) -> Result<String, PathResolveEr
     } else {
         Ok(format!("/{}", normalized.trim_start_matches('/')))
     }
-}
-
-/// 是否客户端绝对虚路径（`/` 或 `\` 开头，或带盘符前缀）
-#[must_use]
-pub fn is_absolute_ftp_path(path: &str) -> bool {
-    if path.is_empty() {
-        return false;
-    }
-    if Path::new(path).is_absolute() {
-        return true;
-    }
-    matches!(path.chars().next(), Some('/' | '\\'))
 }
 
 /// 单个路径成分合法性：
@@ -1015,33 +946,36 @@ mod tests {
     fn test_path_resolve_error_display() {
         assert_eq!(
             format!("{}", PathResolveError::PathEscape),
-            "Path escape detected"
+            "检测到路径逃逸"
         );
         assert_eq!(
             format!("{}", PathResolveError::NotADirectory),
-            "Path is not a directory"
+            "目标不是目录"
         );
-        assert_eq!(format!("{}", PathResolveError::NotFound), "Path not found");
+        assert_eq!(format!("{}", PathResolveError::NotFound), "路径不存在");
         assert_eq!(
             format!("{}", PathResolveError::PathTooDeep),
-            "Path depth exceeds maximum limit"
+            "路径深度超过上限"
         );
         assert_eq!(
             format!("{}", PathResolveError::HomeDirectoryNotFound),
-            "Home directory not found"
+            "home 目录不存在"
         );
         assert_eq!(
             format!("{}", PathResolveError::CanonicalizeFailed),
-            "Path canonicalization failed"
+            "路径规范化失败"
         );
-        assert_eq!(format!("{}", PathResolveError::InvalidPath), "Invalid path");
+        assert_eq!(
+            format!("{}", PathResolveError::InvalidPath),
+            "路径包含非法成分"
+        );
         assert_eq!(
             format!("{}", PathResolveError::SymlinkNotAllowed),
-            "Symlinks not allowed"
+            "不允许符号链接"
         );
         assert_eq!(
             format!("{}", PathResolveError::PathNotUnderHome),
-            "Path not under home directory"
+            "不在 home 目录之下"
         );
     }
 

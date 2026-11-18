@@ -175,29 +175,12 @@ where
     }
 }
 
-/// 便捷封装：单次请求
-///
-/// # Errors
-/// 同 [`Client::request`]
-pub async fn request_once(cmd: Command) -> Result<serde_json::Value, ClientError> {
-    let client = Client::connect()
-        .await
-        .map_err(|e| ClientError::Disconnected(e.to_string()))?;
-    client.request(cmd).await
-}
-
 /// 校验响应数据形状的辅助（服务端返回错误形状时给出明确错误）
 ///
 /// # Errors
 /// 反序列化失败时返回错误
 pub fn parse_data<T: serde::de::DeserializeOwned>(data: serde_json::Value) -> Result<T> {
     serde_json::from_value(data).context("服务端响应数据形状不符合预期")
-}
-
-/// 保留给上层：判断是否值得重连（连接类错误）
-#[must_use]
-pub fn is_disconnected(err: &ClientError) -> bool {
-    matches!(err, ClientError::Disconnected(_))
 }
 
 #[cfg(test)]
