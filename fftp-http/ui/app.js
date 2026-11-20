@@ -894,10 +894,8 @@ function fillConfigForm(content) {
 
   $("cf-enabled").checked = bool(ftp.enabled, true);
   $("cf-bind-ip").value = txt(ftp.bind_ip, "0.0.0.0");
-  $("cf-port").value = num(ftp.port, 21);
+  $("cf-port").value = num(ftp.port, 2121);
   $("cf-welcome").value = txt(ftp.welcome_message, "Welcome to fftpd");
-  $("cf-encoding").value = txt(ftp.encoding, "UTF-8");
-  $("cf-conn-mode").value = txt(ftp.connection_mode, "passive_only");
   $("cf-anonymous").checked = bool(ftp.allow_anonymous);
   $("cf-anon-home").value = txt(ftp.anonymous_home);
   $("cf-passive-lo").value = num(arr(ftp.passive_ports)[0], 50000);
@@ -905,12 +903,13 @@ function fillConfigForm(content) {
   $("cf-speed").value = num(ftp.max_speed_kbps, 0);
   $("cf-masquerade").value = txt(ftp.masquerade_address);
   $("cf-idle-timeout").value = num(ftp.idle_timeout, 15);
-  $("cf-pooled").checked = bool(ftp.pooled_listener_mode);
-  $("cf-nat").checked = bool(ftp.allow_nat_clients, true);
+  $("cf-max-sessions").value = num(ftp.max_sessions_per_user, 5);
+  $("cf-symlinks").checked = bool(ftp.allow_symlinks);
+  $("cf-allowed").value = arr(ftp.allowed_ips).join(", ");
+  $("cf-denied").value = arr(ftp.denied_ips).join(", ");
   $("cf-root").value = txt(ftp.ftp_root);
 
   $("cf-ftps-enabled").checked = bool(ftps.enabled);
-  $("cf-ftps-require").checked = bool(ftps.require_ssl);
   $("cf-ftps-cert").value = txt(ftps.cert_path);
   $("cf-ftps-key").value = txt(ftps.key_path);
 
@@ -918,19 +917,25 @@ function fillConfigForm(content) {
   $("cf-sftp-bind-ip").value = txt(sftp.bind_ip, "0.0.0.0");
   $("cf-sftp-port").value = num(sftp.port, 2222);
   $("cf-sftp-host-key").value = txt(sftp.host_key_path);
+  $("cf-sftp-password").checked = bool(sftp.password_auth, true);
+  $("cf-sftp-pubkey").checked = bool(sftp.public_key_auth, true);
   $("cf-sftp-max-auth").value = num(sftp.max_auth_attempts, 3);
-  $("cf-sftp-auth-timeout").value = num(sftp.auth_timeout, 60);
+  $("cf-sftp-login-grace").value = num(sftp.login_grace_time, 60);
+  $("cf-sftp-idle").value = num(sftp.idle_timeout, 3600);
+  $("cf-sftp-keepalive").value = num(sftp.keepalive_interval, 30);
+  $("cf-sftp-keepalive-max").value = num(sftp.keepalive_max, 3);
   $("cf-sftp-sessions").value = num(sftp.max_sessions_per_user, 5);
-  $("cf-sftp-rotation").value = num(sftp.host_key_rotation_days, 0);
+  $("cf-sftp-speed").value = num(sftp.max_speed_kbps, 0);
+  $("cf-sftp-symlinks").checked = bool(sftp.allow_symlinks);
+  $("cf-sftp-allowed").value = arr(sftp.allowed_ips).join(", ");
+  $("cf-sftp-denied").value = arr(sftp.denied_ips).join(", ");
 
   $("cf-sec-max-conn").value = num(sec.max_connections, 100);
   $("cf-sec-max-conn-ip").value = num(sec.max_connections_per_ip, 10);
-  $("cf-sec-allowed").value = arr(sec.allowed_ips).join(", ");
-  $("cf-sec-denied").value = arr(sec.denied_ips).join(", ");
   $("cf-sec-f2b").checked = bool(sec.fail2ban_enabled);
   $("cf-sec-f2b-threshold").value = num(sec.fail2ban_threshold, 5);
   $("cf-sec-f2b-time").value = num(sec.fail2ban_ban_time, 3600);
-  $("cf-symlinks").checked = bool(sec.allow_symlinks);
+  $("cf-sec-f2b-find").value = num(sec.fail2ban_find_time, 600);
   $("cf-sec-max-login").value = num(sec.max_login_attempts, 5);
 }
 
@@ -948,12 +953,17 @@ function buildConfigToml() {
     return v;
   };
   const port = (id, label) => reqInt(id, label, 1, 65535);
-  const sel = (id) => $(id).value;
 
   const lo = port("cf-passive-lo", "被动端口下限");
   const hi = port("cf-passive-hi", "被动端口上限");
-  if (!errs.includes("被动端口下限") && !errs.includes("被动端口上限") && lo > hi) {
-    errs.push("被动端口区间（下限 ≤ 上限）");
+  if (!errs.includes("被动端口下限") && !errs.includes("被动端口上限") && lo >= hi) {
+    errs.push("被动端口区间（下限 < 上限）");
+  }
+  if ($("cf-anonymous").checked && str("cf-root")) {
+    errs.push("匿名访问与 FTP 根目录不能同时启用");
+  }
+  if (!$("cf-sftp-password").checked && !$("cf-sftp-pubkey").checked) {
+    errs.push("SFTP 至少启用一种认证方式");
   }
 
   // [logging] 不在表单覆盖范围内：沿用最近拉取的原文，避免整体保存时被默认值覆盖
@@ -969,21 +979,20 @@ function buildConfigToml() {
   lines.push(`bind_ip = ${q(str("cf-bind-ip") || "0.0.0.0")}`);
   lines.push(`port = ${port("cf-port", "FTP 端口")}`);
   lines.push(`welcome_message = ${q(str("cf-welcome"))}`);
-  lines.push(`encoding = ${q(str("cf-encoding") || "UTF-8")}`);
-  lines.push(`connection_mode = ${q(sel("cf-conn-mode"))}`);
   lines.push(`allow_anonymous = ${$("cf-anonymous").checked}`);
   lines.push(`anonymous_home = ${q(str("cf-anon-home"))}`);
   lines.push(`passive_ports = [${lo}, ${hi}]`);
   lines.push(`max_speed_kbps = ${reqInt("cf-speed", "单连接限速", 0)}`);
   lines.push(`masquerade_address = ${q(str("cf-masquerade"))}`);
   lines.push(`idle_timeout = ${reqInt("cf-idle-timeout", "空闲超时", 1)}`);
-  lines.push(`pooled_listener_mode = ${$("cf-pooled").checked}`);
-  lines.push(`allow_nat_clients = ${$("cf-nat").checked}`);
   lines.push(`ftp_root = ${q(str("cf-root"))}`);
+  lines.push(`max_sessions_per_user = ${reqInt("cf-max-sessions", "单用户最大会话", 0)}`);
+  lines.push(`allow_symlinks = ${$("cf-symlinks").checked}`);
+  lines.push(`allowed_ips = [${cidrs("cf-allowed").map(q).join(", ")}]`);
+  lines.push(`denied_ips = [${cidrs("cf-denied").map(q).join(", ")}]`);
   lines.push("");
   lines.push("[ftp.ftps]");
   lines.push(`enabled = ${$("cf-ftps-enabled").checked}`);
-  lines.push(`require_ssl = ${$("cf-ftps-require").checked}`);
   lines.push(`cert_path = ${q(str("cf-ftps-cert"))}`);
   lines.push(`key_path = ${q(str("cf-ftps-key"))}`);
   lines.push("");
@@ -993,19 +1002,25 @@ function buildConfigToml() {
   lines.push(`port = ${port("cf-sftp-port", "SFTP 端口")}`);
   lines.push(`host_key_path = ${q(str("cf-sftp-host-key"))}`);
   lines.push(`max_auth_attempts = ${reqInt("cf-sftp-max-auth", "最大认证尝试", 1)}`);
-  lines.push(`auth_timeout = ${reqInt("cf-sftp-auth-timeout", "认证超时", 1)}`);
-  lines.push(`max_sessions_per_user = ${reqInt("cf-sftp-sessions", "单用户最大会话", 1)}`);
-  lines.push(`host_key_rotation_days = ${reqInt("cf-sftp-rotation", "主机密钥轮换天数", 0)}`);
+  lines.push(`password_auth = ${$("cf-sftp-password").checked}`);
+  lines.push(`public_key_auth = ${$("cf-sftp-pubkey").checked}`);
+  lines.push(`login_grace_time = ${reqInt("cf-sftp-login-grace", "登录宽限时间", 1)}`);
+  lines.push(`idle_timeout = ${reqInt("cf-sftp-idle", "会话空闲超时", 1)}`);
+  lines.push(`keepalive_interval = ${reqInt("cf-sftp-keepalive", "keepalive 间隔", 0)}`);
+  lines.push(`keepalive_max = ${reqInt("cf-sftp-keepalive-max", "keepalive 次数上限", 1)}`);
+  lines.push(`max_sessions_per_user = ${reqInt("cf-sftp-sessions", "单用户最大会话", 0)}`);
+  lines.push(`max_speed_kbps = ${reqInt("cf-sftp-speed", "单连接限速", 0)}`);
+  lines.push(`allow_symlinks = ${$("cf-sftp-symlinks").checked}`);
+  lines.push(`allowed_ips = [${cidrs("cf-sftp-allowed").map(q).join(", ")}]`);
+  lines.push(`denied_ips = [${cidrs("cf-sftp-denied").map(q).join(", ")}]`);
   lines.push("");
   lines.push("[security]");
   lines.push(`max_connections = ${reqInt("cf-sec-max-conn", "全局最大并发连接", 1)}`);
   lines.push(`max_connections_per_ip = ${reqInt("cf-sec-max-conn-ip", "单 IP 最大并发连接", 1)}`);
-  lines.push(`allowed_ips = [${cidrs("cf-sec-allowed").map(q).join(", ")}]`);
-  lines.push(`denied_ips = [${cidrs("cf-sec-denied").map(q).join(", ")}]`);
   lines.push(`fail2ban_enabled = ${$("cf-sec-f2b").checked}`);
   lines.push(`fail2ban_threshold = ${reqInt("cf-sec-f2b-threshold", "触发封禁失败次数", 1)}`);
   lines.push(`fail2ban_ban_time = ${reqInt("cf-sec-f2b-time", "封禁时长", 1)}`);
-  lines.push(`allow_symlinks = ${$("cf-symlinks").checked}`);
+  lines.push(`fail2ban_find_time = ${reqInt("cf-sec-f2b-find", "失败计数窗口", 1)}`);
   lines.push(`max_login_attempts = ${reqInt("cf-sec-max-login", "最大登录尝试次数", 1)}`);
   lines.push("");
   lines.push("[logging]");

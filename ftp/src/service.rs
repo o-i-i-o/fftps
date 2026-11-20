@@ -39,7 +39,7 @@ use unftp_sbe_rooter::RooterVfs;
 use fftp_common::fail2ban::Fail2BanManager;
 use fftp_common::logging::Logging;
 use fftp_common::rate_limit::ConnectionLimiter;
-use fftp_common::{Config, ConnectionMode, FtpsConfig, QuotaManager, UserManager};
+use fftp_common::{Config, FtpsConfig, QuotaManager, UserManager};
 
 use crate::auth::{FtpAuthenticator, FtpUser, FtpUserDetailProvider, RootMode, SessionTracker};
 use crate::cert_gen::ensure_cert_exists;
@@ -151,23 +151,11 @@ pub fn resolve_ftps_paths(ftps: &FtpsConfig) -> Result<Option<(PathBuf, PathBuf)
     }
 }
 
-/// 被动端口范围校验
+/// 被动模式通告地址：IPv4 字面量 → [`PassiveHost::Ip`]，非空主机名 → `Dns`，
+/// 空/未指定地址 → `FromConnection`（跟随实际连接地址）。
 ///
-/// libunftp 用 `(end - start)` 作取模基数（`switchboard.rs`），`start == end`
-/// 会除零 panic，`start > end` 会下溢，故必须严格 `start < end` 且都在
-/// 合法端口范围内。
-fn validate_passive_ports((start, end): (u16, u16)) -> Result<()> {
-    if start < 1 || end < 1 {
-        bail!("ftp.passive_ports 不能为 0（当前 {start}-{end}）");
-    }
-    if start >= end {
-        bail!("ftp.passive_ports 起止非法（当前 {start}-{end}），必须满足起始端口 < 结束端口");
-    }
-    Ok(())
-}
-
-/// 被动模式通告地址：IP 字面量 → [`PassiveHost::Ip`]，非空主机名 → `Dns`，
-/// 空/未指定地址 → `FromConnection`（跟随实际连接地址）
+/// IPv6 字面量在 [`Config::validate`] 阶段已被拒绝：libunftp 的 PASV 应答
+/// 只支持 IPv4，IPv6 客户端应使用 EPSV。
 #[must_use]
 pub fn resolve_passive_host(masquerade_address: Option<&str>) -> PassiveHost {
     match masquerade_address {
@@ -178,17 +166,6 @@ pub fn resolve_passive_host(masquerade_address: Option<&str>) -> PassiveHost {
         },
         None => PassiveHost::FromConnection,
     }
-}
-
-/// 配置连接模式 → libunftp 主动/被动模式
-///
-/// libunftp 0.23.1 不对主动模式下 `PORT`/`EPRT` 指定的目标地址做
-/// 校验，已认证用户可借其让服务端连接任意 `IP:端口`（FTP bounce / 内网探测）。
-/// 在接入目标地址校验之前一律以被动模式运行；非 `passive_only` 配置在
-/// [`FtpService::start`] 中记录告警。
-#[must_use]
-pub fn map_connection_mode(_mode: ConnectionMode) -> ActivePassiveMode {
-    ActivePassiveMode::PassiveOnly
 }
 
 /// FTP(FTPS) 服务：持有共享层资源，负责组装与生命周期管理
@@ -290,22 +267,11 @@ impl FtpService {
 
         // 配置快照：后续组装不跨 await 持锁，热重载在下次 start() 生效
         let cfg = self.config.read_recover().clone();
-
-        validate_passive_ports(cfg.ftp.passive_ports)?;
+        cfg.validate()?;
 
         // 热重载：安全策略（并发上限、封禁阈值）随 start() 快照同步更新
         self.fail2ban.update_config(&cfg.security);
         self.connections.update_config(&cfg.security);
-
-        if cfg.ftp.connection_mode != ConnectionMode::PassiveOnly {
-            // 主动模式缺失 PORT/EPRT 目标校验，统一降级为被动模式
-            tracing::warn!(
-                "配置项 ftp.connection_mode = {} 已降级为 passive_only：libunftp 0.23.1 \
-                 不校验主动模式 PORT/EPRT 的目标地址，开放主动模式可被用于 \
-                 FTP bounce / 内网探测",
-                cfg.ftp.connection_mode.as_str()
-            );
-        }
 
         let root_mode = resolve_root_mode(cfg.ftp.ftp_root_opt())?;
         let ftps_paths = resolve_ftps_paths(&cfg.ftp.ftps)?;
@@ -317,20 +283,24 @@ impl FtpService {
         let (shutdown_tx, shutdown_rx) = oneshot::channel();
         let (closed_tx, closed_rx) = oneshot::channel();
 
-        let bind_addr = format!("{}:{}", cfg.ftp.bind_ip, cfg.ftp.port);
+        // IPv6 字面量需要方括号，统一由 config 辅助函数拼接
+        let bind_addr = fftp_common::config::format_bind_addr(&cfg.ftp.bind_ip, cfg.ftp.port)?;
         tracing::info!(
-            "FTP 服务启动：监听 {}（连接模式 {}）",
-            format_listen_addresses(&cfg.ftp.bind_ip, cfg.ftp.port),
-            cfg.ftp.connection_mode.as_str()
+            "FTP 服务启动：监听 {}（仅被动模式）",
+            format_listen_addresses(&cfg.ftp.bind_ip, cfg.ftp.port)
         );
-
-        if cfg.ftp.pooled_listener_mode {
-            // 上游缺陷（libunftp 0.23.1）：池化模式把被动监听器交给分离的 accept 任务，
-            // stop() 只取消监听循环，不关闭这些任务持有的端口，运行期 restart 会绑定失败。
-            // 为保证配置热重载可用，本版本忽略该选项，始终使用 legacy 监听模式。
+        if cfg
+            .ftp
+            .bind_ip
+            .trim_matches(['[', ']'])
+            .parse::<std::net::Ipv6Addr>()
+            .is_ok()
+        {
+            // libunftp 0.23.1 的 PASV 应答只支持 IPv4；IPv6 控制连接下
+            // PASV 会返回内部错误，客户端必须使用 EPSV（RFC 2428）。
             tracing::warn!(
-                "配置项 ftp.pooled_listener_mode = true 已被忽略：libunftp 0.23.1 的池化模式\
-                 停止后不会释放被动端口，会导致运行期重启失败；将继续使用 legacy 监听模式"
+                "FTP 监听 IPv6 地址 {}：PASV 不可用，客户端需使用 EPSV",
+                cfg.ftp.bind_ip
             );
         }
 
@@ -442,15 +412,15 @@ impl FtpService {
                 ))
                 .shutdown_indicator(shutdown_indicator);
 
-        // 池化监听模式因上游停止不释放端口而被忽略（见 start() 的告警）
-        builder = builder.active_passive_mode(map_connection_mode(cfg.ftp.connection_mode));
+        // 固定仅被动模式：libunftp 0.23.1 不校验主动模式 PORT/EPRT 的目标地址，
+        // 开放主动模式可被用于 FTP bounce / 内网探测。
+        builder = builder.active_passive_mode(ActivePassiveMode::PassiveOnly);
         builder = builder.passive_host(resolve_passive_host(cfg.ftp.masquerade_address_opt()));
 
         if let Some((cert, key)) = ftps_paths {
-            builder = builder
-                .ftps(cert, key)
-                .ftps_required(cfg.ftp.ftps.require_ssl, cfg.ftp.ftps.require_ssl);
-            tracing::info!("FTPS 已启用（require_ssl: {}）", cfg.ftp.ftps.require_ssl);
+            // 启用 FTPS 即强制 TLS：控制通道与数据通道都拒绝明文客户端
+            builder = builder.ftps(cert, key).ftps_required(true, true);
+            tracing::info!("FTPS 已启用（强制 TLS）");
         }
 
         builder.build().context("组装 libunftp 服务端失败")
@@ -541,8 +511,6 @@ mod tests {
         let mut cfg = Config::default();
         cfg.ftp.bind_ip = "127.0.0.1".to_string();
         cfg.ftp.port = 0;
-        // libunftp 0.23.1 池化模式停止时不释放被动端口，测试显式走 legacy 模式
-        cfg.ftp.pooled_listener_mode = false;
         cfg
     }
 
@@ -633,7 +601,6 @@ mod tests {
         // 双设置 → 沿用
         let ftps = FtpsConfig {
             enabled: true,
-            require_ssl: false,
             cert_path: "/etc/fftps/cert.pem".to_string(),
             key_path: "/etc/fftps/key.pem".to_string(),
         };
@@ -644,7 +611,6 @@ mod tests {
         // 只设置一半 → 报错
         let half = FtpsConfig {
             enabled: true,
-            require_ssl: false,
             cert_path: "/etc/fftps/cert.pem".to_string(),
             key_path: String::new(),
         };
@@ -681,23 +647,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn map_connection_mode_variants() {
-        // 主动模式缺少 PORT/EPRT 目标校验，一律降级为被动模式
-        assert_eq!(
-            map_connection_mode(ConnectionMode::PassiveOnly),
-            ActivePassiveMode::PassiveOnly
-        );
-        assert_eq!(
-            map_connection_mode(ConnectionMode::ActiveOnly),
-            ActivePassiveMode::PassiveOnly
-        );
-        assert_eq!(
-            map_connection_mode(ConnectionMode::ActiveAndPassive),
-            ActivePassiveMode::PassiveOnly
-        );
-    }
-
     /// 认证链测试：合法用户成功/口令错误/未知用户/匿名开关
     #[tokio::test]
     #[allow(clippy::await_holding_lock)]
@@ -725,7 +674,7 @@ mod tests {
         users.save(&fftp_common::paths::users_path()).unwrap();
 
         let mut cfg = Config::default();
-        cfg.security.allowed_ips = vec!["0.0.0.0/0".to_string()];
+        cfg.ftp.allowed_ips = vec!["0.0.0.0/0".to_string()];
         let config = Arc::new(StdRwLock::new(cfg));
         let security = config.read_recover().security.clone();
 
@@ -815,7 +764,7 @@ mod tests {
         };
 
         let mut cfg = Config::default();
-        cfg.security.denied_ips = vec!["127.0.0.0/8".to_string()];
+        cfg.ftp.denied_ips = vec!["127.0.0.0/8".to_string()];
         let config = Arc::new(StdRwLock::new(cfg));
         let security = config.read_recover().security.clone();
 

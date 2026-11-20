@@ -62,7 +62,6 @@ impl TestEnv {
         let mut config = Config::default();
         config.ftp.bind_ip = "127.0.0.1".to_string();
         config.ftp.port = 0;
-        config.ftp.pooled_listener_mode = false;
         config.sftp.bind_ip = "127.0.0.1".to_string();
         config.sftp.port = 0;
         config.logging = LoggingConfig {

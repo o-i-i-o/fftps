@@ -3,7 +3,8 @@
 //! 迁移并整合自 wftpd-windows `ftp_server/auth.rs`（认证链、会话跟踪、权限映射）
 //! 与 wftpd-linux `ftp/src/auth.rs`（匿名登录），对接统一共享层：
 //! - [`fftp_common::users::UserManager`]：用户库与口令校验（登录前 reload 热更新）；
-//! - [`fftp_common::config::Config`]：IP 黑白名单、匿名开关、FTP 根目录；
+//! - [`fftp_common::config::Config`]：`[ftp]` 的 IP 黑白名单、符号链接策略、
+//!   匿名开关、FTP 根目录与单用户会话上限；
 //! - [`fftp_common::fail2ban::Fail2BanManager`]：失败统计与封禁；
 //! - [`fftp_common::rate_limit::ConnectionLimiter`]：并发连接数治理；
 //!
@@ -145,6 +146,15 @@ impl SessionTracker {
     pub fn get_ip_for_user(&self, username: &str) -> Option<String> {
         let sessions = self.sessions.lock_recover();
         sessions.get(username).and_then(|ips| ips.last().cloned())
+    }
+
+    /// 当前用户名下的并发会话数
+    #[must_use]
+    pub fn count_for(&self, username: &str) -> usize {
+        self.sessions
+            .lock_recover()
+            .get(username)
+            .map_or(0, Vec::len)
     }
 
     /// 登记会话 `trace_id` 与 IP/用户名 的映射（登录事件回调时建立）
@@ -379,6 +389,19 @@ impl FtpAuthenticator {
             username: username.to_string(),
         }
     }
+
+    /// 单用户并发会话上限检查（0 = 不限制）
+    fn session_limit_exceeded(&self, username: &str) -> bool {
+        let max = self.config.read_recover().ftp.max_sessions_per_user;
+        max > 0 && self.sessions.count_for(username) >= usize::try_from(max).unwrap_or(usize::MAX)
+    }
+
+    /// 会话数超限：注销本次连接登记，但不计入 fail2ban 失败次数
+    fn reject_session_limit(&self, client_ip: &str, username: &str) -> AuthenticationError {
+        self.connections.unregister(client_ip);
+        tracing::warn!(username, ip = client_ip, "FTP 用户并发会话数超限");
+        AuthenticationError::BadPassword
+    }
 }
 
 /// 生成哑哈希：未知用户也走一次 Argon2id 校验，抹平存在性时间侧信道
@@ -420,14 +443,10 @@ impl Authenticator for FtpAuthenticator {
                 .await);
         }
 
-        // 2. IP 黑白名单（黑名单优先，见 Config::is_ip_allowed_for）
+        // 2. IP 黑白名单（`[ftp]` 独立配置，黑名单优先）
         {
             let cfg = self.config.read_recover();
-            if !Config::is_ip_allowed_for(
-                &cfg.security.allowed_ips,
-                &cfg.security.denied_ips,
-                &client_ip,
-            ) {
+            if !cfg.ftp.is_ip_allowed(&client_ip) {
                 // IP 策略拒绝属程序日志（tracing），不写文件操作审计
                 tracing::warn!(ip = %client_ip, "FTP 连接被 IP 策略拒绝");
                 return Err(AuthenticationError::IpDisallowed);
@@ -463,6 +482,9 @@ impl Authenticator for FtpAuthenticator {
             };
             if let Some(reason) = denied {
                 return Err(self.reject(username, &client_ip, &reason, true).await);
+            }
+            if self.session_limit_exceeded("anonymous") {
+                return Err(self.reject_session_limit(&client_ip, "anonymous"));
             }
             return Ok(self.accept("anonymous", &client_ip).await);
         }
@@ -508,7 +530,11 @@ impl Authenticator for FtpAuthenticator {
         });
 
         if known {
-            Ok(self.accept(username, &client_ip).await)
+            if self.session_limit_exceeded(username) {
+                Err(self.reject_session_limit(&client_ip, username))
+            } else {
+                Ok(self.accept(username, &client_ip).await)
+            }
         } else {
             Err(self
                 .reject(username, &client_ip, "用户名或口令错误", true)

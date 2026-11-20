@@ -42,6 +42,7 @@ pub fn setup_with_perms(f: impl FnOnce(&mut Permissions)) -> TestEnv {
         None,
         "127.0.0.1".to_string(),
         false,
+        0,
     );
     TestEnv { dir, state }
 }

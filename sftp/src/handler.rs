@@ -9,7 +9,7 @@ use fftp_common::sync::MutexExt;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::Mutex as StdMutex;
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
 use russh::keys::PublicKey;
 use russh::server::Msg;
@@ -82,7 +82,7 @@ impl SessionTracker {
 /// 内存且无法回收（未使用的通道一直挂在 `pending_channels`）。
 const MAX_PENDING_CHANNELS: usize = 8;
 
-/// 认证上下文（会话级：尝试次数、超时、认证结果）
+/// 认证上下文（会话级：尝试次数、登录宽限时间、认证结果）
 pub struct AuthContext {
     pub authenticated: bool,
     pub username: Option<String>,
@@ -90,7 +90,8 @@ pub struct AuthContext {
     pub auth_attempts: u32,
     pub max_auth_attempts: u32,
     pub auth_start_time: Option<std::time::Instant>,
-    pub auth_timeout_secs: u64,
+    /// 登录宽限时间（秒）：连接建立后必须在此时间内完成认证
+    pub login_grace_time_secs: u64,
 }
 
 /// SFTP 连接处理器（每个 TCP 连接一个实例）
@@ -107,8 +108,16 @@ pub struct SftpHandler {
     pub pending_channels: HashMap<ChannelId, Channel<Msg>>,
     pub client_ip: String,
     pub max_sessions_per_user: u32,
-    /// 是否允许跟随符号链接（`security.allow_symlinks`）
+    /// 是否允许跟随/创建符号链接（`[sftp]` 独立配置）
     pub allow_symlinks: bool,
+    /// 是否允许口令认证
+    pub password_auth: bool,
+    /// 是否允许公钥认证
+    pub public_key_auth: bool,
+    /// 全局单连接限速（KB/s，0 = 不限速）
+    pub global_speed_kbps: u64,
+    /// 认证成功标志（供服务端登录宽限看门狗观察）
+    pub authenticated_flag: Arc<AtomicBool>,
 }
 
 impl SftpHandler {
@@ -124,9 +133,12 @@ impl SftpHandler {
         logging: Option<Arc<Logging>>,
         client_ip: String,
         max_auth_attempts: u32,
-        auth_timeout_secs: u64,
+        login_grace_time_secs: u64,
         max_sessions_per_user: u32,
         allow_symlinks: bool,
+        password_auth: bool,
+        public_key_auth: bool,
+        global_speed_kbps: u64,
     ) -> Self {
         SftpHandler {
             user_manager,
@@ -141,12 +153,16 @@ impl SftpHandler {
                 auth_attempts: 0,
                 max_auth_attempts,
                 auth_start_time: Some(std::time::Instant::now()),
-                auth_timeout_secs,
+                login_grace_time_secs,
             },
             pending_channels: HashMap::new(),
             client_ip,
             max_sessions_per_user,
             allow_symlinks,
+            password_auth,
+            public_key_auth,
+            global_speed_kbps,
+            authenticated_flag: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -164,7 +180,7 @@ impl SftpHandler {
 
         if let Some(start_time) = self.auth.auth_start_time {
             let elapsed = start_time.elapsed().as_secs();
-            if elapsed > self.auth.auth_timeout_secs {
+            if elapsed > self.auth.login_grace_time_secs {
                 tracing::warn!(
                     client_ip = %self.client_ip,
                     username = %user,
@@ -217,7 +233,7 @@ impl SftpHandler {
         }
 
         let session_count = self.sessions.get_count(user);
-        if session_count >= self.max_sessions_per_user {
+        if self.max_sessions_per_user > 0 && session_count >= self.max_sessions_per_user {
             tracing::warn!(
                 client_ip = %self.client_ip,
                 username = %user,
@@ -231,6 +247,7 @@ impl SftpHandler {
 
         self.auth.authenticated = true;
         self.auth.username = Some(user.to_string());
+        self.authenticated_flag.store(true, Ordering::Release);
         self.sessions.increment(user);
 
         tracing::info!(
@@ -292,6 +309,17 @@ impl russh::server::Handler for SftpHandler {
         user: &str,
         password: &str,
     ) -> Result<server::Auth, Self::Error> {
+        if !self.password_auth {
+            tracing::warn!(
+                client_ip = %self.client_ip,
+                username = %user,
+                action = "AUTH_METHOD_DISABLED",
+                protocol = "SFTP",
+                "Password authentication is disabled"
+            );
+            return Ok(server::Auth::reject());
+        }
+
         if let Some(reject) = self.check_auth_preconditions(user) {
             if self.auth.auth_attempts > self.auth.max_auth_attempts {
                 self.record_auth_failure().await;
@@ -366,6 +394,17 @@ impl russh::server::Handler for SftpHandler {
         user: &str,
         public_key: &PublicKey,
     ) -> Result<server::Auth, Self::Error> {
+        if !self.public_key_auth {
+            tracing::warn!(
+                client_ip = %self.client_ip,
+                username = %user,
+                action = "AUTH_METHOD_DISABLED",
+                protocol = "SFTP",
+                "Public key authentication is disabled"
+            );
+            return Ok(server::Auth::reject());
+        }
+
         if let Some(reject) = self.check_auth_preconditions(user) {
             if self.auth.auth_attempts > self.auth.max_auth_attempts {
                 self.record_auth_failure().await;
@@ -605,6 +644,7 @@ impl russh::server::Handler for SftpHandler {
             self.logging.clone(),
             self.client_ip.clone(),
             self.allow_symlinks,
+            self.global_speed_kbps,
         );
 
         tracing::debug!(
@@ -675,6 +715,9 @@ mod tests {
             60,
             4,
             false,
+            true,
+            true,
+            0,
         );
         assert!(handler.check_auth_preconditions("../evil").is_some());
         assert!(handler.check_auth_preconditions("a/b").is_some());
@@ -694,6 +737,9 @@ mod tests {
             60,
             4,
             false,
+            true,
+            true,
+            0,
         );
         assert!(handler.check_auth_preconditions("alice").is_none());
         assert!(handler.check_auth_preconditions("alice").is_none());

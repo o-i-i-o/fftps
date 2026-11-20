@@ -12,7 +12,6 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex as StdMutex, RwLock as StdRwLock};
 
 use anyhow::{Result, anyhow};
-use chrono::{DateTime, Utc};
 use russh::MethodKind;
 use socket2::{Domain, Protocol, SockAddr, Socket, Type};
 use tokio::sync::oneshot;
@@ -120,10 +119,15 @@ impl SftpService {
             bind_ip,
             sftp_port,
             host_key_path,
-            key_rotation_days,
             max_auth_attempts,
-            auth_timeout,
+            password_auth,
+            public_key_auth,
+            login_grace_time,
+            idle_timeout,
+            keepalive_interval,
+            keepalive_max,
             max_sessions_per_user,
+            max_speed_kbps,
             allow_symlinks,
         ) = {
             let cfg = self.config.read_recover();
@@ -132,11 +136,16 @@ impl SftpService {
                 cfg.sftp.bind_ip.clone(),
                 cfg.sftp.port,
                 cfg.sftp.resolved_host_key_path(),
-                cfg.sftp.host_key_rotation_days,
                 cfg.sftp.max_auth_attempts,
-                cfg.sftp.auth_timeout,
+                cfg.sftp.password_auth,
+                cfg.sftp.public_key_auth,
+                cfg.sftp.login_grace_time,
+                cfg.sftp.idle_timeout,
+                cfg.sftp.keepalive_interval,
+                cfg.sftp.keepalive_max,
                 cfg.sftp.max_sessions_per_user,
-                cfg.security.allow_symlinks,
+                cfg.sftp.max_speed_kbps,
+                cfg.sftp.allow_symlinks,
             )
         };
 
@@ -153,15 +162,16 @@ impl SftpService {
 
         tracing::info!("SFTP server starting on {bind_ip}:{sftp_port}");
 
-        // 主机密钥：按周期轮换 + 不存在时自动生成 Ed25519
-        let mut last_rotation: Option<DateTime<Utc>> = None;
-        host_key::check_and_rotate_key(&host_key_path, key_rotation_days, &mut last_rotation)
-            .await?;
+        // 主机密钥：不存在时自动生成 Ed25519（轮换改为运维操作，不再自动执行）
         let host_key = host_key::load_or_generate_host_key(&host_key_path).await?;
 
         let mut methods = russh::MethodSet::empty();
-        methods.push(MethodKind::Password);
-        methods.push(MethodKind::PublicKey);
+        if password_auth {
+            methods.push(MethodKind::Password);
+        }
+        if public_key_auth {
+            methods.push(MethodKind::PublicKey);
+        }
 
         let ssh_config = russh::server::Config {
             keys: vec![host_key],
@@ -169,9 +179,11 @@ impl SftpService {
             max_auth_attempts: usize::try_from(max_auth_attempts)?,
             auth_rejection_time: std::time::Duration::from_secs(1),
             auth_rejection_time_initial: Some(std::time::Duration::from_millis(0)),
-            inactivity_timeout: Some(std::time::Duration::from_secs(auth_timeout)),
-            keepalive_interval: Some(std::time::Duration::from_secs(30)),
-            keepalive_max: 3,
+            // 空闲超时只约束认证完成后的会话；登录宽限由 handler 单独计时
+            inactivity_timeout: Some(std::time::Duration::from_secs(idle_timeout)),
+            keepalive_interval: (keepalive_interval > 0)
+                .then(|| std::time::Duration::from_secs(keepalive_interval)),
+            keepalive_max: usize::try_from(keepalive_max)?,
             nodelay: true,
             ..Default::default()
         };
@@ -222,10 +234,10 @@ impl SftpService {
                                     continue;
                                 }
 
-                                // IP 黑白名单
+                                // IP 黑白名单（`[sftp]` 独立配置）
                                 let ip_allowed = {
                                     let cfg = config.read_recover();
-                                    cfg.is_ip_allowed(&client_ip)
+                                    cfg.sftp.is_ip_allowed(&client_ip)
                                 };
                                 if !ip_allowed {
                                     tracing::warn!(
@@ -279,18 +291,67 @@ impl SftpService {
                                         logging,
                                         client_ip,
                                         max_auth_attempts,
-                                        auth_timeout,
+                                        login_grace_time,
                                         max_sessions_per_user,
                                         allow_symlinks,
+                                        password_auth,
+                                        public_key_auth,
+                                        max_speed_kbps,
                                     );
+                                    let authenticated = Arc::clone(&handler.authenticated_flag);
 
-                                    if let Err(e) =
-                                        russh::server::run_stream(ssh_config, socket, handler).await
+                                    // 登录宽限：从 TCP 接入起计时，SSH 握手与认证都必须
+                                    // 在窗口内完成；否则主动断开（避免空连接长期占用配额）
+                                    let deadline = tokio::time::Instant::now()
+                                        + std::time::Duration::from_secs(login_grace_time);
+
+                                    let session = match tokio::time::timeout_at(
+                                        deadline,
+                                        russh::server::run_stream(ssh_config, socket, handler),
+                                    )
+                                    .await
                                     {
+                                        Ok(Ok(session)) => session,
+                                        Ok(Err(e)) => {
+                                            tracing::error!(
+                                                "SSH connection error from {peer_addr}: {e}"
+                                            );
+                                            return;
+                                        }
+                                        Err(_) => {
+                                            tracing::warn!(
+                                                "SSH handshake from {peer_addr} timed out \
+                                                 (login grace: {login_grace_time}s)"
+                                            );
+                                            return;
+                                        }
+                                    };
+
+                                    let handle = session.handle();
+                                    let watchdog = tokio::spawn(async move {
+                                        tokio::time::sleep_until(deadline).await;
+                                        if !authenticated.load(std::sync::atomic::Ordering::Acquire)
+                                        {
+                                            tracing::warn!(
+                                                "SSH login grace time ({login_grace_time}s) \
+                                                 exceeded, disconnecting unauthenticated client"
+                                            );
+                                            let _ = handle
+                                                .disconnect(
+                                                    russh::Disconnect::ByApplication,
+                                                    "login grace time exceeded".to_string(),
+                                                    String::new(),
+                                                )
+                                                .await;
+                                        }
+                                    });
+
+                                    if let Err(e) = session.await {
                                         tracing::error!(
                                             "SSH connection error from {peer_addr}: {e}"
                                         );
                                     }
+                                    watchdog.abort();
                                 });
                             }
                             Err(e) => {
@@ -316,7 +377,12 @@ impl SftpService {
 
 /// 双栈 TCP 监听：IPv6 监听同时接受 IPv4（`IPV6_V6ONLY=false`）
 fn bind_listener(bind_ip: &str, port: u16) -> Result<tokio::net::TcpListener> {
-    let domain = if bind_ip == "::" || (bind_ip.starts_with('[') && bind_ip.ends_with(']')) {
+    // IPv6 字面量统一加方括号后再解析为 SocketAddr
+    let addr_str = fftp_common::config::format_bind_addr(bind_ip, port)?;
+    let addr: SocketAddr = addr_str
+        .parse()
+        .map_err(|e| anyhow!("Invalid bind address '{addr_str}': {e}"))?;
+    let domain = if addr.is_ipv6() {
         Domain::IPV6
     } else {
         Domain::IPV4
@@ -330,9 +396,6 @@ fn bind_listener(bind_ip: &str, port: u16) -> Result<tokio::net::TcpListener> {
 
     socket.set_reuse_address(true)?;
     socket.set_nonblocking(true)?;
-    let addr: SocketAddr = format!("{bind_ip}:{port}")
-        .parse()
-        .map_err(|e| anyhow!("Invalid bind address '{bind_ip}:{port}': {e}"))?;
     socket.bind(&SockAddr::from(addr))?;
     socket.listen(128)?;
     tokio::net::TcpListener::from_std(socket.into())

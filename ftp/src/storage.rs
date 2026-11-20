@@ -10,7 +10,7 @@
 //! - 虚拟路径净化（[`crate::path_safety::normalize_virtual_path`]，杜绝 `..` 越界与
 //!   非法成分进入 rooter——`unftp-sbe-rooter` 对异常路径存在 unwrap/下溢 panic 分支）；
 //! - 真实路径防逃逸（canonicalize 越界检查 + 符号链接策略，
-//!   策略取 [`fftp_common::config::SecurityConfig::allow_symlinks`]）；
+//!   策略取 [`fftp_common::config::FtpConfig::allow_symlinks`]）；
 //! - 配额：写入前预留、成功后按实际字节结算、失败回滚、删除/删目录扣减
 //!   （对接 [`fftp_common::quota::QuotaManager`]）；
 //! - 限速：上传/下载套 [`fftp_common::rate_limit::RateLimitedReader`]，
@@ -126,9 +126,9 @@ impl<Delegate> JailFilesystem<Delegate> {
         self.config.read_recover().ftp.max_speed_kbps
     }
 
-    /// 符号链接策略
+    /// 符号链接策略（`[ftp]` 独立配置）
     fn allow_symlinks(&self) -> bool {
-        self.config.read_recover().security.allow_symlinks
+        self.config.read_recover().ftp.allow_symlinks
     }
 
     /// 净化虚拟路径并做真实路径防逃逸检查

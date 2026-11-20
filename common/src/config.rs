@@ -3,14 +3,18 @@
 //! 以 Windows 侧实现的字段全集为基础，并补 Linux 侧的 logging 增量字段；
 //! 前后端共用同一份类型定义，避免格式漂移。
 //!
+//! FTP 与 SFTP 的路径策略（符号链接）和 IP 黑白名单各自独立配置在
+//! `[ftp]` / `[sftp]` 下，不再共用 `[security]` 全局字段。
+//!
 //! 可选值语义：`masquerade_address` / `anonymous_home` / `ftp_root` 与
 //! `cert_path` / `key_path` / `host_key_path` / `log_dir` 在 TOML 里为
 //! `String`，空串表示未设置（比 `Option<String>` 对配置文件更友好），
 //! 用对应的 `*_opt()` / `resolved_*()` 辅助方法取值。
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 use std::fs;
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use std::path::{Path, PathBuf};
 use tracing::warn;
 
@@ -30,33 +34,6 @@ pub struct Config {
     pub logging: LoggingConfig,
 }
 
-/// FTP 连接模式（`connection_mode`）
-///
-/// 当前版本仅支持被动模式：libunftp 0.23.1 未校验主动模式 `PORT`/`EPRT`
-/// 的目标地址，开放主动模式可被用于 FTP bounce / 内网探测。`ActiveOnly`
-/// 与 `ActiveAndPassive` 仅为配置兼容保留，启动时会记录告警并降级为被动模式。
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ConnectionMode {
-    #[default]
-    PassiveOnly,
-    /// 配置兼容保留；当前实现降级为被动模式
-    ActiveOnly,
-    /// 配置兼容保留；当前实现降级为被动模式
-    ActiveAndPassive,
-}
-
-impl ConnectionMode {
-    #[must_use]
-    pub fn as_str(&self) -> &'static str {
-        match self {
-            ConnectionMode::PassiveOnly => "passive_only",
-            ConnectionMode::ActiveOnly => "active_only",
-            ConnectionMode::ActiveAndPassive => "active_and_passive",
-        }
-    }
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct FtpConfig {
@@ -64,7 +41,6 @@ pub struct FtpConfig {
     pub bind_ip: String,
     pub port: u16,
     pub welcome_message: String,
-    pub connection_mode: ConnectionMode,
     pub allow_anonymous: bool,
     /// 匿名用户主目录，空串 = 未设置
     pub anonymous_home: String,
@@ -72,17 +48,22 @@ pub struct FtpConfig {
     pub passive_ports: (u16, u16),
     /// 单连接限速（KB/s），0 = 不限速
     pub max_speed_kbps: u64,
-    /// 被动模式对外通告地址，空串 = 使用实际连接地址
+    /// 被动模式对外通告地址，空串 = 使用实际连接地址。
+    ///
+    /// libunftp 的 PASV 应答只支持 IPv4 地址或域名；IPv6 客户端使用 EPSV。
     pub masquerade_address: String,
     /// 空闲超时（秒）
     pub idle_timeout: u64,
-    /// 是否启用 libunftp 池化被动监听器（兼容保留，当前版本忽略）
-    ///
-    /// 上游 libunftp 0.23.1 停止服务时不会关闭池化模式预绑定的被动端口，
-    /// 运行期重启会因端口被占用而失败，因此实现侧会忽略 true 并记录告警。
-    pub pooled_listener_mode: bool,
     /// FTP 根目录，空串 = 各用户 home
     pub ftp_root: String,
+    /// 单用户最大并发会话数，0 = 不限制
+    pub max_sessions_per_user: u32,
+    /// 是否允许跟随/创建符号链接
+    pub allow_symlinks: bool,
+    /// IP 白名单（CIDR），空表 = 全部放行
+    pub allowed_ips: Vec<String>,
+    /// IP 黑名单（CIDR），优先于白名单
+    pub denied_ips: Vec<String>,
     pub ftps: FtpsConfig,
 }
 
@@ -93,15 +74,17 @@ impl Default for FtpConfig {
             bind_ip: "0.0.0.0".to_string(),
             port: default_ftp_port(),
             welcome_message: "Welcome to fftpd".to_string(),
-            connection_mode: ConnectionMode::PassiveOnly,
             allow_anonymous: false,
             anonymous_home: String::new(),
             passive_ports: (50000, 51000),
             max_speed_kbps: 0,
             masquerade_address: String::new(),
             idle_timeout: 15,
-            pooled_listener_mode: false,
             ftp_root: String::new(),
+            max_sessions_per_user: 5,
+            allow_symlinks: false,
+            allowed_ips: vec!["0.0.0.0/0".to_string()],
+            denied_ips: vec![],
             ftps: FtpsConfig::default(),
         }
     }
@@ -138,15 +121,23 @@ impl FtpConfig {
     pub fn ftp_root_opt(&self) -> Option<&str> {
         non_empty(&self.ftp_root)
     }
+
+    /// FTP 独立 IP 黑白名单判定
+    #[must_use]
+    pub fn is_ip_allowed(&self, ip: &str) -> bool {
+        Config::is_ip_allowed_for(&self.allowed_ips, &self.denied_ips, ip)
+    }
 }
 
 /// FTPS（显式 TLS）子表 `[ftp.ftps]`
+///
+/// 启用后强制 TLS：控制通道与数据通道都拒绝未升级的客户端，
+/// 不再提供“启用 FTPS 但允许明文”的半开配置。需要明文 FTP 时直接关闭
+/// `enabled`。
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct FtpsConfig {
     pub enabled: bool,
-    /// 拒绝未升级到 TLS 的客户端
-    pub require_ssl: bool,
     /// 证书路径，空串 = 自动生成（rcgen）
     pub cert_path: String,
     /// 私钥路径，空串 = 自动生成（rcgen）
@@ -176,11 +167,28 @@ pub struct SftpConfig {
     /// 主机密钥路径，空串 = [`paths::default_host_key_path`]
     pub host_key_path: String,
     pub max_auth_attempts: u32,
-    /// 认证超时（秒）
-    pub auth_timeout: u64,
+    /// 允许口令认证（与 `public_key_auth` 至少开启一个）
+    pub password_auth: bool,
+    /// 允许公钥认证（与 `password_auth` 至少开启一个）
+    pub public_key_auth: bool,
+    /// 登录宽限时间（秒）：连接建立后必须在此时间内完成认证
+    pub login_grace_time: u64,
+    /// 会话空闲超时（秒）：认证完成后的无活动断开时间
+    pub idle_timeout: u64,
+    /// keepalive 发送间隔（秒），0 = 关闭
+    pub keepalive_interval: u64,
+    /// 连续未响应的 keepalive 次数上限
+    pub keepalive_max: u32,
+    /// 单用户最大并发会话数，0 = 不限制
     pub max_sessions_per_user: u32,
-    /// 主机密钥轮换周期（天），0 = 不轮换
-    pub host_key_rotation_days: u32,
+    /// 单连接限速（KB/s），0 = 不限速
+    pub max_speed_kbps: u64,
+    /// 是否允许跟随/创建符号链接
+    pub allow_symlinks: bool,
+    /// IP 白名单（CIDR），空表 = 全部放行
+    pub allowed_ips: Vec<String>,
+    /// IP 黑名单（CIDR），优先于白名单
+    pub denied_ips: Vec<String>,
 }
 
 impl Default for SftpConfig {
@@ -191,9 +199,17 @@ impl Default for SftpConfig {
             port: 2222,
             host_key_path: String::new(),
             max_auth_attempts: 3,
-            auth_timeout: 60,
+            password_auth: true,
+            public_key_auth: true,
+            login_grace_time: 60,
+            idle_timeout: 3600,
+            keepalive_interval: 30,
+            keepalive_max: 3,
             max_sessions_per_user: 5,
-            host_key_rotation_days: 0,
+            max_speed_kbps: 0,
+            allow_symlinks: false,
+            allowed_ips: vec!["0.0.0.0/0".to_string()],
+            denied_ips: vec![],
         }
     }
 }
@@ -204,26 +220,28 @@ impl SftpConfig {
     pub fn resolved_host_key_path(&self) -> PathBuf {
         non_empty(&self.host_key_path).map_or_else(paths::default_host_key_path, PathBuf::from)
     }
+
+    /// SFTP 独立 IP 黑白名单判定
+    #[must_use]
+    pub fn is_ip_allowed(&self, ip: &str) -> bool {
+        Config::is_ip_allowed_for(&self.allowed_ips, &self.denied_ips, ip)
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct SecurityConfig {
-    /// 全局最大并发连接数
+    /// 全局最大并发连接数（必须 > 0）
     pub max_connections: usize,
-    /// 单 IP 最大并发连接数
+    /// 单 IP 最大并发连接数（必须 > 0）
     pub max_connections_per_ip: usize,
-    /// IP 白名单（CIDR），空表 = 全部放行
-    pub allowed_ips: Vec<String>,
-    /// IP 黑名单（CIDR），优先于白名单
-    pub denied_ips: Vec<String>,
     pub fail2ban_enabled: bool,
     /// 触发封禁的失败次数
     pub fail2ban_threshold: u32,
     /// 封禁时长（秒）
     pub fail2ban_ban_time: u64,
-    /// 是否允许跟随符号链接
-    pub allow_symlinks: bool,
+    /// 失败计数窗口（秒）：窗口内的失败才累加
+    pub fail2ban_find_time: u64,
     pub max_login_attempts: u32,
 }
 
@@ -232,12 +250,10 @@ impl Default for SecurityConfig {
         Self {
             max_connections: 100,
             max_connections_per_ip: 10,
-            allowed_ips: vec!["0.0.0.0/0".to_string()],
-            denied_ips: vec![],
             fail2ban_enabled: false,
             fail2ban_threshold: 5,
             fail2ban_ban_time: 3600,
-            allow_symlinks: false,
+            fail2ban_find_time: 600,
             max_login_attempts: 5,
         }
     }
@@ -277,6 +293,29 @@ impl LoggingConfig {
     #[must_use]
     pub fn resolved_log_dir(&self) -> PathBuf {
         non_empty(&self.log_dir).map_or_else(paths::default_log_dir, PathBuf::from)
+    }
+}
+
+/// 把配置里的监听地址 + 端口拼成合法的 `host:port` 字符串。
+///
+/// IPv6 字面量必须加方括号（`[::1]:2121`），否则 `ToSocketAddrs` 解析失败。
+/// 仅接受 IPv4/IPv6 字面量（不接受主机名），保证绑定目标确定且可校验。
+///
+/// # Errors
+/// 地址为空、无法解析为 IP 字面量时返回错误
+pub fn format_bind_addr(host: &str, port: u16) -> Result<String> {
+    let host = host.trim();
+    if host.is_empty() {
+        bail!("监听地址不能为空");
+    }
+    let host = host
+        .strip_prefix('[')
+        .and_then(|s| s.strip_suffix(']'))
+        .unwrap_or(host);
+    match host.parse::<IpAddr>() {
+        Ok(IpAddr::V6(ip)) => Ok(format!("[{ip}]:{port}")),
+        Ok(IpAddr::V4(ip)) => Ok(format!("{ip}:{port}")),
+        Err(_) => bail!("监听地址必须是 IPv4/IPv6 字面量（不支持主机名）: {host}"),
     }
 }
 
@@ -335,41 +374,136 @@ impl Config {
         paths::users_path()
     }
 
-    /// 校验配置自身的一致性（匿名 FTP 主目录、SFTP 主机密钥）
+    /// 校验配置自身的一致性
+    ///
+    /// 覆盖监听地址/端口、IP 名单、协议认证方式、匿名目录与共享根冲突、
+    /// IPv6 通告地址、0 值语义等启动期可确定的错误。
     ///
     /// # Errors
-    /// FTP 匿名访问已启用但 `anonymous_home` 未配置、不存在或不是目录时返回错误
+    /// 任一配置项非法时返回描述性错误
     pub fn validate(&self) -> Result<()> {
-        if self.ftp.enabled && self.ftp.allow_anonymous {
+        self.validate_ftp()?;
+        self.validate_sftp()?;
+        self.validate_security()
+    }
+
+    /// 校验 `[ftp]` / `[ftp.ftps]`
+    fn validate_ftp(&self) -> Result<()> {
+        if !self.ftp.enabled {
+            return Ok(());
+        }
+
+        format_bind_addr(&self.ftp.bind_ip, self.ftp.port).context("ftp.bind_ip/ftp.port 非法")?;
+
+        let (start, end) = self.ftp.passive_ports;
+        if start == 0 || end == 0 {
+            bail!("ftp.passive_ports 不能为 0（当前 {start}-{end}）");
+        }
+        if start >= end {
+            bail!("ftp.passive_ports 起止非法（当前 {start}-{end}），必须满足起始端口 < 结束端口");
+        }
+        if let Some(addr) = self.ftp.masquerade_address_opt()
+            && addr
+                .trim_start_matches('[')
+                .trim_end_matches(']')
+                .parse::<Ipv6Addr>()
+                .is_ok()
+        {
+            bail!(
+                "ftp.masquerade_address 不支持 IPv6 字面量（{addr}）：\
+                 libunftp 的 PASV 应答仅支持 IPv4；IPv6 客户端会使用 EPSV，\
+                 请留空或改为 IPv4 地址/域名"
+            );
+        }
+        validate_ip_list("ftp.allowed_ips", &self.ftp.allowed_ips)?;
+        validate_ip_list("ftp.denied_ips", &self.ftp.denied_ips)?;
+
+        if self.ftp.allow_anonymous {
+            if self.ftp.ftp_root_opt().is_some() {
+                bail!(
+                    "ftp.allow_anonymous 与 ftp.ftp_root 不能同时启用：\
+                     共享根模式下匿名用户会以 ftp_root 为会话根，\
+                     可读取所有用户的文件；请关闭匿名访问或取消 ftp_root"
+                );
+            }
             match self.ftp.anonymous_home_opt() {
                 Some(home) => {
                     let home_path = Path::new(home);
                     if !home_path.exists() {
-                        return Err(anyhow::anyhow!(
-                            "FTP匿名访问已启用，但匿名用户主目录不存在: {home}"
-                        ));
+                        bail!("FTP匿名访问已启用，但匿名用户主目录不存在: {home}");
                     }
                     if !home_path.is_dir() {
-                        return Err(anyhow::anyhow!(
-                            "FTP匿名访问已启用，但匿名用户主目录路径不是目录: {home}"
-                        ));
+                        bail!("FTP匿名访问已启用，但匿名用户主目录路径不是目录: {home}");
                     }
                 }
-                None => {
-                    return Err(anyhow::anyhow!(
-                        "FTP匿名访问已启用，但未配置匿名用户主目录(anonymous_home)"
-                    ));
-                }
+                None => bail!("FTP匿名访问已启用，但未配置匿名用户主目录(anonymous_home)"),
             }
         }
 
-        if self.sftp.enabled {
-            let host_key = self.sftp.resolved_host_key_path();
-            if !host_key.exists() {
-                warn!(
-                    "SFTP主机密钥不存在: {}，请运行安装脚本生成",
-                    host_key.display()
-                );
+        Ok(())
+    }
+
+    /// 校验 `[sftp]`
+    fn validate_sftp(&self) -> Result<()> {
+        if !self.sftp.enabled {
+            return Ok(());
+        }
+
+        format_bind_addr(&self.sftp.bind_ip, self.sftp.port)
+            .context("sftp.bind_ip/sftp.port 非法")?;
+
+        if self.sftp.max_auth_attempts == 0 {
+            bail!("sftp.max_auth_attempts 必须大于 0");
+        }
+        if !self.sftp.password_auth && !self.sftp.public_key_auth {
+            bail!(
+                "sftp.password_auth 与 sftp.public_key_auth 不能同时关闭：\
+                 至少需要启用一种认证方式"
+            );
+        }
+        if self.sftp.login_grace_time == 0 {
+            bail!("sftp.login_grace_time 必须大于 0");
+        }
+        if self.sftp.idle_timeout == 0 {
+            bail!("sftp.idle_timeout 必须大于 0");
+        }
+        if self.sftp.keepalive_interval > 0 && self.sftp.keepalive_max == 0 {
+            bail!("sftp.keepalive_interval 大于 0 时 sftp.keepalive_max 必须大于 0");
+        }
+        validate_ip_list("sftp.allowed_ips", &self.sftp.allowed_ips)?;
+        validate_ip_list("sftp.denied_ips", &self.sftp.denied_ips)?;
+
+        let host_key = self.sftp.resolved_host_key_path();
+        if !host_key.exists() {
+            warn!(
+                "SFTP主机密钥不存在: {}，首次启动将自动生成",
+                host_key.display()
+            );
+        }
+
+        Ok(())
+    }
+
+    /// 校验 `[security]`
+    fn validate_security(&self) -> Result<()> {
+        if self.security.max_connections == 0 {
+            bail!("security.max_connections 必须大于 0（0 会拒绝全部连接）");
+        }
+        if self.security.max_connections_per_ip == 0 {
+            bail!("security.max_connections_per_ip 必须大于 0（0 会拒绝全部连接）");
+        }
+        if self.security.max_login_attempts == 0 {
+            bail!("security.max_login_attempts 必须大于 0");
+        }
+        if self.security.fail2ban_enabled {
+            if self.security.fail2ban_threshold == 0 {
+                bail!("security.fail2ban_threshold 必须大于 0");
+            }
+            if self.security.fail2ban_ban_time == 0 {
+                bail!("security.fail2ban_ban_time 必须大于 0");
+            }
+            if self.security.fail2ban_find_time == 0 {
+                bail!("security.fail2ban_find_time 必须大于 0");
             }
         }
 
@@ -389,33 +523,30 @@ impl Config {
 
         allowed_ips.iter().any(|cidr| ip_matches_cidr(ip, cidr))
     }
+}
 
-    #[must_use]
-    pub fn is_ip_allowed(&self, ip: &str) -> bool {
-        if self
-            .security
-            .denied_ips
-            .iter()
-            .any(|cidr| ip_matches_cidr(ip, cidr))
-        {
-            return false;
+/// 校验一组 IP/CIDR 条目
+fn validate_ip_list(label: &str, entries: &[String]) -> Result<()> {
+    for entry in entries {
+        if !is_valid_ip_or_cidr(entry.trim()) {
+            bail!("{label} 含非法 IP/CIDR: {entry}");
         }
-
-        if self.security.allowed_ips.is_empty() {
-            return true;
-        }
-
-        self.security
-            .allowed_ips
-            .iter()
-            .any(|cidr| ip_matches_cidr(ip, cidr))
     }
+    Ok(())
+}
+
+fn is_valid_ip_or_cidr(entry: &str) -> bool {
+    use ipnet::{Ipv4Net, Ipv6Net};
+
+    entry.parse::<IpAddr>().is_ok()
+        || entry.parse::<Ipv4Net>().is_ok()
+        || entry.parse::<Ipv6Net>().is_ok()
 }
 
 fn ip_matches_cidr(ip: &str, cidr: &str) -> bool {
     use ipnet::{Ipv4Net, Ipv6Net};
-    use std::net::{Ipv4Addr, Ipv6Addr};
 
+    let cidr = cidr.trim();
     if cidr == "0.0.0.0/0" || cidr == "::/0" {
         return true;
     }
@@ -432,7 +563,7 @@ fn ip_matches_cidr(ip: &str, cidr: &str) -> bool {
         return net.contains(&ipv6);
     }
 
-    ip == cidr
+    ip.trim() == cidr
 }
 
 #[cfg(test)]
@@ -475,13 +606,40 @@ mod tests {
     }
 
     #[test]
-    fn instance_is_ip_allowed_matches_static() {
+    fn protocol_specific_ip_lists_are_independent() {
         let mut config = Config::default();
-        config.security.allowed_ips = vec!["192.168.0.0/16".to_string()];
-        config.security.denied_ips = vec!["192.168.0.1".to_string()];
-        assert!(!config.is_ip_allowed("192.168.0.1"));
-        assert!(config.is_ip_allowed("192.168.5.5"));
-        assert!(!config.is_ip_allowed("10.0.0.1"));
+        config.ftp.allowed_ips = vec!["192.168.0.0/16".to_string()];
+        config.ftp.denied_ips = vec!["192.168.0.1".to_string()];
+        config.sftp.allowed_ips = vec!["10.0.0.0/8".to_string()];
+
+        assert!(!config.ftp.is_ip_allowed("192.168.0.1"));
+        assert!(config.ftp.is_ip_allowed("192.168.5.5"));
+        assert!(!config.ftp.is_ip_allowed("10.0.0.1"));
+        assert!(config.sftp.is_ip_allowed("10.1.2.3"));
+        assert!(!config.sftp.is_ip_allowed("192.168.5.5"));
+    }
+
+    #[test]
+    fn ipv6_cidr_matching() {
+        let allowed = vec!["2001:db8::/32".to_string()];
+        assert!(Config::is_ip_allowed_for(&allowed, &[], "2001:db8::1"));
+        assert!(!Config::is_ip_allowed_for(&allowed, &[], "2001:db9::1"));
+    }
+
+    // ---- 监听地址拼接 ----
+
+    #[test]
+    fn bind_addr_formats_ipv4_and_ipv6() {
+        assert_eq!(format_bind_addr("0.0.0.0", 21).unwrap(), "0.0.0.0:21");
+        assert_eq!(
+            format_bind_addr("127.0.0.1", 2121).unwrap(),
+            "127.0.0.1:2121"
+        );
+        assert_eq!(format_bind_addr("::", 21).unwrap(), "[::]:21");
+        assert_eq!(format_bind_addr("::1", 2222).unwrap(), "[::1]:2222");
+        assert_eq!(format_bind_addr("[::1]", 2222).unwrap(), "[::1]:2222");
+        assert!(format_bind_addr("ftp.example.com", 21).is_err());
+        assert!(format_bind_addr("", 21).is_err());
     }
 
     // ---- validate：匿名 FTP 主目录 ----
@@ -528,12 +686,105 @@ mod tests {
     }
 
     #[test]
+    fn validate_anonymous_with_shared_root_fails() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut config = Config::default();
+        config.ftp.allow_anonymous = true;
+        config.ftp.anonymous_home = dir.path().to_string_lossy().into_owned();
+        config.ftp.ftp_root = dir.path().to_string_lossy().into_owned();
+        let err = config.validate().unwrap_err().to_string();
+        assert!(err.contains("ftp_root"), "错误信息应提示冲突: {err}");
+    }
+
+    #[test]
     fn validate_skips_anonymous_check_when_ftp_disabled() {
         let mut config = Config::default();
         config.ftp.enabled = false;
         config.ftp.allow_anonymous = true;
         config.ftp.anonymous_home = String::new();
         assert!(config.validate().is_ok());
+    }
+
+    // ---- validate：新增一致性校验 ----
+
+    #[test]
+    fn validate_rejects_bad_passive_ports() {
+        let mut config = Config::default();
+        config.ftp.passive_ports = (50000, 50000);
+        assert!(config.validate().is_err());
+
+        config.ftp.passive_ports = (51000, 50000);
+        assert!(config.validate().is_err());
+
+        config.ftp.passive_ports = (0, 50000);
+        assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn validate_rejects_ipv6_masquerade() {
+        let mut config = Config::default();
+        config.ftp.masquerade_address = "2001:db8::1".to_string();
+        let err = config.validate().unwrap_err().to_string();
+        assert!(err.contains("EPSV"), "应提示使用 EPSV: {err}");
+    }
+
+    #[test]
+    fn validate_rejects_invalid_ip_list() {
+        let mut config = Config::default();
+        config.ftp.allowed_ips = vec!["not-a-cidr".to_string()];
+        assert!(config.validate().is_err());
+
+        config.ftp.allowed_ips = vec!["0.0.0.0/0".to_string()];
+        config.sftp.denied_ips = vec!["10.0.0.0/999".to_string()];
+        assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn validate_requires_at_least_one_sftp_auth_method() {
+        let mut config = Config::default();
+        config.sftp.password_auth = false;
+        config.sftp.public_key_auth = false;
+        assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn validate_rejects_bad_timeouts_and_limits() {
+        let mut config = Config::default();
+        config.sftp.login_grace_time = 0;
+        assert!(config.validate().is_err());
+
+        config.sftp.login_grace_time = 60;
+        config.sftp.idle_timeout = 0;
+        assert!(config.validate().is_err());
+
+        config.sftp.idle_timeout = 3600;
+        config.sftp.keepalive_interval = 30;
+        config.sftp.keepalive_max = 0;
+        assert!(config.validate().is_err());
+
+        config.sftp.keepalive_max = 3;
+        config.security.max_connections = 0;
+        assert!(config.validate().is_err());
+
+        config.security.max_connections = 100;
+        config.security.max_connections_per_ip = 0;
+        assert!(config.validate().is_err());
+
+        config.security.max_connections_per_ip = 10;
+        config.security.fail2ban_enabled = true;
+        config.security.fail2ban_find_time = 0;
+        assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn validate_rejects_invalid_bind_addr() {
+        let mut config = Config::default();
+        config.ftp.bind_ip = "not-an-ip".to_string();
+        assert!(config.validate().is_err());
+
+        config.ftp.bind_ip = "0.0.0.0".to_string();
+        config.sftp.bind_ip = "ftp.example.com".to_string();
+        assert!(config.validate().is_err());
     }
 
     // ---- 空串 = 未设置 的取值辅助 ----
@@ -577,26 +828,32 @@ mod tests {
         assert_eq!(config.ftp.bind_ip, "0.0.0.0");
         assert_eq!(config.ftp.port, default_ftp_port());
         assert_eq!(config.ftp.welcome_message, "Welcome to fftpd");
-        assert_eq!(config.ftp.connection_mode, ConnectionMode::PassiveOnly);
-        assert_eq!(config.ftp.connection_mode.as_str(), "passive_only");
         assert!(!config.ftp.allow_anonymous);
         assert_eq!(config.ftp.passive_ports, (50000, 51000));
         assert_eq!(config.ftp.idle_timeout, 15);
-        assert!(!config.ftp.pooled_listener_mode);
+        assert_eq!(config.ftp.max_sessions_per_user, 5);
+        assert!(!config.ftp.allow_symlinks);
+        assert_eq!(config.ftp.allowed_ips, vec!["0.0.0.0/0".to_string()]);
         assert!(!config.ftp.ftps.enabled);
 
         assert!(config.sftp.enabled);
         assert_eq!(config.sftp.port, 2222);
         assert_eq!(config.sftp.max_auth_attempts, 3);
-        assert_eq!(config.sftp.auth_timeout, 60);
+        assert!(config.sftp.password_auth);
+        assert!(config.sftp.public_key_auth);
+        assert_eq!(config.sftp.login_grace_time, 60);
+        assert_eq!(config.sftp.idle_timeout, 3600);
+        assert_eq!(config.sftp.keepalive_interval, 30);
+        assert_eq!(config.sftp.keepalive_max, 3);
         assert_eq!(config.sftp.max_sessions_per_user, 5);
-        assert_eq!(config.sftp.host_key_rotation_days, 0);
+        assert_eq!(config.sftp.max_speed_kbps, 0);
+        assert!(!config.sftp.allow_symlinks);
 
         assert_eq!(config.security.max_connections, 100);
         assert_eq!(config.security.max_connections_per_ip, 10);
-        assert_eq!(config.security.allowed_ips, vec!["0.0.0.0/0".to_string()]);
         assert_eq!(config.security.fail2ban_threshold, 5);
         assert_eq!(config.security.fail2ban_ban_time, 3600);
+        assert_eq!(config.security.fail2ban_find_time, 600);
         assert_eq!(config.security.max_login_attempts, 5);
 
         assert_eq!(config.logging.log_level, "info");
@@ -633,6 +890,20 @@ mod tests {
         assert_eq!(config.sftp.port, 2222);
     }
 
+    /// 旧配置里的已删除字段应被忽略（向后兼容，不阻断升级）
+    #[test]
+    fn legacy_fields_are_ignored() {
+        let config: Config = toml::from_str(
+            "[ftp]\nconnection_mode = \"active_only\"\npooled_listener_mode = true\n\
+             [ftp.ftps]\nrequire_ssl = false\n[sftp]\nauth_timeout = 60\n\
+             host_key_rotation_days = 30\n",
+        )
+        .unwrap();
+        assert_eq!(config.ftp.port, default_ftp_port());
+        assert!(!config.ftp.ftps.enabled);
+        assert!(config.sftp.password_auth);
+    }
+
     // ---- 持久化 ----
 
     #[test]
@@ -642,15 +913,19 @@ mod tests {
 
         let mut config = Config::default();
         config.ftp.port = 2121;
-        config.ftp.connection_mode = ConnectionMode::ActiveAndPassive;
+        config.ftp.max_sessions_per_user = 7;
+        config.ftp.allowed_ips = vec!["10.0.0.0/8".to_string()];
         config.sftp.enabled = false;
+        config.sftp.password_auth = false;
         config.security.max_login_attempts = 7;
         config.save(&path).unwrap();
 
         let loaded = Config::load(&path).unwrap();
         assert_eq!(loaded.ftp.port, 2121);
-        assert_eq!(loaded.ftp.connection_mode, ConnectionMode::ActiveAndPassive);
+        assert_eq!(loaded.ftp.max_sessions_per_user, 7);
+        assert_eq!(loaded.ftp.allowed_ips, vec!["10.0.0.0/8".to_string()]);
         assert!(!loaded.sftp.enabled);
+        assert!(!loaded.sftp.password_auth);
         assert_eq!(loaded.security.max_login_attempts, 7);
         assert_eq!(loaded.logging.log_dir, config.logging.log_dir);
     }

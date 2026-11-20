@@ -105,7 +105,7 @@ pub trait Transport { type Stream; async fn accept(); async fn connect(); }
 | 模块 | 取舍 | 依据 |
 |---|---|---|
 | 工程结构 | **Linux** workspace 多 crate | 依赖面清晰、编译隔离，天然容纳平台传输抽象 |
-| 配置 schema | **Windows** config_types.rs 为基础 + Linux logging 增量字段 | Windows 字段更全（FTPS/ConnectionMode/masquerade/pooled listener/fail2ban/per-IP 连接/allow_symlinks/host key 轮换）；补 Linux 的 `max_log_size/enable_json/enable_gui_logging` |
+| 配置 schema | **Windows** config_types.rs 为基础 + Linux logging 增量字段 | Windows 字段更全（FTPS/masquerade/fail2ban/per-IP 连接）；补 Linux 的 `max_log_size/enable_json/enable_gui_logging`。FTP/SFTP 的符号链接与 IP 名单已拆为协议独立配置，删除无效的主动模式/被动池化项 |
 | 用户存储 | 两边**几乎一致，取 Linux** users.rs + Windows argon2 参数 | 字段相同（Permissions 10 字段）；密码哈希统一 Argon2id `Params::new(65536,3,4,Some(32))`（Windows 参数），保留 Linux 的哈希升级/迁移测试 |
 | 路径布局 | **拆平台实现**：Linux paths.rs（XDG + 二进制同目录测试友好策略）为源，新增 Windows 分支（ProgramData/config 同目录） | Linux 的路径解析策略更精细（env 覆盖、测试友好）；Windows 侧归一化/防逃逸逻辑（path_utils）并入 SFTP/FTP 存储层的路径解析 |
 | FTP 服务端 | **Windows** 组装路线（unftp-sbe-fs + rooter + restrict + cert_gen + passive_mode + ip_utils） | 功能显著更全（认证链含 IP 安全/连接数/Fail2Ban/会话注册/失败锁定，rcgen 证书生成）；Linux 的自研 StorageBackend 逻辑并入 restrict/rooter 的封装层 |
@@ -124,21 +124,22 @@ pub trait Transport { type Stream; async fn accept(); async fn connect(); }
 ```toml
 [ftp]
 enabled = true
-bind_ip = "0.0.0.0"
+bind_ip = "0.0.0.0"                     # IPv4/IPv6 字面量（IPv6 自动加方括号）
 port = 21
 welcome_message = "Welcome to fftpd"
-connection_mode = "passive_only"        # 当前仅被动模式可用；其余值告警并降级
 allow_anonymous = false
-anonymous_home = ""
-passive_ports = [50000, 51000]          # 由 (u16,u16) 改为元组兼容两侧格式
-max_speed_kbps = 0
-masquerade_address = ""
+anonymous_home = ""                     # 启用匿名时必须配置，且不能同时设置 ftp_root
+passive_ports = [50000, 51000]          # FTP 固定仅被动模式
+max_speed_kbps = 0                      # 0 = 不限速
+masquerade_address = ""                 # 仅 IPv4/域名；IPv6 客户端使用 EPSV
 idle_timeout = 15
-pooled_listener_mode = false           # 兼容保留；上游 0.23.1 停止不释放端口，当前实现忽略 true
 ftp_root = ""                           # 空 = 各用户 home
+max_sessions_per_user = 5               # 0 = 不限制
+allow_symlinks = false                  # FTP 独立策略
+allowed_ips = ["0.0.0.0/0"]             # FTP 独立白名单；空 = 全部放行
+denied_ips = []                         # FTP 独立黑名单；优先于白名单
 [ftp.ftps]
-enabled = false
-require_ssl = false
+enabled = false                         # 启用即强制 TLS（控制/数据通道）
 cert_path = ""
 key_path = ""                           # 空 = 自动生成（rcgen）
 
@@ -148,19 +149,25 @@ bind_ip = "0.0.0.0"
 port = 2222
 host_key_path = ""                      # 空 = paths::default_host_key_path()
 max_auth_attempts = 3
-auth_timeout = 60
-max_sessions_per_user = 5
-host_key_rotation_days = 0
+password_auth = true                    # password_auth / public_key_auth 至少一个为 true
+public_key_auth = true
+login_grace_time = 60                   # 连接建立后完成认证的宽限时间（秒）
+idle_timeout = 3600                     # 认证完成后的会话空闲超时（秒）
+keepalive_interval = 30                 # 0 = 关闭
+keepalive_max = 3
+max_sessions_per_user = 5               # 0 = 不限制
+max_speed_kbps = 0                      # 0 = 不限速
+allow_symlinks = false                  # SFTP 独立策略
+allowed_ips = ["0.0.0.0/0"]             # SFTP 独立白名单；空 = 全部放行
+denied_ips = []                         # SFTP 独立黑名单；优先于白名单
 
 [security]
 max_connections = 100
 max_connections_per_ip = 10
-allowed_ips = ["0.0.0.0/0"]
-denied_ips = []
 fail2ban_enabled = false
 fail2ban_threshold = 5
 fail2ban_ban_time = 3600
-allow_symlinks = false
+fail2ban_find_time = 600                # 失败计数窗口（秒）
 max_login_attempts = 5
 
 [logging]

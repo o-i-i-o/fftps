@@ -121,26 +121,20 @@
         <h3>FTP 服务</h3>
         <div class="form-grid">
           <label class="check"><input id="cf-enabled" type="checkbox"> 启用 FTP 服务</label>
-          <label>监听地址 <input id="cf-bind-ip" type="text" placeholder="0.0.0.0"></label>
+          <label>监听地址 <input id="cf-bind-ip" type="text" placeholder="0.0.0.0 / ::"></label>
           <label>端口 <input id="cf-port" type="number" min="1" max="65535"></label>
           <label class="wide">欢迎消息 <input id="cf-welcome" type="text"></label>
-          <label>编码 <input id="cf-encoding" type="text" placeholder="UTF-8"></label>
-          <label>连接模式
-            <select id="cf-conn-mode">
-              <option value="passive_only">passive_only（仅被动）</option>
-              <option value="active_only">active_only（仅主动）</option>
-              <option value="active_and_passive">active_and_passive</option>
-            </select>
-          </label>
           <label class="check"><input id="cf-anonymous" type="checkbox"> 允许匿名登录</label>
           <label>匿名主目录 <input id="cf-anon-home" type="text" placeholder="（空 = 未设置）"></label>
           <label>被动端口下限 <input id="cf-passive-lo" type="number" min="1" max="65535"></label>
           <label>被动端口上限 <input id="cf-passive-hi" type="number" min="1" max="65535"></label>
           <label>单连接限速（KB/s） <input id="cf-speed" type="number" min="0" step="1" placeholder="0 = 不限速"></label>
-          <label class="wide">对外通告地址 <input id="cf-masquerade" type="text" placeholder="（空 = 使用实际连接地址）"></label>
+          <label class="wide">对外通告地址 <input id="cf-masquerade" type="text" placeholder="（空 = 使用实际连接地址；仅 IPv4/域名）"></label>
           <label>空闲超时（秒） <input id="cf-idle-timeout" type="number" min="1" step="1"></label>
-          <label class="check"><input id="cf-pooled" type="checkbox"> 池化被动监听（开启后运行期重启会失败）</label>
-          <label class="check"><input id="cf-nat" type="checkbox"> 允许 NAT 客户端</label>
+          <label>单用户最大会话 <input id="cf-max-sessions" type="number" min="0" step="1" placeholder="0 = 不限制"></label>
+          <label class="check"><input id="cf-symlinks" type="checkbox"> 允许跟随/创建符号链接</label>
+          <label>IP 白名单 <input id="cf-allowed" type="text" placeholder="CIDR，逗号分隔；空 = 全部放行"></label>
+          <label>IP 黑名单 <input id="cf-denied" type="text" placeholder="CIDR，逗号分隔；优先于白名单"></label>
           <label class="wide">FTP 根目录 <input id="cf-root" type="text" placeholder="（空 = 各用户 home）"></label>
         </div>
       </div>
@@ -149,8 +143,7 @@
         <div class="card">
           <h3>FTPS（显式 TLS）</h3>
           <div class="form-grid">
-            <label class="check"><input id="cf-ftps-enabled" type="checkbox"> 启用 FTPS</label>
-            <label class="check"><input id="cf-ftps-require" type="checkbox"> 拒绝未升级 TLS 的客户端</label>
+            <label class="check"><input id="cf-ftps-enabled" type="checkbox"> 启用 FTPS（强制 TLS）</label>
             <label class="wide">证书路径 <input id="cf-ftps-cert" type="text" placeholder="（空 = 自动生成）"></label>
             <label class="wide">私钥路径 <input id="cf-ftps-key" type="text" placeholder="（空 = 自动生成）"></label>
           </div>
@@ -160,13 +153,21 @@
           <h3>SFTP 服务</h3>
           <div class="form-grid">
             <label class="check"><input id="cf-sftp-enabled" type="checkbox"> 启用 SFTP 服务</label>
-            <label>监听地址 <input id="cf-sftp-bind-ip" type="text" placeholder="0.0.0.0"></label>
+            <label>监听地址 <input id="cf-sftp-bind-ip" type="text" placeholder="0.0.0.0 / ::"></label>
             <label>端口 <input id="cf-sftp-port" type="number" min="1" max="65535"></label>
             <label class="wide">主机密钥路径 <input id="cf-sftp-host-key" type="text" placeholder="（空 = 默认路径）"></label>
+            <label class="check"><input id="cf-sftp-password" type="checkbox"> 允许口令认证</label>
+            <label class="check"><input id="cf-sftp-pubkey" type="checkbox"> 允许公钥认证</label>
             <label>最大认证尝试 <input id="cf-sftp-max-auth" type="number" min="1" step="1"></label>
-            <label>认证超时（秒） <input id="cf-sftp-auth-timeout" type="number" min="1" step="1"></label>
-            <label>单用户最大会话 <input id="cf-sftp-sessions" type="number" min="1" step="1"></label>
-            <label>主机密钥轮换（天） <input id="cf-sftp-rotation" type="number" min="0" step="1" placeholder="0 = 不轮换"></label>
+            <label>登录宽限（秒） <input id="cf-sftp-login-grace" type="number" min="1" step="1"></label>
+            <label>会话空闲超时（秒） <input id="cf-sftp-idle" type="number" min="1" step="1"></label>
+            <label>keepalive 间隔（秒） <input id="cf-sftp-keepalive" type="number" min="0" step="1" placeholder="0 = 关闭"></label>
+            <label>keepalive 次数上限 <input id="cf-sftp-keepalive-max" type="number" min="1" step="1"></label>
+            <label>单用户最大会话 <input id="cf-sftp-sessions" type="number" min="0" step="1" placeholder="0 = 不限制"></label>
+            <label>单连接限速（KB/s） <input id="cf-sftp-speed" type="number" min="0" step="1" placeholder="0 = 不限速"></label>
+            <label class="check"><input id="cf-sftp-symlinks" type="checkbox"> 允许跟随/创建符号链接</label>
+            <label>IP 白名单 <input id="cf-sftp-allowed" type="text" placeholder="CIDR，逗号分隔；空 = 全部放行"></label>
+            <label>IP 黑名单 <input id="cf-sftp-denied" type="text" placeholder="CIDR，逗号分隔；优先于白名单"></label>
           </div>
         </div>
       </div>
@@ -204,12 +205,10 @@
           <div class="form-grid">
             <label>全局最大并发连接 <input id="cf-sec-max-conn" type="number" min="1" step="1"></label>
             <label>单 IP 最大并发连接 <input id="cf-sec-max-conn-ip" type="number" min="1" step="1"></label>
-            <label>IP 白名单 <input id="cf-sec-allowed" type="text" placeholder="CIDR，逗号分隔；空 = 全部放行"></label>
-            <label>IP 黑名单 <input id="cf-sec-denied" type="text" placeholder="CIDR，逗号分隔；优先于白名单"></label>
             <label class="check"><input id="cf-sec-f2b" type="checkbox"> 启用 fail2ban 封禁</label>
             <label>触发封禁失败次数 <input id="cf-sec-f2b-threshold" type="number" min="1" step="1"></label>
             <label>封禁时长（秒） <input id="cf-sec-f2b-time" type="number" min="1" step="1"></label>
-            <label class="check"><input id="cf-symlinks" type="checkbox"> 允许跟随符号链接</label>
+            <label>失败计数窗口（秒） <input id="cf-sec-f2b-find" type="number" min="1" step="1"></label>
             <label>最大登录尝试次数 <input id="cf-sec-max-login" type="number" min="1" step="1"></label>
           </div>
         </div>

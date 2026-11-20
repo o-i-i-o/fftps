@@ -13,7 +13,7 @@ use std::time::{Duration, Instant};
 
 use fftp_common::logging::{FileOpLogEntry, Logging};
 use fftp_common::quota::QuotaManager;
-use fftp_common::rate_limit::RateLimiter;
+use fftp_common::rate_limit::{RateLimiter, effective_speed_limit_kbps};
 use fftp_common::users::{Permissions, UserManager};
 
 use crate::path_resolve::{self, PathResolveError};
@@ -83,13 +83,16 @@ pub struct SftpState {
     /// 用户级传输限速器（`speed_limit_kbps` 为 0/未设置时为 None）
     pub rate_limiter: Option<RateLimiter>,
     pub cache_expiry: Option<Instant>,
-    /// 是否允许跟随符号链接（`security.allow_symlinks`）
+    /// 是否允许跟随/创建符号链接（`[sftp]` 独立配置）
     pub allow_symlinks: bool,
+    /// 全局单连接限速（KB/s，0 = 不限速）
+    pub global_speed_kbps: u64,
 }
 
 impl SftpState {
     /// 创建会话状态并初始化权限缓存与限速器
     #[must_use]
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         home_dir: String,
         username: Option<String>,
@@ -98,6 +101,7 @@ impl SftpState {
         logging: Option<Arc<Logging>>,
         client_ip: String,
         allow_symlinks: bool,
+        global_speed_kbps: u64,
     ) -> Self {
         let mut state = SftpState {
             home_dir: home_dir.clone(),
@@ -114,6 +118,7 @@ impl SftpState {
             rate_limiter: None,
             cache_expiry: None,
             allow_symlinks,
+            global_speed_kbps,
         };
         state.cache_permissions();
         state.init_rate_limiter();
@@ -181,13 +186,15 @@ impl SftpState {
         self.cache_permissions();
     }
 
-    /// 按用户 `speed_limit_kbps` 初始化限速器
+    /// 按「全局 `sftp.max_speed_kbps` 与用户 `speed_limit_kbps` 的较小值」初始化限速器
     pub fn init_rate_limiter(&mut self) {
-        if let Some(perms) = &self.cached_permissions
-            && let Some(speed_kbps) = perms.speed_limit_kbps
-        {
-            self.rate_limiter = Some(RateLimiter::new(speed_kbps));
-        }
+        let user_kbps = self
+            .cached_permissions
+            .as_ref()
+            .and_then(|p| p.speed_limit_kbps)
+            .unwrap_or(0);
+        let limit = effective_speed_limit_kbps(self.global_speed_kbps, user_kbps);
+        self.rate_limiter = (limit > 0).then(|| RateLimiter::new(limit));
     }
 
     /// 路径解析失败时转成 `SSH_FX_NO_SUCH_FILE` 错误应答
@@ -451,6 +458,7 @@ mod tests {
             None,
             "127.0.0.1".to_string(),
             false,
+            0,
         )
     }
 
@@ -511,6 +519,7 @@ mod tests {
             None,
             "127.0.0.1".to_string(),
             false,
+            0,
         );
         assert!(!state.check_permission(|p| p.can_read));
     }
@@ -544,6 +553,7 @@ mod tests {
             None,
             "127.0.0.1".to_string(),
             false,
+            0,
         );
         assert!(state.rate_limiter.is_some());
         assert_eq!(
@@ -606,6 +616,7 @@ mod tests {
             None,
             "127.0.0.1".to_string(),
             false,
+            0,
         );
         assert_eq!(state.audit_user(), "anonymous");
     }

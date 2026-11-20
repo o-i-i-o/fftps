@@ -22,7 +22,7 @@ pub mod users;
 pub mod windows_service;
 
 pub use config::{
-    Config, ConnectionMode, FtpConfig, FtpsConfig, LoggingConfig, SecurityConfig, SftpConfig,
+    Config, FtpConfig, FtpsConfig, LoggingConfig, SecurityConfig, SftpConfig, format_bind_addr,
 };
 pub use fail2ban::{BanEvent, Fail2BanManager};
 pub use logging::{FileOpLogEntry, LogEntry, LogFileInfo, Logging};

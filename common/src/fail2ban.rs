@@ -1,16 +1,16 @@
 //! 登录防护（docs/design.md §4「防护」：Windows `fail2ban.rs` 为基础，合并 Linux `server/login_tracker.rs` 的统计字段）
 //!
 //! - 失败尝试记录：按 IP 记录窗口内失败时刻与首次失败时间（`FailureRecord`）；
-//! - 阈值封禁：[`SecurityConfig::fail2ban_threshold`] 次失败封禁 [`SecurityConfig::fail2ban_ban_time`] 秒；
+//! - 阈值封禁：[`SecurityConfig::fail2ban_find_time`] 秒窗口内失败
+//!   [`SecurityConfig::fail2ban_threshold`] 次后封禁 [`SecurityConfig::fail2ban_ban_time`] 秒；
 //! - 解封回调：[`Fail2BanManager::register_callback`] 注册 [`BanEvent`] 通知；
 //! - 封禁持久化：`<data_dir>/fail2ban.json`，封禁/解封时落盘，进程重启后仍生效
 //!   （Windows 旧版仅有内存态，此处按设计文档「含持久化」补齐）；
 //! - 统计接口：[`Fail2BanManager::get_failure_count`] / [`Fail2BanManager::get_remaining_attempts`]，
 //!   后者按 [`SecurityConfig::max_login_attempts`] 折算剩余尝试次数。
 //!
-//! 配置注入统一使用 [`SecurityConfig`]，不另行定义重复配置结构；Windows 版
-//! `Fail2BanConfig::find_time` 未进入统一 schema，失败计数窗口取其旧默认值
-//! （[`FAILURE_WINDOW_SECS`]）作为常量。
+//! 配置注入统一使用 [`SecurityConfig`]，失败计数窗口由
+//! [`SecurityConfig::fail2ban_find_time`] 控制。
 
 use crate::sync::MutexExt;
 use chrono::{DateTime, Duration, Utc};
@@ -22,9 +22,6 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use crate::config::SecurityConfig;
-
-/// 失败计数窗口（秒）：窗口内的失败累加，窗口外的记录在清理时丢弃
-pub const FAILURE_WINDOW_SECS: i64 = 600;
 
 /// 封禁事件（供回调使用）
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -57,8 +54,16 @@ impl FailureRecord {
         self.attempts.len()
     }
 
-    fn prune(&mut self, now: DateTime<Utc>) {
-        let window = Duration::seconds(FAILURE_WINDOW_SECS);
+    fn count_within(&self, now: DateTime<Utc>, window_secs: i64) -> usize {
+        let window = Duration::seconds(window_secs.max(1));
+        self.attempts
+            .iter()
+            .filter(|&&time| now - time < window)
+            .count()
+    }
+
+    fn prune(&mut self, now: DateTime<Utc>, window_secs: i64) {
+        let window = Duration::seconds(window_secs.max(1));
         self.attempts.retain(|&time| now - time < window);
     }
 
@@ -180,11 +185,12 @@ impl Fail2BanManager {
 
     /// 记录一次认证失败；达到 [`SecurityConfig::fail2ban_threshold`] 时封禁并返回 `true`
     pub async fn add_failure(&self, ip: &str) -> bool {
-        let (threshold, ban_time, enabled) = {
+        let (threshold, ban_time, find_time, enabled) = {
             let cfg = self.config.lock_recover();
             (
                 cfg.fail2ban_threshold,
                 cfg.fail2ban_ban_time,
+                cfg.fail2ban_find_time,
                 cfg.fail2ban_enabled,
             )
         };
@@ -193,6 +199,7 @@ impl Fail2BanManager {
             return false;
         }
         let threshold = usize::try_from(threshold).unwrap_or(usize::MAX);
+        let find_time = i64::try_from(find_time).unwrap_or(i64::MAX);
 
         let now = Utc::now();
         let mut state = self.state.lock_recover();
@@ -202,7 +209,7 @@ impl Fail2BanManager {
             .entry(ip.to_string())
             .or_insert_with(|| FailureRecord::new(now));
         record.attempts.insert(now);
-        record.prune(now);
+        record.prune(now, find_time);
 
         if record.count() < threshold {
             return false;
@@ -258,11 +265,13 @@ impl Fail2BanManager {
     /// 窗口内的失败次数
     #[must_use]
     pub async fn get_failure_count(&self, ip: &str) -> usize {
+        let find_time =
+            i64::try_from(self.config.lock_recover().fail2ban_find_time).unwrap_or(i64::MAX);
         self.state
             .lock_recover()
             .failed_attempts
             .get(ip)
-            .map_or(0, FailureRecord::count)
+            .map_or(0, |r| r.count_within(Utc::now(), find_time))
     }
 
     /// 首次失败时间（Linux `login_tracker` 统计字段）
@@ -278,7 +287,13 @@ impl Fail2BanManager {
     /// 剩余可尝试次数（按 [`SecurityConfig::max_login_attempts`]，封禁中为 0）
     #[must_use]
     pub async fn get_remaining_attempts(&self, ip: &str) -> u32 {
-        let max_attempts = self.config.lock_recover().max_login_attempts;
+        let (max_attempts, find_time) = {
+            let cfg = self.config.lock_recover();
+            (
+                cfg.max_login_attempts,
+                i64::try_from(cfg.fail2ban_find_time).unwrap_or(i64::MAX),
+            )
+        };
         let state = self.state.lock_recover();
         if state.banned_ips.contains_key(ip) {
             return 0;
@@ -286,7 +301,7 @@ impl Fail2BanManager {
         let count = state
             .failed_attempts
             .get(ip)
-            .map_or(0, FailureRecord::count);
+            .map_or(0, |r| r.count_within(Utc::now(), find_time));
         max_attempts.saturating_sub(u32::try_from(count).unwrap_or(u32::MAX))
     }
 
@@ -304,6 +319,8 @@ impl Fail2BanManager {
     /// 清理：解除到期封禁（触发回调）、丢弃窗口外的失败记录
     pub async fn cleanup(&self) {
         let now = Utc::now();
+        let find_time =
+            i64::try_from(self.config.lock_recover().fail2ban_find_time).unwrap_or(i64::MAX);
 
         let mut state = self.state.lock_recover();
 
@@ -319,7 +336,7 @@ impl Fail2BanManager {
         }
 
         for record in state.failed_attempts.values_mut() {
-            record.prune(now);
+            record.prune(now, find_time);
         }
         state.failed_attempts.retain(|_, r| !r.is_empty());
 

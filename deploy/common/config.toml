@@ -18,26 +18,29 @@ bind_ip = "0.0.0.0"
 # 会导致 218/CAPABILITIES 启动失败）。
 # port = 21
 welcome_message = "Welcome to fftpd"
-# 当前仅被动模式可用；active_only / active_and_passive 会告警并降级
-connection_mode = "passive_only"
 allow_anonymous = false
-# 匿名用户主目录，空 = 未设置
+# 匿名用户主目录，空 = 未设置（启用匿名时必须配置，且不能同时设置 ftp_root）
 anonymous_home = ""
-# 被动模式端口区间（含端点）
+# 被动模式端口区间（含端点）；FTP 固定仅被动模式
 passive_ports = [50000, 51000]
 # 单连接限速（KB/s），0 = 不限速
 max_speed_kbps = 0
-# 被动模式对外通告地址，空 = 使用实际连接地址
+# 被动模式对外通告地址，空 = 使用实际连接地址；仅支持 IPv4/域名
+# （IPv6 客户端使用 EPSV）
 masquerade_address = ""
 idle_timeout = 15
-# 池化被动监听模式：上游 libunftp 0.23.1 停止后不释放端口，当前实现忽略此选项
-pooled_listener_mode = false
 # FTP 根目录，空 = 各用户 home
 ftp_root = ""
+# 单用户最大并发会话数，0 = 不限制
+max_sessions_per_user = 5
+# FTP 独立的符号链接与 IP 名单策略
+allow_symlinks = false
+allowed_ips = ["0.0.0.0/0"]
+denied_ips = []
 
 [ftp.ftps]
+# 启用后强制 TLS（控制通道与数据通道都拒绝明文客户端）
 enabled = false
-require_ssl = false
 # 空 = 自动生成（rcgen）
 cert_path = ""
 key_path = ""
@@ -49,20 +52,33 @@ port = 2222
 # 空 = ~/.local/state/fftpd/ssh_host_ed25519_key（首次自动生成）
 host_key_path = ""
 max_auth_attempts = 3
-auth_timeout = 60
+# 至少开启一种认证方式
+password_auth = true
+public_key_auth = true
+# 连接建立后必须完成认证的时间（秒）
+login_grace_time = 60
+# 认证完成后的会话空闲超时（秒）
+idle_timeout = 3600
+# keepalive 间隔（秒），0 = 关闭
+keepalive_interval = 30
+keepalive_max = 3
+# 单用户最大并发会话数，0 = 不限制
 max_sessions_per_user = 5
-# 主机密钥轮换周期（天），0 = 不轮换
-host_key_rotation_days = 0
+# 单连接限速（KB/s），0 = 不限速
+max_speed_kbps = 0
+# SFTP 独立的符号链接与 IP 名单策略
+allow_symlinks = false
+allowed_ips = ["0.0.0.0/0"]
+denied_ips = []
 
 [security]
 max_connections = 100
 max_connections_per_ip = 10
-allowed_ips = ["0.0.0.0/0"]
-denied_ips = []
 fail2ban_enabled = false
 fail2ban_threshold = 5
 fail2ban_ban_time = 3600
-allow_symlinks = false
+# 失败计数窗口（秒）
+fail2ban_find_time = 600
 max_login_attempts = 5
 
 [logging]
