@@ -5,7 +5,7 @@
 #   - rpm:     fftps-<ver>-1.x86_64.rpm / fftps-<ver>-1.aarch64.rpm
 #   - flatpak: fftps_<ver>_x86_64.flatpak / fftps_<ver>_aarch64.flatpak
 #   - windows: fftps-<ver>-windows-{x64,arm64}-setup.exe（Inno 安装向导）
-#              fftps-<ver>-windows-{x64,arm64}.zip（便携版，内含 exe 与 install.ps1）
+#              fftps-<ver>-windows-{x64,arm64}.zip（便携版，内含 exe 与 install.bat）
 #
 # 流程分两段，职责严格分离：
 #   1. build      只做交叉编译（ubuntu-latest 矩阵），上传裸二进制 binaries-<target>

@@ -5,7 +5,7 @@
 ; VersionInfo，arm64 时另加 IsArm64），并为本文件补 UTF-8 BOM 后调用 ISCC。
 ; 因此不要直接用 Inno IDE 编译部署目录里的本文件。
 ;
-; 安装语义（与 deploy/windows/install.ps1、fftps.wxs 对齐）：
+; 安装语义（与 deploy/windows/install.bat、fftps.wxs 对齐）：
 ;   - %ProgramFiles%\fftps\{fftpd,fftp-http,fftp-http-launcher}.exe
 ;   - fftpd 注册 SCM 自启服务（binPath 附带 --service 参数）
 ;   - %ProgramData%\fftpd 下配置模板（仅首次预置，Users 组可写）
@@ -145,7 +145,7 @@ var
 begin
   ResultCode := 0;
   ExePath := ExpandConstant('{app}\fftpd.exe');
-  { 等价于 install.ps1 的 sc create；binPath 整体加引号并转义内层引号 }
+  { 等价于 install.bat 的 sc create；binPath 整体加引号并转义内层引号 }
   Params := 'create ' + ServiceName + ' binPath= ' + #34 + '\' + #34 + ExePath + '\' + #34 +
             ' --service' + #34 + ' DisplayName= ' + #34 + 'FFTPS FTP/SFTP Server' + #34 +
             ' start= auto';

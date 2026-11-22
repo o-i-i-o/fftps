@@ -7,7 +7,7 @@
 #
 # zip 内容（扁平结构，解压后双击 install.bat 即装）：
 #   fftpd.exe / fftp-http.exe / fftp-http-launcher.exe
-#   install.bat / install.ps1 / uninstall.bat / uninstall.ps1
+#   install.bat / uninstall.bat
 #   config.toml / fftp-http.toml（配置模板，安装时仅首次预置）
 #
 # 打包物料统一位于 deploy/：
@@ -86,7 +86,7 @@ for bin in fftpd.exe fftp-http.exe fftp-http-launcher.exe; do
     fi
 done
 
-for mat in install.bat install.ps1 uninstall.bat uninstall.ps1; do
+for mat in install.bat uninstall.bat; do
     if [ ! -f "${DEPLOY_DIR}/windows/${mat}" ]; then
         log_error "缺少打包物料: deploy/windows/${mat}"
         exit 1
@@ -105,29 +105,24 @@ STAGE=$(mktemp -d)
 trap 'rm -rf "$STAGE"' EXIT
 
 cp "${BIN_DIR}/fftpd.exe" "${BIN_DIR}/fftp-http.exe" "${BIN_DIR}/fftp-http-launcher.exe" "$STAGE/"
-cp "${DEPLOY_DIR}/windows/install.bat" "${DEPLOY_DIR}/windows/install.ps1" \
-   "${DEPLOY_DIR}/windows/uninstall.bat" "${DEPLOY_DIR}/windows/uninstall.ps1" "$STAGE/"
+cp "${DEPLOY_DIR}/windows/install.bat" "${DEPLOY_DIR}/windows/uninstall.bat" "$STAGE/"
 cp "${DEPLOY_DIR}/common/config.toml" "${DEPLOY_DIR}/common/fftp-http.toml" "$STAGE/"
 
-# 版本号写入 install.ps1（ARP 注册展示用）；注释前的空格数不做强约束
+# 版本号写入 install.bat（ARP 注册展示用）；注释前的空格数不做强约束
 sed -i "s/^\\\$Version = '.*'/\$Version = '${VERSION}'/" \
-    "${STAGE}/install.ps1"
-if ! grep -q "\$Version = '${VERSION}'" "${STAGE}/install.ps1"; then
-    log_error "install.ps1 版本号注入失败"
+    "${STAGE}/install.bat"
+if ! grep -q "\$Version = '${VERSION}'" "${STAGE}/install.bat"; then
+    log_error "install.bat 版本号注入失败"
     exit 1
 fi
 
-# 补 UTF-8 BOM：Windows PowerShell 5.1 会把无 BOM 的 UTF-8 脚本按 ANSI(GBK)
-# 解析，中文变成乱码并触发语法错误。已有 BOM 时直接跳过，避免双 BOM。
-for psfile in install.ps1 uninstall.ps1; do
-    pshead=$(head -c 3 "${STAGE}/${psfile}" | od -An -tx1 | tr -d ' \n')
-    if [ "$pshead" != "efbbbf" ]; then
-        { printf '\xEF\xBB\xBF'; cat "${STAGE}/${psfile}"; } > "${STAGE}/${psfile}.bom"
-        mv "${STAGE}/${psfile}.bom" "${STAGE}/${psfile}"
-    fi
+# Windows cmd 要求 CRLF；检出/编辑可能带 LF，打包时统一转换
+for bat in install.bat uninstall.bat; do
+    sed -i 's/\r$//' "${STAGE}/${bat}"
+    sed -i 's/$/\r/' "${STAGE}/${bat}"
 done
 
 ZIP_FILE="${OUTPUT_DIR}/fftps-${VERSION}-windows-${ZIP_ARCH}.zip"
-(cd "$STAGE" && zip -9 -q "$ZIP_FILE" *.exe *.bat *.ps1 *.toml)
+(cd "$STAGE" && zip -9 -q "$ZIP_FILE" *.exe *.bat *.toml)
 
 log_success "构建成功: ${ZIP_FILE} ($(du -h "$ZIP_FILE" | cut -f1))"
