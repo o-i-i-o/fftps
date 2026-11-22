@@ -109,8 +109,8 @@ cp "${DEPLOY_DIR}/windows/install.bat" "${DEPLOY_DIR}/windows/install.ps1" \
    "${DEPLOY_DIR}/windows/uninstall.bat" "${DEPLOY_DIR}/windows/uninstall.ps1" "$STAGE/"
 cp "${DEPLOY_DIR}/common/config.toml" "${DEPLOY_DIR}/common/fftp-http.toml" "$STAGE/"
 
-# 版本号写入 install.ps1（ARP 注册展示用）
-sed -i "s/^\\\$Version = '.*'  # build-zip.sh 打包时替换\$/\$Version = '${VERSION}'  # build-zip.sh 打包时替换/" \
+# 版本号写入 install.ps1（ARP 注册展示用）；注释前的空格数不做强约束
+sed -i "s/^\\\$Version = '.*'/\$Version = '${VERSION}'/" \
     "${STAGE}/install.ps1"
 if ! grep -q "\$Version = '${VERSION}'" "${STAGE}/install.ps1"; then
     log_error "install.ps1 版本号注入失败"

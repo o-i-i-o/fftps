@@ -89,7 +89,8 @@ jobs:
       - name: 安装 cargo-zigbuild
         run: cargo install cargo-zigbuild --locked
 
-      # ARM64 Windows（msvc）交叉编译走 cargo-xwin + clang-cl
+      # ARM64 Windows（msvc）交叉编译走 cargo-xwin + clang
+      # （ring 强制用普通 clang 编译，clang-cl 后端的 /imsvc CFLAGS 会失败）
       - name: 安装 cargo-xwin（arm64 Windows）
         if: matrix.target == 'aarch64-pc-windows-msvc'
         run: |

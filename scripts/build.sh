@@ -16,7 +16,7 @@
 # 若 cargo-zigbuild 对 windows-gnu 不可用（缺 zig / 构建失败），回退
 # cargo + mingw-w64 原生链接器（x86_64-w64-mingw32-gcc）。
 # ARM64 Windows 用 aarch64-pc-windows-msvc（Tier 2 官方 ABI）+ cargo-xwin
-# （clang-cl + Windows SDK CRT；zig 无 MSVC CRT 头，不可用于该目标）。
+# （clang + windows-msvc-sysroot；zig 无 MSVC CRT 头，不可用于该目标）。
 # 产物统一落 dist/<target>/，release profile。
 
 set -euo pipefail
@@ -159,7 +159,6 @@ check_xwin() {
         exit 1
     fi
 }
-
 # ---------------------------------------------------------------------------
 # 构建
 # ---------------------------------------------------------------------------
@@ -217,13 +216,18 @@ build_target() {
 }
 
 # windows-gnu：优先 cargo-zigbuild，失败或缺工具时回退 mingw 原生 target；
-# arm64 msvc：走 cargo-xwin（clang-cl + Windows SDK CRT）
+# arm64 msvc：走 cargo-xwin clang 后端（clang + windows-msvc-sysroot，
+# 环节见 build_windows 内注释）
 build_windows() {
     local target="$1"
     if [[ "$target" == aarch64-pc-windows-msvc ]]; then
         check_xwin
         log_info "使用 cargo-xwin 编译: ${target}"
-        cargo xwin build --release --target "$target" -p fftpd -p fftp-http
+        # clang-cl 后端会被 ring 的 build.rs 强制替换为普通 clang，
+        # 而 clang-cl 的 CFLAGS（/imsvc）普通 clang 不认识，导致编译失败；
+        # clang 后端使用 -I 参数，与 ring 兼容
+        XWIN_CROSS_COMPILER=clang \
+            cargo xwin build --release --target "$target" -p fftpd -p fftp-http
         return 0
     fi
     if check_zigbuild; then
