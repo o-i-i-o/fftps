@@ -1,4 +1,4 @@
-# FFTPS Web 管理版 Windows 安装脚本（zip 交付物）
+﻿# FFTPS Web 管理版 Windows 安装脚本（zip 交付物）
 #
 # 用法：双击 install.bat，或管理员 PowerShell 执行 ./install.ps1
 # 语义与原 NSIS 安装器一致：

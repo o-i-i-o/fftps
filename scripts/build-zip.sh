@@ -117,6 +117,16 @@ if ! grep -q "\$Version = '${VERSION}'" "${STAGE}/install.ps1"; then
     exit 1
 fi
 
+# 补 UTF-8 BOM：Windows PowerShell 5.1 会把无 BOM 的 UTF-8 脚本按 ANSI(GBK)
+# 解析，中文变成乱码并触发语法错误。已有 BOM 时直接跳过，避免双 BOM。
+for psfile in install.ps1 uninstall.ps1; do
+    pshead=$(head -c 3 "${STAGE}/${psfile}" | od -An -tx1 | tr -d ' \n')
+    if [ "$pshead" != "efbbbf" ]; then
+        { printf '\xEF\xBB\xBF'; cat "${STAGE}/${psfile}"; } > "${STAGE}/${psfile}.bom"
+        mv "${STAGE}/${psfile}.bom" "${STAGE}/${psfile}"
+    fi
+done
+
 ZIP_FILE="${OUTPUT_DIR}/fftps-${VERSION}-windows-${ZIP_ARCH}.zip"
 (cd "$STAGE" && zip -9 -q "$ZIP_FILE" *.exe *.bat *.ps1 *.toml)
 

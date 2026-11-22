@@ -1,4 +1,4 @@
-# FFTPS Web 管理版 Windows 卸载脚本
+﻿# FFTPS Web 管理版 Windows 卸载脚本
 #
 # 用法：双击 uninstall.bat，或通过「设置 → 应用」卸载（由 ARP 注册指向本脚本）。
 # 语义与原 NSIS 卸载一致：先停用户进程，再停删服务；询问是否保留配置数据。
