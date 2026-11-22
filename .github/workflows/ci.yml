@@ -121,36 +121,42 @@ jobs:
           if-no-files-found: error
 
   deb:
-    name: deb 打包（${{ matrix.arch }}，fftp-http）
-    needs: [build]
+    name: deb 打包（${{ matrix.arch }}，debhelper + meson）
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - arch: amd64
-            target: x86_64-unknown-linux-gnu
-          - arch: arm64
-            target: aarch64-unknown-linux-gnu
+        arch: [amd64, arm64]
     steps:
       - name: 检出代码
         uses: actions/checkout@v5
 
-      - name: 安装系统依赖（图标生成）
+      - name: 安装 Rust 工具链
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: 安装交叉 Rust 目标
+        if: matrix.arch == 'arm64'
+        run: rustup target add aarch64-unknown-linux-gnu
+
+      - name: 安装 zig（arm64 交叉连接器）
+        if: matrix.arch == 'arm64'
+        uses: mlugg/setup-zig@v2
+        with:
+          version: 0.13.0
+
+      - name: 安装 cargo-zigbuild（arm64 交叉）
+        if: matrix.arch == 'arm64'
+        run: cargo install cargo-zigbuild --locked
+
+      - name: 安装打包依赖
         run: |
           sudo apt-get update
-          sudo apt-get install -y imagemagick
+          sudo apt-get install -y debhelper lintian
 
-      # 复用 build 矩阵产物，避免重复交叉编译
-      - name: 下载构建产物
-        uses: actions/download-artifact@v4
-        with:
-          path: dist
-          pattern: dist-*-linux-*
-          merge-multiple: true
-
+      # dh → meson → cargo 自行编译，不再复用 build 矩阵产物；
+      # arm64 经 dpkg-buildpackage -a arm64 交叉，cargo 目标由 debian/rules 传递
       - name: 构建 deb 包
-        run: sudo ./scripts/build-deb.sh -a ${{ matrix.arch }} -b dist/${{ matrix.target }} -o dist -n
+        run: ./scripts/build-deb.sh -a ${{ matrix.arch }} -o dist -n
 
       - name: 上传 deb 产物
         uses: actions/upload-artifact@v4

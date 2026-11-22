@@ -1,10 +1,10 @@
-fftps (@VERSION@) stable; urgency=medium
+fftps (0.1.2) stable; urgency=medium
 
-  * Release version @VERSION@
+  * Release version 0.1.2
   * Support SFTP and FTP(FTPS) server management
   * Frontend: fftp-http Web (HTTP/HTTPS) management interface
   * Desktop entry starts the Web service on demand and opens the browser
   * Includes the fftpd backend (per-user systemd service, no root needed)
   * Multi-architecture support (amd64 / arm64)
 
- -- fftps developers <developers@fftps.dev>  @DATE@
+ -- fftps developers <developers@fftps.dev>  Tue, 22 Nov 2026 12:00:00 +0800

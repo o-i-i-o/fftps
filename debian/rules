@@ -1,0 +1,42 @@
+#!/usr/bin/make -f
+# fftps debhelper + meson 打包规则
+#
+# 构建链：dpkg-buildpackage → dh → meson（custom_target 触发 cargo）→ 产物按
+# meson.build 安装清单落入 debian/fftps/，再由 dh 压制为 deb。
+# 二进制仅 cargo 编译产物，因此无需语言编译器参与 meson 的 host 检查。
+#
+# 交叉构建（-a arm64）：dh 自动生成 meson cross file；本文件把 cargo 目标
+# 传递给 meson（build-aux/cargo-build.sh 优先使用 cargo-zigbuild 交叉）。
+# 注意：cargo 目标的连接器/工具链需自备（zig 或 aarch64-linux-gnu-gcc 等）。
+
+%:
+	dh $@ --buildsystem=meson
+
+# dpkg-source 为可复现构建把 HOME 重定向到 debian/.debhelper/generated/_source/home，
+# rustup 会因此丢失默认 toolchain；显式固定工具链根目录（环境已设置则尊重原值）
+REAL_HOME := $(shell getent passwd $$(id -un) | cut -d: -f6)
+ifeq ($(origin RUSTUP_HOME),undefined)
+export RUSTUP_HOME = $(REAL_HOME)/.rustup
+endif
+ifeq ($(origin CARGO_HOME),undefined)
+export CARGO_HOME = $(REAL_HOME)/.cargo
+endif
+
+# noopt（如 DEB_BUILD_OPTIONS=noopt）走 cargo dev profile，便于快速打包验证
+ifneq (,$(filter noopt,$(DEB_BUILD_OPTIONS)))
+MESON_PROFILE := -Dprofile=debug
+else
+MESON_PROFILE := -Dprofile=release
+endif
+
+# 仅交叉构建时设置 cargo 目标三元组
+ifneq ($(DEB_HOST_ARCH),$(DEB_BUILD_ARCH))
+ifeq ($(DEB_HOST_ARCH),arm64)
+MESON_CARGO_TARGET := -Dcargo_target=aarch64-unknown-linux-gnu
+else ifeq ($(DEB_HOST_ARCH),amd64)
+MESON_CARGO_TARGET := -Dcargo_target=x86_64-unknown-linux-gnu
+endif
+endif
+
+override_dh_auto_configure:
+	dh_auto_configure -- $(MESON_PROFILE) $(MESON_CARGO_TARGET)

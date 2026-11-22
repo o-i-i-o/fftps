@@ -1,0 +1,23 @@
+# meson 构建选项
+
+option(
+  'profile',
+  type: 'combo',
+  choices: ['release', 'debug'],
+  value: 'release',
+  description: 'cargo 编译 profile（debug 走 dev profile）',
+)
+
+option(
+  'cargo_target',
+  type: 'string',
+  value: '',
+  description: 'rust 目标三元组；空 = 宿主默认目标（交叉编译时设置，工具链自备）',
+)
+
+option(
+  'flatpak',
+  type: 'boolean',
+  value: false,
+  description: 'flatpak 沙箱交付模式：安装 app-id 桌面入口/图标/metainfo 与沙箱内启动包装，跳过 systemd 单元',
+)
