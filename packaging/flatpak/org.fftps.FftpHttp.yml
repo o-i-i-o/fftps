@@ -18,7 +18,9 @@ runtime: org.freedesktop.Platform
 runtime-version: "26.08"
 sdk: org.freedesktop.Sdk
 sdk-extensions:
-  - org.freedesktop.Sdk.Extension.rust-stable//26.08
+  # 不带 //分支 后缀：扩展元数据声明 runtime=org.freedesktop.Sdk/x86_64/<runtime-version>，
+  # 会随 runtime 自动匹配（带后缀在本地 flatpak-builder 1.4.x 解析报 "not installed"）
+  - org.freedesktop.Sdk.Extension.rust-stable
 command: fftp-http-launch
 finish-args:
   # fftpd/fftp-http 监听端口；flatpak 无独立网络命名空间，宿主 loopback 直达

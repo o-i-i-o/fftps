@@ -31,7 +31,33 @@ fi
 version="$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -n1)"
 bundle="dist/fftps_${version}.flatpak"
 
-flatpak-builder --user --force-clean \
+# 本地网络环境优化（参考 fdebi 的 USTC 镜像策略）：crate 下载主 URL 切到
+# USTC 镜像（文件字节与 static.crates.io 一致，sha256 校验不变），官方地址
+# 保留为兜底。幂等操作；提交 flathub 前重新生成 cargo-sources.json 即还原。
+python3 - packaging/flatpak/cargo-sources.json <<'PY'
+import json, sys
+path = sys.argv[1]
+with open(path) as f:
+    sources = json.load(f)
+changed = False
+for s in sources:
+    url = s.get("url", "")
+    if url.startswith("https://static.crates.io/crates/") and "mirror-urls" not in s:
+        # static: crates/{name}/{name}-{version}.crate → USTC: api/v1/crates/{name}/{version}/download
+        name, filename = url[len("https://static.crates.io/crates/"):].split("/")
+        version = filename[len(name) + 1:-len(".crate")]
+        s["url"] = f"https://mirrors.ustc.edu.cn/crates.io/api/v1/crates/{name}/{version}/download"
+        s["mirror-urls"] = [url]
+        changed = True
+if changed:
+    with open(path, "w") as f:
+        json.dump(sources, f, indent=1, sort_keys=True)
+    print("cargo-sources.json: 已切换 USTC 镜像")
+PY
+
+# --disable-rofiles-fuse：容器等 fuse 挂载不可用的环境必须加（挂载静默失败时
+# 报 "Build directory ... not initialized"）；桌面环境可去掉，仅损失写保护优化
+flatpak-builder --user --force-clean --disable-rofiles-fuse \
     --state-dir "$state_dir" \
     --repo "$repo_dir" \
     "$build_dir" "$manifest"
@@ -39,7 +65,7 @@ flatpak-builder --user --force-clean \
 flatpak build-bundle "$repo_dir" "$bundle" "$app_id"
 
 if [ -n "$install" ]; then
-    flatpak-builder --user --install --force-clean \
+    flatpak-builder --user --install --force-clean --disable-rofiles-fuse \
         --state-dir "$state_dir" \
         "$build_dir" "$manifest"
 fi

@@ -50,8 +50,12 @@ if host_machine.system() != 'windows'
   if get_option('flatpak')
     # flatpak 沙箱交付：没有 systemd --user，daemon 由启动包装在沙箱内拉起；
     # 桌面入口/图标必须以 app-id 命名，另附 AppStream metainfo。
-    install_data(
-      'deploy/flatpak/fftp-http-launch.sh',
+    # 沙箱入口命令不带 .sh 后缀（flatpak command 与 desktop Exec 引用）
+    configure_file(
+      input: 'deploy/flatpak/fftp-http-launch.sh',
+      output: 'fftp-http-launch',
+      copy: true,
+      install: true,
       install_dir: get_option('bindir'),
       install_mode: 'rwxr-xr-x',
     )
