@@ -1,7 +1,7 @@
 # fftps CI：静态检查、测试、交叉编译矩阵与打包
 #
 # 单一产品形态：fftpd 后端 + fftp-http Web 管理前端
-#   - Linux: deb / rpm / tar.gz（amd64 + arm64），附 systemd --user 单元与桌面入口
+#   - Linux: deb / rpm / tar.gz / flatpak（amd64 + arm64），附 systemd --user 单元与桌面入口
 #   - Windows: 每架构一个 zip（含 install/uninstall 脚本）+ MSI（WiX，原生 msiexec 双架构），
 #     注册 fftpd 服务并创建快捷方式
 # 推送 v* 标签时自动构建并创建 GitHub Release
@@ -240,11 +240,40 @@ jobs:
           path: dist/*.msi
           if-no-files-found: error
 
+  # flatpak（org.freedesktop 26.08 + rust-stable 扩展，meson 模块触发 cargo
+  # 离线编译）：crate 依赖经 cargo-sources.json vendor，无需自备 rust 工具链
+  flatpak:
+    name: flatpak 打包（freedesktop 26.08）
+    runs-on: ubuntu-latest
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v5
+
+      - name: 安装 flatpak 构建链与 runtime
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y flatpak flatpak-builder
+          flatpak remote-add --if-not-exists --user flathub \
+            https://dl.flathub.org/repo/flathub.flatpakrepo
+          flatpak install -y --user --noninteractive flathub \
+            org.freedesktop.Platform//26.08 org.freedesktop.Sdk//26.08 \
+            org.freedesktop.Sdk.Extension.rust-stable//26.08
+
+      - name: 构建 flatpak bundle
+        run: ./scripts/build-flatpak.sh
+
+      - name: 上传 flatpak 产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: dist-flatpak
+          path: dist/*.flatpak
+          if-no-files-found: error
+
   release:
     name: 发布 Release
     # 仅在推送 v* 标签时触发，且 CI 全部通过后才发布
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: [lint, test, build, deb, rpm, msi]
+    needs: [lint, test, build, deb, rpm, msi, flatpak]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -296,5 +325,6 @@ jobs:
             dist/*.msi
             dist/*.deb
             dist/*.rpm
+            dist/*.flatpak
           generate_release_notes: true
           fail_on_unmatched_files: true
