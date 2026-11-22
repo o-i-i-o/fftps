@@ -72,7 +72,8 @@ if ! command -v rpmbuild &> /dev/null; then
 fi
 
 for bin in fftpd fftp-http; do
-    if [ ! -x "${BIN_DIR}/${bin}" ]; then
+    # artifact 下载会丢失可执行位，此处只校验文件存在（spec 内 install -m0755）
+    if [ ! -f "${BIN_DIR}/${bin}" ]; then
         log_error "缺少可执行文件: ${BIN_DIR}/${bin}"
         log_info "先执行 scripts/build.sh ${RUST_TARGET}"
         exit 1

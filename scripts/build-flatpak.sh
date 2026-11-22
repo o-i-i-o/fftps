@@ -1,12 +1,14 @@
 #!/usr/bin/env sh
 # flatpak 打包包装（源码构建 / 预编译产物两种模式）。
 #
-# 用法: build-flatpak.sh [-i] [-b DIR]
+# 用法: build-flatpak.sh [-i] [-a ARCH] [-b DIR]
 #   -i        构建完成后装入当前用户安装（flatpak-builder --install）
+#   -a ARCH   目标架构 x86_64 / aarch64 [默认: 宿主架构]
 #   -b DIR    预编译模式：直接封装 DIR 下的 fftpd / fftp-http，不再触发 cargo 编译
 #
 # 预编译模式（CI 打包阶段使用，二进制来自 scripts/build.sh）：
-#   ./scripts/build-flatpak.sh -b dist/x86_64-unknown-linux-gnu
+#   ./scripts/build-flatpak.sh -a amd64 -b dist/x86_64-unknown-linux-gnu
+#   ./scripts/build-flatpak.sh -a arm64 -b dist/aarch64-unknown-linux-gnu
 #
 # 源码模式（本地开发，沙箱内 cargo 离线编译）：
 #   ./scripts/build-flatpak.sh
@@ -16,7 +18,8 @@
 #   flatpak install -y flathub org.freedesktop.Platform//26.08 org.freedesktop.Sdk//26.08
 #   （源码模式另需 org.freedesktop.Sdk.Extension.rust-stable//26.08）
 #
-# 产物：dist/flatpak-repo（ostree 仓库）、dist/fftps_<版本>.flatpak（单文件 bundle）
+# 产物：dist/flatpak-repo（ostree 仓库）、
+#       dist/fftps_<版本>_<x86_64|aarch64>.flatpak（单文件 bundle）
 # 状态目录 .flatpak-builder-state 独立于默认 ~/.local/share/flatpak-builder，
 # 规避 rofiles 状态损坏问题（损坏时直接删除该目录重建即可）。
 set -eu
@@ -31,40 +34,59 @@ build_dir=dist/flatpak-build
 
 usage() {
     cat << EOF
-用法: $0 [-i] [-b DIR]
+用法: $0 [-i] [-a ARCH] [-b DIR]
 
 选项:
     -i            构建完成后装入当前用户安装
+    -a, --arch ARCH
+                  目标架构 x86_64 / aarch64 [默认: 宿主架构]
     -b, --bin-dir DIR
                   预编译模式：封装该目录下的 fftpd / fftp-http（跳过 cargo 编译）
     -h, --help    显示此帮助
 
 示例:
     $0                                          # 源码模式（沙箱内离线 cargo 编译）
-    $0 -b dist/x86_64-unknown-linux-gnu        # 预编译模式（CI 打包）
+    $0 -a amd64 -b dist/x86_64-unknown-linux-gnu   # amd64 预编译打包
+    $0 -a arm64 -b dist/aarch64-unknown-linux-gnu  # arm64 预编译打包（arm runner）
 EOF
 }
 
 install=
 bin_dir=
+arch=
 while [ $# -gt 0 ]; do
     case "$1" in
         -i) install=1; shift ;;
+        -a|--arch) arch="$2"; shift 2 ;;
         -b|--bin-dir) bin_dir="$2"; shift 2 ;;
         -h|--help) usage; exit 0 ;;
         *) echo "未知选项: $1" >&2; usage; exit 1 ;;
     esac
 done
 
+if [ -z "$arch" ]; then
+    case "$(uname -m)" in
+        x86_64|amd64) arch=x86_64 ;;
+        aarch64|arm64) arch=aarch64 ;;
+        *) echo "无法识别宿主架构: $(uname -m)，请用 -a 指定 x86_64 / aarch64" >&2; exit 1 ;;
+    esac
+fi
+case "$arch" in
+    x86_64|amd64) flatpak_arch=x86_64 ;;
+    aarch64|arm64) flatpak_arch=aarch64 ;;
+    *) echo "不支持的架构: ${arch}（仅 x86_64 / aarch64）" >&2; exit 1 ;;
+esac
+
 version="$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -n1)"
-bundle="dist/fftps_${version}.flatpak"
+bundle="dist/fftps_${version}_${flatpak_arch}.flatpak"
 
 # 预编译模式：把二进制与 deploy 物料放进临时目录，生成简单安装清单，
 # flatpak-builder 只执行安装命令，不参与编译（编译与打包严格分离）。
 build_prebuilt() {
-    if [ ! -x "${bin_dir}/fftpd" ] || [ ! -x "${bin_dir}/fftp-http" ]; then
+    # artifact 下载会丢失可执行位，此处只校验文件存在（清单内 install -Dm755）
+    if [ ! -f "${bin_dir}/fftpd" ] || [ ! -f "${bin_dir}/fftp-http" ]; then
         echo "缺少预编译产物: ${bin_dir}/{fftpd,fftp-http}" >&2
-        echo "先执行 scripts/build.sh x86_64-unknown-linux-gnu" >&2
+        echo "先执行 scripts/build.sh <rust-target>" >&2
         exit 1
     fi
 
@@ -108,6 +130,7 @@ modules:
 YAML
 
     flatpak-builder --user --force-clean --disable-rofiles-fuse \
+        --arch "$flatpak_arch" \
         --state-dir "$state_dir" \
         --repo "$repo_dir" \
         "$build_dir" "$stage/manifest.yml"
@@ -142,6 +165,7 @@ PY
     # --disable-rofiles-fuse：容器等 fuse 挂载不可用的环境必须加（挂载静默失败时
     # 报 "Build directory ... not initialized"）；桌面环境可去掉，仅损失写保护优化
     flatpak-builder --user --force-clean --disable-rofiles-fuse \
+        --arch "$flatpak_arch" \
         --state-dir "$state_dir" \
         --repo "$repo_dir" \
         "$build_dir" "$manifest"
@@ -153,7 +177,7 @@ else
     build_source
 fi
 
-flatpak build-bundle "$repo_dir" "$bundle" "$app_id"
+flatpak build-bundle --arch "$flatpak_arch" "$repo_dir" "$bundle" "$app_id"
 
 if [ -n "$install" ]; then
     if [ -n "$bin_dir" ]; then
@@ -161,6 +185,7 @@ if [ -n "$install" ]; then
         flatpak install --user --noninteractive "$bundle"
     else
         flatpak-builder --user --install --force-clean --disable-rofiles-fuse \
+            --arch "$flatpak_arch" \
             --state-dir "$state_dir" \
             "$build_dir" "$manifest"
     fi

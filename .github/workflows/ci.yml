@@ -1,18 +1,17 @@
 # fftps CI：静态检查 → 测试 → 交叉编译 → 打包 → 发布
 #
-# 流水线按职责拆成两段，互不越界：
-#   1. build      只做交叉编译，按目标矩阵产出裸二进制（binaries-<target>）
-#   2. package-*  只做打包，下载 binaries-* 后生成 deb / rpm / tar.gz / zip /
-#                 msi / flatpak；打包阶段不再触发 cargo/meson 编译（deb 与
-#                 flatpak 均走预编译产物模式）
-# 推送 v* 标签且全部通过后，release 仅汇总 packages-* 产物并创建 GitHub Release。
+# 产物（严格两架构）：
+#   - deb:     fftps_<ver>_amd64.deb / fftps_<ver>_arm64.deb
+#   - rpm:     fftps-<ver>-1.x86_64.rpm / fftps-<ver>-1.aarch64.rpm
+#   - flatpak: fftps_<ver>_x86_64.flatpak / fftps_<ver>_aarch64.flatpak
+#   - windows: fftps-<ver>-windows-x64.zip / fftps-<ver>-windows-arm64.zip（内含 exe）
 #
-# 单一产品形态：fftpd 后端 + fftp-http Web 管理前端
-#   - Linux: deb / rpm / tar.gz / flatpak（amd64 + arm64），附 systemd --user 单元与桌面入口
-#   - Windows: 每架构一个 zip（含 install/uninstall 脚本）+ MSI（WiX，原生 msiexec 双架构），
-#     注册 fftpd 服务并创建快捷方式
-# 注：cargo fmt 与 cargo clippy 均纳入 CI；clippy 暂不升级为 -D warnings，
-# pedantic 告警作为提示保留。
+# 流程分两段，职责严格分离：
+#   1. build      只做交叉编译（ubuntu-latest 矩阵），上传裸二进制 binaries-<target>
+#   2. package-*  只做打包，下载 binaries-* 后生成安装包，不再触发 cargo/meson 编译
+#      同架构打包任务运行在对应架构 runner（amd64 → ubuntu-latest，
+#      arm64 → ubuntu-24.04-arm），避免交叉打包的依赖解析问题
+# 推送 v* 标签且全部通过后，release 仅汇总 packages-* 产物并创建 GitHub Release。
 name: CI
 
 on:
@@ -77,7 +76,6 @@ jobs:
         target:
           - x86_64-unknown-linux-gnu
           - aarch64-unknown-linux-gnu
-          - x86_64-unknown-linux-musl
           - x86_64-pc-windows-gnu
           - aarch64-pc-windows-msvc
     steps:
@@ -130,15 +128,17 @@ jobs:
   package-deb:
     name: 打包 deb（${{ matrix.arch }}）
     needs: build
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
       matrix:
         include:
           - arch: amd64
             target: x86_64-unknown-linux-gnu
+            runner: ubuntu-24.04
           - arch: arm64
             target: aarch64-unknown-linux-gnu
+            runner: ubuntu-24.04-arm
     steps:
       - name: 检出代码
         uses: actions/checkout@v5
@@ -169,15 +169,17 @@ jobs:
   package-rpm:
     name: 打包 rpm（${{ matrix.arch }}）
     needs: build
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
       matrix:
         include:
           - arch: x86_64
             target: x86_64-unknown-linux-gnu
+            runner: ubuntu-24.04
           - arch: aarch64
             target: aarch64-unknown-linux-gnu
+            runner: ubuntu-24.04-arm
     steps:
       - name: 检出代码
         uses: actions/checkout@v5
@@ -201,46 +203,6 @@ jobs:
         with:
           name: packages-rpm-${{ matrix.arch }}
           path: dist/*.rpm
-          if-no-files-found: error
-
-  package-linux-tarball:
-    name: 打包 Linux tarball
-    needs: build
-    runs-on: ubuntu-latest
-    steps:
-      - name: 检出代码
-        uses: actions/checkout@v5
-
-      - name: 下载 Linux 二进制
-        uses: actions/download-artifact@v4
-        with:
-          path: dist
-          pattern: binaries-*-linux-*
-          merge-multiple: true
-
-      # 单一形态：fftpd + fftp-http，附带两个 systemd --user 单元
-      - name: 打包 tarball（附 systemd 用户单元与桌面入口）
-        run: |
-          VERSION="$(grep -m1 '^version = ' Cargo.toml | sed 's/version = "\(.*\)"/\1/')"
-          for t in x86_64-unknown-linux-gnu aarch64-unknown-linux-gnu x86_64-unknown-linux-musl; do
-            NAME="fftp-http-${VERSION}-${t}"
-            mkdir -p "dist/${NAME}"
-            cp "dist/${t}/fftpd" "dist/${t}/fftp-http" "dist/${NAME}/"
-            cp deploy/common/config.toml "dist/${NAME}/config.toml"
-            cp deploy/common/fftp-http.toml "dist/${NAME}/fftp-http.toml"
-            cp deploy/common/fftpd.service deploy/common/fftp-http.service "dist/${NAME}/"
-            cp deploy/common/fftp-http.desktop deploy/common/fftp-http.svg "dist/${NAME}/"
-            chmod 755 "dist/${NAME}/fftpd" "dist/${NAME}/fftp-http"
-            tar -czf "dist/${NAME}.tar.gz" -C dist "${NAME}"
-            rm -rf "dist/${NAME}"
-          done
-          ls -lh dist/
-
-      - name: 上传 tarball 产物
-        uses: actions/upload-artifact@v4
-        with:
-          name: packages-linux-tarball
-          path: dist/*.tar.gz
           if-no-files-found: error
 
   package-windows-zip:
@@ -280,48 +242,22 @@ jobs:
           path: dist/*.zip
           if-no-files-found: error
 
-  # MSI 绑定依赖 Windows 原生 msi.dll，必须在 windows runner 上构建
-  # （Linux 上 WiX 编译 Directory/@Name 亦会因路径根语义差异误报 WIX0389）
-  package-msi:
-    name: 打包 MSI（x64 + arm64）
-    needs: build
-    runs-on: windows-latest
-    steps:
-      - name: 检出代码
-        uses: actions/checkout@v5
-
-      - name: 安装 dotnet 与 WiX 5
-        uses: actions/setup-dotnet@v4
-        with:
-          dotnet-version: 9.x
-
-      - name: 下载 Windows 二进制
-        uses: actions/download-artifact@v4
-        with:
-          path: dist
-          pattern: binaries-*-windows-*
-          merge-multiple: true
-
-      - name: 打包 MSI（x64 + arm64）
-        shell: bash
-        run: |
-          dotnet tool install --global wix --version 5.0.2
-          wix extension add -g WixToolset.Util.wixext
-          ./scripts/build-msi.sh -a x86_64 -b dist/x86_64-pc-windows-gnu
-          ./scripts/build-msi.sh -a arm64 -b dist/aarch64-pc-windows-msvc
-
-      - name: 上传 MSI 产物
-        uses: actions/upload-artifact@v4
-        with:
-          name: packages-msi
-          path: dist/*.msi
-          if-no-files-found: error
-
-  # flatpak 预编译模式：直接封装交叉编译产物，不再在沙箱内 cargo 编译
+  # flatpak 预编译模式：直接封装交叉编译产物，不再在沙箱内 cargo 编译。
+  # arm64 在原生 arm runner 上打包（flatpak 沙箱命令需与宿主架构一致）。
   package-flatpak:
-    name: 打包 flatpak（freedesktop 26.08）
+    name: 打包 flatpak（${{ matrix.arch }}）
     needs: build
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            target: x86_64-unknown-linux-gnu
+            runner: ubuntu-24.04
+          - arch: arm64
+            target: aarch64-unknown-linux-gnu
+            runner: ubuntu-24.04-arm
     steps:
       - name: 检出代码
         uses: actions/checkout@v5
@@ -329,7 +265,7 @@ jobs:
       - name: 下载 Linux 二进制
         uses: actions/download-artifact@v4
         with:
-          name: binaries-x86_64-unknown-linux-gnu
+          name: binaries-${{ matrix.target }}
           path: dist
 
       - name: 安装 flatpak 构建链与 runtime
@@ -342,12 +278,12 @@ jobs:
             org.freedesktop.Platform//26.08 org.freedesktop.Sdk//26.08
 
       - name: 打包 flatpak bundle（预编译产物）
-        run: ./scripts/build-flatpak.sh -b dist/x86_64-unknown-linux-gnu
+        run: ./scripts/build-flatpak.sh -a ${{ matrix.arch }} -b dist/${{ matrix.target }}
 
       - name: 上传 flatpak 产物
         uses: actions/upload-artifact@v4
         with:
-          name: packages-flatpak
+          name: packages-flatpak-${{ matrix.arch }}
           path: dist/*.flatpak
           if-no-files-found: error
 
@@ -364,9 +300,7 @@ jobs:
       - build
       - package-deb
       - package-rpm
-      - package-linux-tarball
       - package-windows-zip
-      - package-msi
       - package-flatpak
     runs-on: ubuntu-latest
     permissions:
@@ -395,11 +329,9 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: |
-            dist/*.tar.gz
-            dist/*.zip
-            dist/*.msi
             dist/*.deb
             dist/*.rpm
             dist/*.flatpak
+            dist/*.zip
           generate_release_notes: true
           fail_on_unmatched_files: true

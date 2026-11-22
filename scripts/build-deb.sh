@@ -111,7 +111,8 @@ check_prebuilt() {
     fi
     BIN_DIR="$(cd "$BIN_DIR" && pwd)"
     for bin in fftpd fftp-http; do
-        if [ ! -x "${BIN_DIR}/${bin}" ]; then
+        # artifact 下载会丢失可执行位，此处只校验文件存在，安装时统一置为 755
+        if [ ! -f "${BIN_DIR}/${bin}" ]; then
             log_error "缺少可执行文件: ${BIN_DIR}/${bin}"
             exit 1
         fi
