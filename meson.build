@@ -45,7 +45,7 @@ built_bins = custom_target(
   install_dir: get_option('bindir'),
 )
 
-# Linux 才安装系统集成物料；Windows 交付物只含 exe 与安装脚本
+# Linux 才安装系统集成物料；Windows 交付物只含 exe（安装向导由 scripts/build-inno.sh 另行打包）
 if host_machine.system() != 'windows'
   if get_option('flatpak')
     # flatpak 沙箱交付：没有 systemd --user，daemon 由启动包装在沙箱内拉起；

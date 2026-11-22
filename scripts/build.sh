@@ -58,7 +58,7 @@ show_help() {
     all                           全矩阵顺序构建
 
 产物: dist/<target>/{fftpd,fftp-http}[.exe]（release profile）
-      Windows 另附 fftp-http-launcher.exe（MSI 快捷方式目标）
+      Windows 另附 fftp-http-launcher.exe（安装向导快捷方式目标）
 
 依赖:
     cargo、rustup 目标、cargo-zigbuild、zig（可用 pip install ziglang 安装，

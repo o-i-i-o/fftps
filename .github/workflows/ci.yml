@@ -4,7 +4,8 @@
 #   - deb:     fftps_<ver>_amd64.deb / fftps_<ver>_arm64.deb
 #   - rpm:     fftps-<ver>-1.x86_64.rpm / fftps-<ver>-1.aarch64.rpm
 #   - flatpak: fftps_<ver>_x86_64.flatpak / fftps_<ver>_aarch64.flatpak
-#   - windows: fftps-<ver>-windows-x64.zip / fftps-<ver>-windows-arm64.zip（内含 exe）
+#   - windows: fftps-<ver>-windows-{x64,arm64}-setup.exe（Inno 安装向导）
+#              fftps-<ver>-windows-{x64,arm64}.zip（便携版，内含 exe 与 install.ps1）
 #
 # 流程分两段，职责严格分离：
 #   1. build      只做交叉编译（ubuntu-latest 矩阵），上传裸二进制 binaries-<target>
@@ -242,6 +243,56 @@ jobs:
           path: dist/*.zip
           if-no-files-found: error
 
+  # Inno Setup 安装向导（每个架构一个 setup.exe）。
+  # Inno 编译器 ISCC 只能在 Windows 上运行，故打包放在 windows-latest，
+  # 只消费 build 阶段上传的裸二进制，不触发 cargo 编译。
+  package-windows-inno:
+    name: 打包 Windows 安装向导（${{ matrix.arch }}）
+    needs: build
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x64
+            target: x86_64-pc-windows-gnu
+          - arch: arm64
+            target: aarch64-pc-windows-msvc
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v5
+
+      - name: 下载 Windows 二进制
+        uses: actions/download-artifact@v4
+        with:
+          name: binaries-${{ matrix.target }}
+          path: dist
+
+      - name: 安装 Inno Setup 6.7.4
+        shell: pwsh
+        run: |
+          $installer = Join-Path $env:RUNNER_TEMP 'innosetup-6.7.4.exe'
+          Invoke-WebRequest -Uri 'https://github.com/jrsoftware/issrc/releases/download/is-6_7_4/innosetup-6.7.4.exe' -OutFile $installer
+          Start-Process -FilePath $installer -ArgumentList '/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART','/SP-' -Wait
+          $candidates = @(
+            'C:\Program Files (x86)\Inno Setup 6\ISCC.exe',
+            'C:\Program Files\Inno Setup 6\ISCC.exe'
+          )
+          $iscc = $candidates | Where-Object { Test-Path $_ } | Select-Object -First 1
+          if (-not $iscc) { throw 'Inno Setup 6.7.4 安装失败：未找到 ISCC.exe' }
+          Split-Path $iscc -Parent | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+
+      - name: 打包 Inno 安装包
+        shell: bash
+        run: bash ./scripts/build-inno.sh -a ${{ matrix.arch }} -b dist/${{ matrix.target }}
+
+      - name: 上传 Inno 产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: packages-windows-inno-${{ matrix.arch }}
+          path: dist/*-setup.exe
+          if-no-files-found: error
+
   # flatpak 预编译模式：直接封装交叉编译产物，不再在沙箱内 cargo 编译。
   # arm64 在原生 arm runner 上打包（flatpak 沙箱命令需与宿主架构一致）。
   package-flatpak:
@@ -301,6 +352,7 @@ jobs:
       - package-deb
       - package-rpm
       - package-windows-zip
+      - package-windows-inno
       - package-flatpak
     runs-on: ubuntu-latest
     permissions:
@@ -333,5 +385,6 @@ jobs:
             dist/*.rpm
             dist/*.flatpak
             dist/*.zip
+            dist/*-setup.exe
           generate_release_notes: true
           fail_on_unmatched_files: true

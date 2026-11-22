@@ -1,0 +1,4 @@
+# Windows CI（windows-latest）会用 Git Bash 执行构建脚本并调用 ISCC；
+# 强制 LF，避免 core.autocrlf 把脚本/Inno 脚本检出为 CRLF。
+*.sh text eol=lf
+*.iss text eol=lf
