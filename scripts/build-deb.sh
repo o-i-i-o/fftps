@@ -12,10 +12,14 @@
 # cargo 目标由 debian/rules 自动传给 meson；cargo-zigbuild + zig 可用时优先
 # 使用，否则需自备 aarch64 交叉连接器。
 #
+# 预编译模式（-b/--bin-dir，CI 打包阶段使用）：直接复用 dist/<rust-target> 下
+# 已交叉编译的 fftpd / fftp-http，跳过 cargo/meson 编译，只做安装与压制。
+#
 # 示例:
-#   ./scripts/build-deb.sh                       # 当前架构
+#   ./scripts/build-deb.sh                       # 当前架构（源码构建）
 #   ./scripts/build-deb.sh -a arm64              # 交叉构建 arm64
 #   ./scripts/build-deb.sh -a all -o dist        # 双架构
+#   ./scripts/build-deb.sh -a amd64 -b dist/x86_64-unknown-linux-gnu -n
 #   DEB_BUILD_OPTIONS=noopt ./scripts/build-deb.sh  # debug profile 快速验证
 
 set -euo pipefail
@@ -37,6 +41,7 @@ show_help() {
 
 选项:
     -a, --arch ARCH     目标架构 (amd64, arm64, all) [默认: 自动检测]
+    -b, --bin-dir DIR   复用预编译产物目录（跳过 cargo/meson 编译）
     -o, --output DIR    产物输出目录 [默认: dist]
     -n, --no-lintian    跳过 lintian 检查
     -h, --help          显示此帮助
@@ -48,6 +53,7 @@ show_help() {
     $0                                  # 为当前架构打 deb
     $0 -a arm64                         # 交叉构建 arm64 deb（工具链自备）
     $0 -a all -o dist -n                # 双架构打包并跳过 lintian
+    $0 -a amd64 -b dist/x86_64-unknown-linux-gnu -n   # 复用预编译二进制
 EOF
 }
 
@@ -56,12 +62,14 @@ PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
 DIST_DIR="${PROJECT_DIR}/dist"
 
 TARGET_ARCH=""
+BIN_DIR=""
 OUTPUT_DIR="$DIST_DIR"
 SKIP_LINTIAN=false
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
         -a|--arch) TARGET_ARCH="$2"; shift 2 ;;
+        -b|--bin-dir) BIN_DIR="$2"; shift 2 ;;
         -o|--output) OUTPUT_DIR="$2"; shift 2 ;;
         -n|--no-lintian) SKIP_LINTIAN=true; shift ;;
         -h|--help) show_help; exit 0 ;;
@@ -76,14 +84,39 @@ fi
 
 check_dependencies() {
     local missing=()
-    for dep in cargo meson dpkg-buildpackage dpkg-parsechangelog; do
+    local deps=(dpkg-buildpackage dpkg-parsechangelog)
+    # 预编译模式只做安装与压制，不需要 cargo/meson
+    if [ -z "$BIN_DIR" ]; then
+        deps+=(cargo meson)
+    fi
+    for dep in "${deps[@]}"; do
         command -v "$dep" &> /dev/null || missing+=("$dep")
     done
     if [ ${#missing[@]} -gt 0 ]; then
         log_error "缺少必要的依赖: ${missing[*]}"
-        log_info "需要: debhelper(>=13)、meson、cargo/rustc；交叉构建另需 zig + cargo-zigbuild"
+        log_info "需要: debhelper(>=13)、dpkg-dev；源码构建另需 meson、cargo/rustc"
         exit 1
     fi
+}
+
+# 预编译模式：校验二进制目录并解析为绝对路径（debian/rules 直接引用）
+check_prebuilt() {
+    if [ -z "$BIN_DIR" ]; then
+        return 0
+    fi
+    if [ ! -d "$BIN_DIR" ]; then
+        log_error "预编译产物目录不存在: ${BIN_DIR}"
+        log_info "先执行 scripts/build.sh <rust-target>，或用 -b 指定正确目录"
+        exit 1
+    fi
+    BIN_DIR="$(cd "$BIN_DIR" && pwd)"
+    for bin in fftpd fftp-http; do
+        if [ ! -x "${BIN_DIR}/${bin}" ]; then
+            log_error "缺少可执行文件: ${BIN_DIR}/${bin}"
+            exit 1
+        fi
+    done
+    log_info "预编译模式: ${BIN_DIR}（跳过 cargo/meson 编译）"
 }
 
 detect_arch() {
@@ -113,19 +146,26 @@ build_one() {
     local arch="$1"
 
     echo "========================================"
-    log_info "DEB 打包（debhelper + meson）: ${arch}"
+    if [ -n "$BIN_DIR" ]; then
+        log_info "DEB 打包（预编译产物）: ${arch}"
+    else
+        log_info "DEB 打包（debhelper + meson）: ${arch}"
+    fi
     echo "========================================"
 
     local dpkg_arch="$arch"
     local dpkg_args=(-b -us -uc)
     if [ "$dpkg_arch" != "$(detect_arch)" ]; then
         dpkg_args+=(-a "$dpkg_arch")
-        log_info "交叉构建: ${dpkg_arch}（rules 将设置对应 cargo 目标）"
+        log_info "交叉构建: ${dpkg_arch}"
     fi
 
-    # rustup 直装的 cargo/rustc 不在 dpkg 数据库里，dpkg-checkbuilddeps 会误报；
-    # 关键工具实际都在 PATH 时降级跳过依赖检查（-d），否则如实失败
-    if ! (cd "$PROJECT_DIR" && dpkg-checkbuilddeps ${dpkg_arch:+-a "$dpkg_arch"} 2> /dev/null); then
+    if [ -n "$BIN_DIR" ]; then
+        # 预编译模式：源码构建依赖（cargo/rustc/meson）无需安装
+        dpkg_args+=(-d)
+    elif ! (cd "$PROJECT_DIR" && dpkg-checkbuilddeps ${dpkg_arch:+-a "$dpkg_arch"} 2> /dev/null); then
+        # rustup 直装的 cargo/rustc 不在 dpkg 数据库里，dpkg-checkbuilddeps 会误报；
+        # 关键工具实际都在 PATH 时降级跳过依赖检查（-d），否则如实失败
         if command -v cargo > /dev/null 2>&1 && command -v rustc > /dev/null 2>&1 \
             && command -v meson > /dev/null 2>&1; then
             log_warning "Build-Depends 未全部以 deb 包形式安装，但工具链在 PATH 中可用，跳过依赖检查（-d）"
@@ -138,7 +178,7 @@ build_one() {
 
     (
         cd "$PROJECT_DIR"
-        dpkg-buildpackage "${dpkg_args[@]}"
+        FFTPS_PREBUILT_DIR="$BIN_DIR" dpkg-buildpackage "${dpkg_args[@]}"
     )
 
     mkdir -p "$OUTPUT_DIR"
@@ -161,6 +201,7 @@ build_one() {
 }
 
 check_dependencies
+check_prebuilt
 
 VERSION=$(grep -m1 "^version = " "${PROJECT_DIR}/Cargo.toml" | sed 's/version = "\(.*\)"/\1/' | head -1)
 OUTPUT_DIR="$(mkdir -p "$OUTPUT_DIR" && cd "$OUTPUT_DIR" && pwd)"

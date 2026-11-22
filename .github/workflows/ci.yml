@@ -1,10 +1,16 @@
-# fftps CI：静态检查、测试、交叉编译矩阵与打包
+# fftps CI：静态检查 → 测试 → 交叉编译 → 打包 → 发布
+#
+# 流水线按职责拆成两段，互不越界：
+#   1. build      只做交叉编译，按目标矩阵产出裸二进制（binaries-<target>）
+#   2. package-*  只做打包，下载 binaries-* 后生成 deb / rpm / tar.gz / zip /
+#                 msi / flatpak；打包阶段不再触发 cargo/meson 编译（deb 与
+#                 flatpak 均走预编译产物模式）
+# 推送 v* 标签且全部通过后，release 仅汇总 packages-* 产物并创建 GitHub Release。
 #
 # 单一产品形态：fftpd 后端 + fftp-http Web 管理前端
 #   - Linux: deb / rpm / tar.gz / flatpak（amd64 + arm64），附 systemd --user 单元与桌面入口
 #   - Windows: 每架构一个 zip（含 install/uninstall 脚本）+ MSI（WiX，原生 msiexec 双架构），
 #     注册 fftpd 服务并创建快捷方式
-# 推送 v* 标签时自动构建并创建 GitHub Release
 # 注：cargo fmt 与 cargo clippy 均纳入 CI；clippy 暂不升级为 -D warnings，
 # pedantic 告警作为提示保留。
 name: CI
@@ -59,6 +65,9 @@ jobs:
       - name: cargo test 测试
         run: cargo test --workspace
 
+  # ---------------------------------------------------------------------------
+  # 阶段一：交叉编译（只产出裸二进制，不做任何打包）
+  # ---------------------------------------------------------------------------
   build:
     name: 交叉编译（${{ matrix.target }}）
     runs-on: ubuntu-latest
@@ -104,71 +113,62 @@ jobs:
           key: ${{ matrix.target }}
 
       # 统一入口：linux 全目标与 windows-gnu 走 cargo-zigbuild，arm64 msvc 走 cargo-xwin
-      - name: 构建（scripts/build.sh）
+      - name: 交叉编译（scripts/build.sh）
         run: ./scripts/build.sh ${{ matrix.target }}
 
-      - name: 构建 Windows zip 交付物
-        if: contains(matrix.target, 'windows')
-        run: |
-          ARCH="x86_64"
-          [[ "${{ matrix.target }}" == aarch64* ]] && ARCH="arm64"
-          ./scripts/build-zip.sh -a "$ARCH"
-
-      - name: 上传构建产物
+      # 产物顶层保留 <target>/ 目录，打包阶段按目标目录直接取用
+      - name: 上传二进制
         uses: actions/upload-artifact@v4
         with:
-          name: dist-${{ matrix.target }}
+          name: binaries-${{ matrix.target }}
           path: dist/
           if-no-files-found: error
 
-  deb:
-    name: deb 打包（${{ matrix.arch }}，debhelper + meson）
+  # ---------------------------------------------------------------------------
+  # 阶段二：打包（只消费 binaries-*，不再编译）
+  # ---------------------------------------------------------------------------
+  package-deb:
+    name: 打包 deb（${{ matrix.arch }}）
+    needs: build
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
-        arch: [amd64, arm64]
+        include:
+          - arch: amd64
+            target: x86_64-unknown-linux-gnu
+          - arch: arm64
+            target: aarch64-unknown-linux-gnu
     steps:
       - name: 检出代码
         uses: actions/checkout@v5
 
-      - name: 安装 Rust 工具链
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: 安装交叉 Rust 目标
-        if: matrix.arch == 'arm64'
-        run: rustup target add aarch64-unknown-linux-gnu
-
-      - name: 安装 zig（arm64 交叉连接器）
-        if: matrix.arch == 'arm64'
-        uses: mlugg/setup-zig@v2
+      - name: 下载二进制
+        uses: actions/download-artifact@v4
         with:
-          version: 0.13.0
-
-      - name: 安装 cargo-zigbuild（arm64 交叉）
-        if: matrix.arch == 'arm64'
-        run: cargo install cargo-zigbuild --locked
+          name: binaries-${{ matrix.target }}
+          path: dist
 
       - name: 安装打包依赖
         run: |
           sudo apt-get update
           sudo apt-get install -y debhelper lintian
 
-      # dh → meson → cargo 自行编译，不再复用 build 矩阵产物；
-      # arm64 经 dpkg-buildpackage -a arm64 交叉，cargo 目标由 debian/rules 传递
-      - name: 构建 deb 包
-        run: ./scripts/build-deb.sh -a ${{ matrix.arch }} -o dist -n
+      # 预编译模式：debian/rules 按 FFTPS_PREBUILT_DIR 直接安装二进制，
+      # 跳过 cargo/meson 编译（交叉架构也无需目标工具链）
+      - name: 打包 deb（预编译产物）
+        run: ./scripts/build-deb.sh -a ${{ matrix.arch }} -b dist/${{ matrix.target }} -o dist -n
 
       - name: 上传 deb 产物
         uses: actions/upload-artifact@v4
         with:
-          name: dist-deb-${{ matrix.arch }}
+          name: packages-deb-${{ matrix.arch }}
           path: dist/*.deb
           if-no-files-found: error
 
-  rpm:
-    name: rpm 打包（${{ matrix.arch }}，fftp-http）
-    needs: [build]
+  package-rpm:
+    name: 打包 rpm（${{ matrix.arch }}）
+    needs: build
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -182,32 +182,108 @@ jobs:
       - name: 检出代码
         uses: actions/checkout@v5
 
+      - name: 下载二进制
+        uses: actions/download-artifact@v4
+        with:
+          name: binaries-${{ matrix.target }}
+          path: dist
+
       - name: 安装 rpmbuild
         run: |
           sudo apt-get update
           sudo apt-get install -y rpm
 
-      - name: 下载构建产物
-        uses: actions/download-artifact@v4
-        with:
-          path: dist
-          pattern: dist-*-linux-*
-          merge-multiple: true
-
-      - name: 构建 rpm 包
+      - name: 打包 rpm
         run: ./scripts/build-rpm.sh -a ${{ matrix.arch }} -b dist/${{ matrix.target }} -o dist
 
       - name: 上传 rpm 产物
         uses: actions/upload-artifact@v4
         with:
-          name: dist-rpm-${{ matrix.arch }}
+          name: packages-rpm-${{ matrix.arch }}
           path: dist/*.rpm
+          if-no-files-found: error
+
+  package-linux-tarball:
+    name: 打包 Linux tarball
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v5
+
+      - name: 下载 Linux 二进制
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          pattern: binaries-*-linux-*
+          merge-multiple: true
+
+      # 单一形态：fftpd + fftp-http，附带两个 systemd --user 单元
+      - name: 打包 tarball（附 systemd 用户单元与桌面入口）
+        run: |
+          VERSION="$(grep -m1 '^version = ' Cargo.toml | sed 's/version = "\(.*\)"/\1/')"
+          for t in x86_64-unknown-linux-gnu aarch64-unknown-linux-gnu x86_64-unknown-linux-musl; do
+            NAME="fftp-http-${VERSION}-${t}"
+            mkdir -p "dist/${NAME}"
+            cp "dist/${t}/fftpd" "dist/${t}/fftp-http" "dist/${NAME}/"
+            cp deploy/common/config.toml "dist/${NAME}/config.toml"
+            cp deploy/common/fftp-http.toml "dist/${NAME}/fftp-http.toml"
+            cp deploy/common/fftpd.service deploy/common/fftp-http.service "dist/${NAME}/"
+            cp deploy/common/fftp-http.desktop deploy/common/fftp-http.svg "dist/${NAME}/"
+            chmod 755 "dist/${NAME}/fftpd" "dist/${NAME}/fftp-http"
+            tar -czf "dist/${NAME}.tar.gz" -C dist "${NAME}"
+            rm -rf "dist/${NAME}"
+          done
+          ls -lh dist/
+
+      - name: 上传 tarball 产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: packages-linux-tarball
+          path: dist/*.tar.gz
+          if-no-files-found: error
+
+  package-windows-zip:
+    name: 打包 Windows zip（${{ matrix.arch }}）
+    needs: build
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x86_64
+            target: x86_64-pc-windows-gnu
+          - arch: arm64
+            target: aarch64-pc-windows-msvc
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v5
+
+      - name: 下载 Windows 二进制
+        uses: actions/download-artifact@v4
+        with:
+          name: binaries-${{ matrix.target }}
+          path: dist
+
+      - name: 安装 zip
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y zip
+
+      - name: 打包 Windows zip
+        run: ./scripts/build-zip.sh -a ${{ matrix.arch }} -b dist/${{ matrix.target }}
+
+      - name: 上传 zip 产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: packages-windows-zip-${{ matrix.arch }}
+          path: dist/*.zip
           if-no-files-found: error
 
   # MSI 绑定依赖 Windows 原生 msi.dll，必须在 windows runner 上构建
   # （Linux 上 WiX 编译 Directory/@Name 亦会因路径根语义差异误报 WIX0389）
-  msi:
-    name: MSI（x64 + arm64）
+  package-msi:
+    name: 打包 MSI（x64 + arm64）
     needs: build
     runs-on: windows-latest
     steps:
@@ -219,14 +295,14 @@ jobs:
         with:
           dotnet-version: 9.x
 
-      - name: 下载 Windows 构建产物
+      - name: 下载 Windows 二进制
         uses: actions/download-artifact@v4
         with:
           path: dist
-          pattern: dist-*-windows-*
+          pattern: binaries-*-windows-*
           merge-multiple: true
 
-      - name: 构建 MSI（x64 + arm64）
+      - name: 打包 MSI（x64 + arm64）
         shell: bash
         run: |
           dotnet tool install --global wix --version 5.0.2
@@ -237,18 +313,24 @@ jobs:
       - name: 上传 MSI 产物
         uses: actions/upload-artifact@v4
         with:
-          name: dist-msi
+          name: packages-msi
           path: dist/*.msi
           if-no-files-found: error
 
-  # flatpak（org.freedesktop 26.08 + rust-stable 扩展，meson 模块触发 cargo
-  # 离线编译）：crate 依赖经 cargo-sources.json vendor，无需自备 rust 工具链
-  flatpak:
-    name: flatpak 打包（freedesktop 26.08）
+  # flatpak 预编译模式：直接封装交叉编译产物，不再在沙箱内 cargo 编译
+  package-flatpak:
+    name: 打包 flatpak（freedesktop 26.08）
+    needs: build
     runs-on: ubuntu-latest
     steps:
       - name: 检出代码
         uses: actions/checkout@v5
+
+      - name: 下载 Linux 二进制
+        uses: actions/download-artifact@v4
+        with:
+          name: binaries-x86_64-unknown-linux-gnu
+          path: dist
 
       - name: 安装 flatpak 构建链与 runtime
         run: |
@@ -257,24 +339,35 @@ jobs:
           flatpak remote-add --if-not-exists --user flathub \
             https://dl.flathub.org/repo/flathub.flatpakrepo
           flatpak install -y --user --noninteractive flathub \
-            org.freedesktop.Platform//26.08 org.freedesktop.Sdk//26.08 \
-            org.freedesktop.Sdk.Extension.rust-stable//26.08
+            org.freedesktop.Platform//26.08 org.freedesktop.Sdk//26.08
 
-      - name: 构建 flatpak bundle
-        run: ./scripts/build-flatpak.sh
+      - name: 打包 flatpak bundle（预编译产物）
+        run: ./scripts/build-flatpak.sh -b dist/x86_64-unknown-linux-gnu
 
       - name: 上传 flatpak 产物
         uses: actions/upload-artifact@v4
         with:
-          name: dist-flatpak
+          name: packages-flatpak
           path: dist/*.flatpak
           if-no-files-found: error
 
+  # ---------------------------------------------------------------------------
+  # 阶段三：发布（只汇总 packages-*，不处理二进制）
+  # ---------------------------------------------------------------------------
   release:
     name: 发布 Release
     # 仅在推送 v* 标签时触发，且 CI 全部通过后才发布
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: [lint, test, build, deb, rpm, msi, flatpak]
+    needs:
+      - lint
+      - test
+      - build
+      - package-deb
+      - package-rpm
+      - package-linux-tarball
+      - package-windows-zip
+      - package-msi
+      - package-flatpak
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -291,31 +384,12 @@ jobs:
             exit 1
           fi
 
-      - name: 下载全部构建产物
+      - name: 下载全部打包产物
         uses: actions/download-artifact@v4
         with:
           path: dist
-          pattern: dist-*
+          pattern: packages-*
           merge-multiple: true
-
-      - name: 打包 Linux tarball（附 systemd 用户单元与桌面入口）
-        # 单一形态：fftpd + fftp-http，附带两个 systemd --user 单元。
-        # Windows 交付物：每架构 zip（含安装/卸载脚本）+ MSI（WiX，windows runner 原生构建）。
-        run: |
-          TAG_VERSION="${GITHUB_REF_NAME#v}"
-          for t in x86_64-unknown-linux-gnu aarch64-unknown-linux-gnu x86_64-unknown-linux-musl; do
-            NAME="fftp-http-${TAG_VERSION}-${t}"
-            mkdir -p "dist/${NAME}"
-            cp "dist/${t}/fftpd" "dist/${t}/fftp-http" "dist/${NAME}/"
-            cp deploy/common/config.toml "dist/${NAME}/config.toml"
-            cp deploy/common/fftp-http.toml "dist/${NAME}/fftp-http.toml"
-            cp deploy/common/fftpd.service deploy/common/fftp-http.service "dist/${NAME}/"
-            cp deploy/common/fftp-http.desktop deploy/common/fftp-http.svg "dist/${NAME}/"
-            chmod 755 "dist/${NAME}/fftpd" "dist/${NAME}/fftp-http"
-            tar -czf "dist/${NAME}.tar.gz" -C dist "${NAME}"
-            rm -rf "dist/${NAME}"
-          done
-          ls -lh dist/
 
       - name: 创建 GitHub Release 并上传产物
         uses: softprops/action-gh-release@v2

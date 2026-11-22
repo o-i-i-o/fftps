@@ -8,6 +8,9 @@
 # 交叉构建（-a arm64）：dh 自动生成 meson cross file；本文件把 cargo 目标
 # 传递给 meson（build-aux/cargo-build.sh 优先使用 cargo-zigbuild 交叉）。
 # 注意：cargo 目标的连接器/工具链需自备（zig 或 aarch64-linux-gnu-gcc 等）。
+#
+# 预编译模式（CI 打包阶段）：设置 FFTPS_PREBUILT_DIR 时跳过编译，仅安装
+# scripts/build.sh 产出的二进制（见文件末尾分支）。
 
 %:
 	dh $@ --buildsystem=meson
@@ -38,5 +41,31 @@ MESON_CARGO_TARGET := -Dcargo_target=x86_64-unknown-linux-gnu
 endif
 endif
 
+# CI 打包阶段复用交叉编译产物：设置 FFTPS_PREBUILT_DIR（指向 dist/<rust-target>）
+# 时只做安装，不触发 cargo/meson 编译或测试；deploy/ 静态物料仍按 meson 安装
+# 清单落位（与源码构建结果一致）。二进制已由 cargo release profile strip。
+ifneq ($(FFTPS_PREBUILT_DIR),)
+override_dh_auto_clean:
+override_dh_auto_configure:
+override_dh_auto_build:
+override_dh_auto_test:
+override_dh_auto_install:
+	mkdir -p debian/fftps/usr/bin
+	install -m755 $(FFTPS_PREBUILT_DIR)/fftpd $(FFTPS_PREBUILT_DIR)/fftp-http debian/fftps/usr/bin/
+	mkdir -p debian/fftps/usr/lib/systemd/user
+	install -m644 deploy/common/fftpd.service deploy/common/fftp-http.service debian/fftps/usr/lib/systemd/user/
+	mkdir -p debian/fftps/usr/share/applications
+	install -m644 deploy/common/fftp-http.desktop debian/fftps/usr/share/applications/
+	mkdir -p debian/fftps/usr/share/icons/hicolor/scalable/apps
+	install -m644 deploy/common/fftp-http.svg debian/fftps/usr/share/icons/hicolor/scalable/apps/
+	mkdir -p debian/fftps/usr/share/pixmaps
+	install -m644 deploy/common/fftp-http.svg debian/fftps/usr/share/pixmaps/
+	mkdir -p debian/fftps/usr/share/fftpd
+	install -m644 deploy/common/config.toml deploy/common/fftp-http.toml debian/fftps/usr/share/fftpd/
+
+# 交叉架构下宿主 strip 无法处理目标 ELF；cargo 已 strip，直接跳过
+override_dh_strip:
+else
 override_dh_auto_configure:
 	dh_auto_configure -- $(MESON_PROFILE) $(MESON_CARGO_TARGET)
+endif
