@@ -340,10 +340,7 @@ fn decode_cmd_output(bytes: &[u8]) -> String {
 /// 解码为 `拒绝访问`。
 #[cfg(windows)]
 fn decode_ansi(bytes: &[u8]) -> Option<String> {
-    use std::os::windows::ffi::OsStringExt;
-
     const CP_ACP: u32 = 0; // 系统默认 ANSI 代码页
-    const MB_ERR_INVALID_CHARS: u32 = 0x0000_0008;
 
     // FFI 声明（user32.dll 始终存在于任何 Windows 系统）
     #[link(name = "user32")]
