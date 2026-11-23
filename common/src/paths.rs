@@ -15,6 +15,8 @@ use std::path::{Path, PathBuf};
 
 #[cfg(windows)]
 use std::path::Component;
+#[cfg(windows)]
+use std::sync::atomic::{AtomicBool, Ordering};
 
 /// 去掉 Windows 扩展长度前缀 `\\?\`（canonicalize 的产物）
 #[must_use]
@@ -290,17 +292,41 @@ fn dir_writable(dir: &std::path::Path) -> bool {
     }
 }
 
+/// 服务运行标记：由 `windows_service_entry!` 在 SCM 调度线程中置位
+#[cfg(windows)]
+static SERVICE_MODE: AtomicBool = AtomicBool::new(false);
+
+/// 标记当前进程以 Windows 服务方式运行
+///
+/// 服务形态下程序目录（如 `C:\Program Files\fftps`）对 LocalSystem 可写，
+/// 但不能据此把配置落到程序目录，否则会绕开安装器预置的
+/// `%ProgramData%\fftpd\config.toml`。
+#[cfg(windows)]
+pub fn mark_service_mode() {
+    SERVICE_MODE.store(true, Ordering::Relaxed);
+}
+
+#[cfg(windows)]
+fn is_service_mode() -> bool {
+    SERVICE_MODE.load(Ordering::Relaxed)
+}
+
 /// 配置文件路径，按顺序解析：
 ///
 /// 1. `FFTPD_CONFIG_DIR` 环境变量覆盖（测试/多实例）；
-/// 2. 二进制同目录 `config.toml`——存在即使用；目录可写时缺失的默认配置也
+/// 2. 服务形态固定 `%ProgramData%\fftpd`，跳过二进制同目录探测；
+/// 3. 二进制同目录 `config.toml`——存在即使用；目录可写时缺失的默认配置也
 ///    生成到这里，便于直接运行二进制做测试（绿色版/便携版形态）；
-/// 3. `%ProgramData%\fftpd`（服务安装形态）。
+/// 4. `%ProgramData%\fftpd`（服务安装形态）。
 #[cfg(windows)]
 #[must_use]
 pub fn config_path() -> PathBuf {
     if let Some(dir) = override_dir("FFTPD_CONFIG_DIR") {
         return dir.join("config.toml");
+    }
+
+    if is_service_mode() {
+        return config_dir().join("config.toml");
     }
 
     if let Some(exe_dir) = std::env::current_exe()

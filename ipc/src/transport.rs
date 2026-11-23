@@ -157,7 +157,6 @@ pub mod named_pipe {
     use windows_sys::Win32::Foundation::LocalFree;
     use windows_sys::Win32::Security::{PSECURITY_DESCRIPTOR, SECURITY_ATTRIBUTES};
 
-    pub const PIPE_NAME: &str = "fftpd";
     pub const PIPE_PATH: &str = r"\\.\pipe\fftpd";
 
     /// 命名管道 DACL：LocalSystem / 管理员完全控制，交互用户可读写。
@@ -204,10 +203,11 @@ pub mod named_pipe {
             opts.first_pipe_instance(true);
         }
         let (mut attrs, sd) = security_attributes()?;
+        // CreateNamedPipe 要求完整路径 `\\.\pipe\<name>`，裸名会返回 ERROR_INVALID_NAME
         // SAFETY: attrs 指向有效的 SECURITY_ATTRIBUTES，描述符在调用期间有效
         let created = unsafe {
             opts.create_with_security_attributes_raw(
-                PIPE_NAME,
+                PIPE_PATH,
                 std::ptr::addr_of_mut!(attrs).cast(),
             )
         };
@@ -225,7 +225,7 @@ pub mod named_pipe {
 
     pub(super) async fn connect() -> Result<Duplex> {
         let client = tokio::net::windows::named_pipe::ClientOptions::new()
-            .open(PIPE_NAME)
+            .open(PIPE_PATH)
             .with_context(|| format!("打开命名管道 {PIPE_PATH} 失败"))?;
         Ok(Box::new(client))
     }

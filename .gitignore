@@ -33,3 +33,4 @@ scripts/node_modules/
 wftpd-windows
 wftpd-linux
 dist
+*.log

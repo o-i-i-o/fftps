@@ -35,6 +35,8 @@ macro_rules! windows_service_entry {
 
         /// 服务主函数（由服务调度器拉起）
         fn service_main(_arguments: Vec<OsString>) {
+            // 服务形态下配置固定走 %ProgramData%\fftpd，不落程序目录（见 paths::config_path）
+            $crate::paths::mark_service_mode();
             if let Err(e) = run_service() {
                 eprintln!("{} 服务运行失败: {e:#}", SERVICE_NAME);
             }
