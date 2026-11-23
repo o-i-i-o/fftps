@@ -17,25 +17,28 @@ use crate::framing;
 use crate::protocol::{
     Command, ErrorCode, Event, FileOpLogEntry, Hello, LogEntry, Message, Notification, Response,
 };
-
 /// 服务端等待客户端握手帧的上限
 const HANDSHAKE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 
 /// 单连接订阅的事件类别
 ///
 /// 每个 SSE 流独占一条 IPC 连接，服务端按订阅类别过滤广播事件：
-/// 程序日志流只收到 [`Event::Log`]，审计流只收到 [`Event::FileOp`]。
+/// 程序日志流只收到 [`Event::Log`]，审计流只收到 [`Event::FileOp`]，
+/// 状态流只收到 [`Event::ServiceStateChanged`]。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum EventKind {
     Log,
     FileOp,
+    ServiceState,
 }
 
 impl EventKind {
     fn accepts(self, event: &Event) -> bool {
         matches!(
             (self, event),
-            (Self::Log, Event::Log { .. }) | (Self::FileOp, Event::FileOp { .. })
+            (Self::Log, Event::Log { .. })
+                | (Self::FileOp, Event::FileOp { .. })
+                | (Self::ServiceState, Event::ServiceStateChanged { .. })
         )
     }
 }
@@ -257,6 +260,16 @@ where
             }
             Command::UnsubscribeFileOps => {
                 stop_subscription(subscription, EventKind::FileOp);
+                Response::ok(id, Value::Null)
+            }
+            Command::SubscribeServiceState => {
+                // 状态订阅无需补推历史：首帧客户端自会 GetInitialState；
+                // 仅注册过滤 Event::ServiceStateChanged 的转发任务
+                start_subscription(subscription, events, notify_tx, EventKind::ServiceState);
+                Response::ok(id, Value::Null)
+            }
+            Command::UnsubscribeServiceState => {
+                stop_subscription(subscription, EventKind::ServiceState);
                 Response::ok(id, Value::Null)
             }
             cmd => match handler.handle(cmd).await {
@@ -528,6 +541,7 @@ mod tests {
         match read_notification(&mut reader).await {
             Event::FileOp { entry } => assert_eq!(entry.operation, "LIVE_OPERATION"),
             Event::Log { entry } => panic!("审计流收到程序日志: {}", entry.message),
+            Event::ServiceStateChanged { .. } => panic!("审计流不应收到状态变更事件"),
         }
 
         // 退订后不再收到审计事件

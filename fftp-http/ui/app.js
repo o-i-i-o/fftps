@@ -114,6 +114,8 @@ async function boot() {
   loadIdleStatus();
   loadSystemService();
   startIdlePoll();
+  startStatusStream();
+  startStatusPoll();
 }
 
 function fillIdentity(st) {
@@ -161,6 +163,8 @@ $("btn-logout").addEventListener("click", async () => {
   stopFopStream();
   stopPresence();
   stopIdlePoll();
+  stopStatusStream();
+  stopStatusPoll();
   try { await fetch("/api/logout", { method: "POST", credentials: "same-origin" }); } catch (_) { /* 忽略 */ }
   state.user = null;
   $("main").classList.add("hidden");
@@ -369,6 +373,8 @@ function showShutdownNotice() {
   stopFopStream();
   stopPresence();
   stopIdlePoll();
+  stopStatusStream();
+  stopStatusPoll();
   $("main").classList.add("hidden");
   $("topbar").classList.add("hidden");
   $("offline").classList.add("hidden");
@@ -435,23 +441,97 @@ document.querySelectorAll("[data-sys-act]").forEach((btn) => {
 });
 
 
+let statusStreamEs = null;
+let statusStreamTimer = null;
+let statusStreamBackoff = 1500;
+
+function startStatusStream() {
+  stopStatusStream();
+  if (!state.user || state.shuttingDown) return;
+  statusStreamBackoff = 1500;
+  connectStatusStream();
+}
+
+function connectStatusStream() {
+  const es = new EventSource("/api/status/stream");
+  statusStreamEs = es;
+
+  es.addEventListener("service_state", (ev) => {
+    let payload;
+    try { payload = JSON.parse(ev.data); } catch (_) { return; }
+    // 1) 直接按广播更新协议服务徽章（不绕 HTTP，最快）
+    updateServiceBadges(payload.ftp_running, payload.sftp_running);
+    // 2) 若变更目标是 all，通常意味着配置热重载，顺带刷新配置页（若可见）
+    if (document.querySelector("#tab-config:not(.hidden)")) {
+      // 不强制 reloadConfigPage — 配置表单项里端口/绑定 IP 不会因重载改变，
+      // 只需要确保保存后的数据与内存态一致；静默拉一次足够
+      api("/api/config").then((r) => {
+        if (r && typeof r.content === "string") fillConfigForm(r.content);
+      }).catch(() => {});
+    }
+    // 3) OS 级 fftpd 服务状态（system-service）不随协议服务状态变更，
+    //    只有浏览器主动点 OS 按钮才变，因此不在此自动刷新；
+    //    但若事件附带的 ftp_running/sftp_running 为 false，说明守护进程
+    //    可能整体停了，此时顺带检查 OS 级服务状态
+    if (!payload.ftp_running && !payload.sftp_running) loadSystemService();
+  });
+
+  es.addEventListener("notice", (ev) => {
+    // 广播通道积压等提示，静默忽略
+    console.warn("[status] " + String(ev.data));
+  });
+
+  es.onopen = () => {
+    statusStreamBackoff = 1500;
+  };
+
+  es.onerror = () => {
+    es.close();
+    statusStreamEs = null;
+    if (state.shuttingDown) return;
+    // 指数退避，最大 15s
+    const delay = Math.min(15000, statusStreamBackoff);
+    statusStreamBackoff = Math.min(15000, statusStreamBackoff * 2);
+    statusStreamTimer = setTimeout(connectStatusStream, delay);
+  };
+}
+
+function stopStatusStream() {
+  if (statusStreamTimer) { clearTimeout(statusStreamTimer); statusStreamTimer = null; }
+  if (statusStreamEs) { statusStreamEs.close(); statusStreamEs = null; }
+}
+
+function updateServiceBadges(ftpRunning, sftpRunning) {
+  $("ftp-badge").textContent = ftpRunning ? "运行中" : "已停止";
+  $("ftp-badge").className = "badge " + (ftpRunning ? "on" : "off");
+  $("sftp-badge").textContent = sftpRunning ? "运行中" : "已停止";
+  $("sftp-badge").className = "badge " + (sftpRunning ? "on" : "off");
+}
+
 // ---------- 服务状态与操作 ----------
 
 async function refreshStatus() {
   try {
     const st = await api("/api/status");
-    $("ftp-badge").textContent = st.ftp_running ? "运行中" : "已停止";
-    $("ftp-badge").className = "badge " + (st.ftp_running ? "on" : "off");
-    $("sftp-badge").textContent = st.sftp_running ? "运行中" : "已停止";
-    $("sftp-badge").className = "badge " + (st.sftp_running ? "on" : "off");
+    updateServiceBadges(st.ftp_running, st.sftp_running);
     fillIdentity(st);
     setOffline(false);
   } catch (_) { /* 离线横幅已处理 */ }
 }
 
-setInterval(() => {
-  if (!$("tab-service").classList.contains("hidden")) refreshStatus();
-}, 5000);
+// 5s 纯被动状态兜底（只在服务页/关于页可见时生效），其余时间改由 SSE 驱动
+let statusPollTimer = null;
+function startStatusPoll() {
+  stopStatusPoll();
+  statusPollTimer = setInterval(() => {
+    const serviceVisible = !$("tab-service").classList.contains("hidden");
+    const aboutVisible = !$("tab-about").classList.contains("hidden");
+    if (serviceVisible || aboutVisible) refreshStatus();
+  }, 5000);
+}
+function stopStatusPoll() {
+  if (statusPollTimer) { clearInterval(statusPollTimer); statusPollTimer = null; }
+}
 
 document.querySelectorAll("[data-svc]").forEach((btn) => {
   btn.addEventListener("click", async () => {
@@ -460,7 +540,8 @@ document.querySelectorAll("[data-svc]").forEach((btn) => {
     try {
       await api("/api/service/" + act, { method: "POST", body: { which: svc } });
       toast(`${svc === "all" ? "全部服务" : svc.toUpperCase()} ${act} 指令已发送`);
-      setTimeout(refreshStatus, 800);
+      // 由 SSE 自动刷新状态，兜底 1.5s 后再轮一次保证按钮态同步
+      setTimeout(refreshStatus, 1500);
     } catch (e) { toast(errMsg(e), true); }
   });
 });

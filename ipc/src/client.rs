@@ -267,6 +267,7 @@ mod tests {
         {
             Event::Log { entry } => assert_eq!(entry.message, "pushed"),
             Event::FileOp { .. } => panic!("意外的审计推送"),
+            Event::ServiceStateChanged { .. } => panic!("意外的状态变更推送"),
         }
     }
 }

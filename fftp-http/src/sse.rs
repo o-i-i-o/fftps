@@ -1,4 +1,5 @@
-//! 实时日志 SSE 流（`GET /api/logs/stream?tail=N` / `GET /api/fileop/stream?tail=N`）
+//! 实时日志 SSE 流（`GET /api/logs/stream?tail=N` / `GET /api/fileop/stream?tail=N` /
+//! `GET /api/status/stream`）
 //!
 //! `SubscribeLogs`/`UnsubscribeLogs` 按 IPC 连接记账（ipc/server.rs 的
 //! `log_forward` 每连接持有转发任务），共享 `Client` 的任一退订会终止
@@ -10,9 +11,10 @@
 //! 订阅顺序：先 `subscribe_events()` 取广播接收端，再发订阅/取历史
 //! （服务端"先订阅后补推历史"，反序会丢历史）。
 //!
-//! 两条流的分野：程序日志流订阅 `SubscribeLogs`，文件操作审计流订阅
-//! `SubscribeFileOps`；历史补推与实时事件过滤均由 IPC 服务端按订阅类别
-//! 完成（见 `fftp_ipc::server`），本层只负责序列化为对应 SSE 事件名。
+//! 三条流的分野：程序日志流订阅 `SubscribeLogs`，文件操作审计流订阅
+//! `SubscribeFileOps`，服务状态流订阅 `SubscribeServiceState`；
+//! 历史补推与实时事件过滤均由 IPC 服务端按订阅类别完成
+//! （见 `fftp_ipc::server`），本层只负责序列化为对应 SSE 事件名。
 
 use std::convert::Infallible;
 use std::pin::Pin;
@@ -95,7 +97,7 @@ pub async fn logs_stream(
     Ok(sse_response(EventStream {
         inner: BroadcastStream::new(events),
         client: Some(client),
-        fileop: false,
+        kind: StreamKind::Log,
         state,
         token,
         last_auth_check: Instant::now(),
@@ -129,7 +131,42 @@ pub async fn fileop_stream(
     Ok(sse_response(EventStream {
         inner: BroadcastStream::new(events),
         client: Some(client),
-        fileop: true,
+        kind: StreamKind::FileOp,
+        state,
+        token,
+        last_auth_check: Instant::now(),
+        _permit: permit,
+    }))
+}
+
+/// GET /api/status/stream → 协议服务状态变更 SSE 流（事件 `service_state`）
+///
+/// 当 FTP/SFTP 启停/重启/配置热重载后 fftpd 广播状态变更事件，
+/// 本流实时透传给前端以驱动服务标签页状态徽章自动刷新。
+///
+/// # Errors
+/// 连接 fftpd 失败或订阅失败时返回错误
+pub async fn status_stream(
+    user: AuthedUser,
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Result<Response, ApiError> {
+    let permit = acquire_slot(&state)?;
+    let token = session_token_for_stream(&user, &headers);
+    let client = Client::connect()
+        .await
+        .map_err(|e| ApiError::internal(format!("连接 fftpd 失败: {e:#}")))?;
+
+    let events = client.subscribe_events();
+    client
+        .request(Command::SubscribeServiceState)
+        .await
+        .map_err(ApiError::from)?;
+
+    Ok(sse_response(EventStream {
+        inner: BroadcastStream::new(events),
+        client: Some(client),
+        kind: StreamKind::ServiceState,
         state,
         token,
         last_auth_check: Instant::now(),
@@ -151,13 +188,20 @@ fn sse_response(stream: EventStream) -> Response {
         .into_response()
 }
 
+/// 流类别：决定对 IPC 广播的过滤与输出的 SSE 事件名
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum StreamKind {
+    Log,
+    FileOp,
+    ServiceState,
+}
+
 /// SSE 事件流：持有专用 IPC 连接直至流结束
 struct EventStream {
     inner: BroadcastStream<IpcEvent>,
     /// `None` 表示连接已释放
     client: Option<Client>,
-    /// true = 文件操作审计流（转发 `Event::FileOp`），false = 程序日志流（`Event::Log`）
-    fileop: bool,
+    kind: StreamKind,
     /// 运行期复核会话所需的共享状态
     state: Arc<AppState>,
     /// 建立流时的会话 token（`api_token` 认证为 `None`，不复核）
@@ -215,14 +259,31 @@ impl Stream for EventStream {
 
         loop {
             match std::task::ready!(Pin::new(&mut self.inner).poll_next(cx)) {
-                Some(Ok(IpcEvent::Log { entry })) if !self.fileop => {
+                Some(Ok(IpcEvent::Log { entry })) if self.kind == StreamKind::Log => {
                     return match Self::emit(&entry, "log") {
                         Some(item) => Poll::Ready(Some(item)),
                         None => continue,
                     };
                 }
-                Some(Ok(IpcEvent::FileOp { entry })) if self.fileop => {
+                Some(Ok(IpcEvent::FileOp { entry })) if self.kind == StreamKind::FileOp => {
                     return match Self::emit(&entry, "fileop") {
+                        Some(item) => Poll::Ready(Some(item)),
+                        None => continue,
+                    };
+                }
+                Some(Ok(IpcEvent::ServiceStateChanged {
+                    target,
+                    action,
+                    ftp_running,
+                    sftp_running,
+                })) if self.kind == StreamKind::ServiceState => {
+                    let payload = serde_json::json!({
+                        "target": target,
+                        "action": action,
+                        "ftp_running": ftp_running,
+                        "sftp_running": sftp_running,
+                    });
+                    return match Self::emit(&payload, "service_state") {
                         Some(item) => Poll::Ready(Some(item)),
                         None => continue,
                     };

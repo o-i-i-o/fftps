@@ -14,7 +14,7 @@ use serde_json::Value;
 use fftp_common::config::Config;
 use fftp_common::sync::MutexExt;
 use fftp_common::users::UserManager;
-use fftp_ipc::protocol::{Command, ErrorCode, ServiceTarget};
+use fftp_ipc::protocol::{Command, ErrorCode, ServiceAction, ServiceTarget};
 use fftp_ipc::server::{Handler, HandlerError};
 
 use crate::dirs;
@@ -70,7 +70,9 @@ impl Handler for ControlHandler {
             Command::SubscribeLogs { .. }
             | Command::UnsubscribeLogs
             | Command::SubscribeFileOps { .. }
-            | Command::UnsubscribeFileOps => {
+            | Command::UnsubscribeFileOps
+            | Command::SubscribeServiceState
+            | Command::UnsubscribeServiceState => {
                 // 由 fftp_ipc::server 在连接层处理，不会派发到这里
                 Err(HandlerError::internal("订阅命令应由 IPC 服务层处理"))
             }
@@ -169,6 +171,8 @@ impl ControlHandler {
             .await
             .map_err(|e| HandlerError::new(ErrorCode::Io, e))?;
         let (ftp_running, sftp_running) = self.state.service_status().await;
+        self.state
+            .broadcast_service_state(which, ServiceAction::Start);
         Ok(serde_json::json!({ "ftp_running": ftp_running, "sftp_running": sftp_running }))
     }
 
@@ -178,6 +182,8 @@ impl ControlHandler {
             .await
             .map_err(HandlerError::internal)?;
         let (ftp_running, sftp_running) = self.state.service_status().await;
+        self.state
+            .broadcast_service_state(which, ServiceAction::Stop);
         Ok(serde_json::json!({ "ftp_running": ftp_running, "sftp_running": sftp_running }))
     }
 
@@ -187,6 +193,8 @@ impl ControlHandler {
             .await
             .map_err(|e| HandlerError::new(ErrorCode::Io, e))?;
         let (ftp_running, sftp_running) = self.state.service_status().await;
+        self.state
+            .broadcast_service_state(which, ServiceAction::Restart);
         Ok(serde_json::json!({ "ftp_running": ftp_running, "sftp_running": sftp_running }))
     }
 
@@ -283,6 +291,13 @@ impl ControlHandler {
             return Err(HandlerError::internal(format!(
                 "新配置无法使服务重新监听，已回滚: {e}"
             )));
+        }
+
+        // 热重载成功：广播状态变更事件（只重载仍在运行的服务）
+        let (ftp_on, sftp_on) = self.state.service_status().await;
+        if ftp_on || sftp_on {
+            self.state
+                .broadcast_service_state(ServiceTarget::All, ServiceAction::Reload);
         }
 
         Ok(serde_json::json!({ "content": normalized }))

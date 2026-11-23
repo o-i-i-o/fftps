@@ -14,7 +14,7 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex as StdMutex, RwLock as StdRwLock};
 
-use tokio::sync::{mpsc, oneshot, watch};
+use tokio::sync::{broadcast, mpsc, oneshot, watch};
 
 use fftp_common::config::Config;
 use fftp_common::fail2ban::Fail2BanManager;
@@ -23,7 +23,7 @@ use fftp_common::quota::QuotaManager;
 use fftp_common::rate_limit::ConnectionLimiter;
 use fftp_common::users::UserManager;
 use fftp_ftp::{FtpService, RunningFtpService};
-use fftp_ipc::protocol::ServiceTarget;
+use fftp_ipc::protocol::{Event, ServiceAction, ServiceTarget};
 use fftp_sftp::{RunningService, SftpService};
 
 /// 服务生命周期请求（生命周期线程内执行，统一返回应答）
@@ -72,6 +72,8 @@ pub struct AppState {
     pub sftp_running: Arc<AtomicBool>,
     lifecycle: mpsc::Sender<LifecycleRequest>,
     shutdown_tx: watch::Sender<bool>,
+    /// IPC 广播发送端：FTP/SFTP 状态变更后推送 `Event::ServiceStateChanged`
+    broadcast_tx: Option<broadcast::Sender<Event>>,
 }
 
 impl AppState {
@@ -82,6 +84,7 @@ impl AppState {
         users: UserManager,
         logging: Arc<Logging>,
         shutdown_tx: watch::Sender<bool>,
+        broadcast_tx: Option<broadcast::Sender<Event>>,
     ) -> Arc<Self> {
         let config = Arc::new(StdRwLock::new(config));
         let users = Arc::new(StdMutex::new(users));
@@ -105,7 +108,28 @@ impl AppState {
             sftp_running,
             lifecycle,
             shutdown_tx,
+            broadcast_tx,
         })
+    }
+
+    /// 向 IPC 订阅者广播协议服务状态变更事件
+    ///
+    /// 操作失败（如无订阅者）静默忽略；调用方保证调用时机：
+    /// 生命周期操作成功且状态字段已更新。
+    pub fn broadcast_service_state(&self, target: ServiceTarget, action: ServiceAction) {
+        let Some(tx) = self.broadcast_tx.as_ref() else {
+            return;
+        };
+        let ftp_running = self.ftp_running.load(Ordering::SeqCst);
+        let sftp_running = self.sftp_running.load(Ordering::SeqCst);
+        let event = Event::ServiceStateChanged {
+            target,
+            action,
+            ftp_running,
+            sftp_running,
+        };
+        // 广播通道无接收者时 send 返回 Err，此处忽略（连接数变化属正常）
+        let _ = tx.send(event);
     }
 
     /// 请求进程退出（保留 main 的 watch 机制）

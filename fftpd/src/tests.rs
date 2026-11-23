@@ -78,7 +78,7 @@ impl TestEnv {
 
         let logging = Arc::new(Logging::new(&config.logging));
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
-        let state = AppState::new(config, UserManager::new(), logging, shutdown_tx);
+        let state = AppState::new(config, UserManager::new(), logging, shutdown_tx, None);
         let handler = ControlHandler::new(Arc::clone(&state));
 
         Self {
@@ -530,6 +530,7 @@ async fn log_forwarder_pushes_events_to_subscribers() {
     match event {
         Event::Log { entry } => assert_eq!(entry.message, "hello-forward"),
         Event::FileOp { .. } => panic!("意外的审计推送"),
+        Event::ServiceStateChanged { .. } => panic!("意外的状态变更推送"),
     }
     forward.abort();
 }
@@ -556,6 +557,7 @@ async fn log_forwarder_pushes_file_op_events_to_subscribers() {
             assert_eq!(entry.operation, "MKDIR");
         }
         Event::Log { .. } => panic!("意外的程序日志推送"),
+        Event::ServiceStateChanged { .. } => panic!("意外的状态变更推送"),
     }
     forward.abort();
 }

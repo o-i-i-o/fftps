@@ -204,6 +204,7 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         .route("/api/fileop/files", get(fileop_files))
         .route("/api/fileop/content", post(fileop_content))
         .route("/api/fileop/stream", get(crate::sse::fileop_stream))
+        .route("/api/status/stream", get(crate::sse::status_stream))
         .route("/api/log-config", put(put_log_config))
         .layer(middleware::from_fn_with_state(
             Arc::clone(&state),

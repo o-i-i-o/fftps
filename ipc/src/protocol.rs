@@ -109,6 +109,25 @@ pub enum Event {
     FileOp {
         entry: FileOpLogEntry,
     },
+    /// 协议服务状态变更（FTP/SFTP 启停/重启/重载后广播）
+    ServiceStateChanged {
+        /// 本次变更影响的目标服务
+        target: ServiceTarget,
+        /// 触发变更的动作
+        action: ServiceAction,
+        ftp_running: bool,
+        sftp_running: bool,
+    },
+}
+
+/// 服务状态变更动作
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ServiceAction {
+    Start,
+    Stop,
+    Restart,
+    Reload,
 }
 
 /// 控制命令面：wftpd.proto 全量操作 ∪ Windows reload 通道
@@ -171,6 +190,9 @@ pub enum Command {
         tail_count: u32,
     },
     UnsubscribeFileOps,
+    /// 订阅协议服务状态变更（FTP/SFTP 启停/重启/重载事件）
+    SubscribeServiceState,
+    UnsubscribeServiceState,
     GetLogFiles,
     GetLogFileContent {
         path: String,
