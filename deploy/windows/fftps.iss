@@ -59,7 +59,11 @@ ArchitecturesInstallIn64BitMode=x64
 #endif
 
 [Languages]
-Name: "chinesesimplified"; MessagesFile: "compiler:Languages\ChineseSimplified.isl"
+; 简体中文语言文件随仓库 vendored（deploy/windows/languages/ChineseSimplified.isl，
+; 取自 Inno Setup 6.7.4 源码 Files/Languages/Unofficial/）。build-inno.sh 会把它
+; 暂存到脚本同目录的 languages\ 下，这里以相对路径引用，不依赖本地 Inno 安装
+; 是否自带中文语言包（6.7.4 把中文放在 Languages\Unofficial\，路径并不稳定）。
+Name: "chinesesimplified"; MessagesFile: "languages\ChineseSimplified.isl"
 
 [Tasks]
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"

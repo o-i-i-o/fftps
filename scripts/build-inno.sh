@@ -16,7 +16,8 @@
 #
 # 依赖：
 #   - 先执行 scripts/build.sh <target> 生成三个 exe
-#   - Inno Setup 6.7.4（含官方简体中文语言包 ChineseSimplified.isl）
+#   - Inno Setup 6.7.4（简体中文语言文件已 vendored 在 deploy/windows/languages/，
+#     不依赖本地 Inno 安装是否带中文语言包）
 #
 # 示例:
 #   ./scripts/build-inno.sh -a x64   -b dist/x86_64-pc-windows-gnu
@@ -107,6 +108,13 @@ for mat in "${ISS_SRC}" "${PROJECT_DIR}/LICENSE"; do
     fi
 done
 
+# 简体中文语言文件随仓库 vendored，避免依赖本地 Inno 安装的 Languages 布局。
+LANG_FILE="${DEPLOY_DIR}/windows/languages/ChineseSimplified.isl"
+if [ ! -f "${LANG_FILE}" ]; then
+    log_error "缺少 vendored 语言文件: ${LANG_FILE}"
+    exit 1
+fi
+
 # Windows 版本资源要求 4 段纯数字；从 0.1.2 / 0.1.2-rc1 提取 0.1.2.0
 VERSION_NUM=$(printf '%s' "$VERSION" | sed -E 's/^([0-9]+(\.[0-9]+)*).*/\1/')
 IFS='.' read -r V1 V2 V3 V4 <<< "$VERSION_NUM"
@@ -159,11 +167,6 @@ else
     ISCC_RUN=("$ISCC_BIN")
 fi
 
-ISCC_DIR="$(dirname "$ISCC_BIN")"
-if [ ! -f "${ISCC_DIR}/Languages/ChineseSimplified.isl" ]; then
-    log_warning "未找到 ${ISCC_DIR}/Languages/ChineseSimplified.isl，编译可能因缺少中文语言包失败"
-fi
-
 mkdir -p "$OUTPUT_DIR"
 OUTPUT_DIR="$(cd "$OUTPUT_DIR" && pwd)"
 
@@ -173,6 +176,8 @@ trap 'rm -rf "$STAGE"' EXIT
 cp "${BIN_DIR}/fftpd.exe" "${BIN_DIR}/fftp-http.exe" "${BIN_DIR}/fftp-http-launcher.exe" "$STAGE/"
 cp "${DEPLOY_DIR}/common/config.toml" "${DEPLOY_DIR}/common/fftp-http.toml" "$STAGE/"
 cp "${PROJECT_DIR}/LICENSE" "$STAGE/LICENSE.txt"
+mkdir -p "$STAGE/languages"
+cp "${LANG_FILE}" "$STAGE/languages/"
 
 # 补 UTF-8 BOM：ISCC 依靠 BOM 识别 UTF-8 脚本，否则中文消息可能被按 ANSI 解析。
 # 源文件已带 BOM（例如用 Inno IDE 保存过）时直接复制，避免双 BOM。

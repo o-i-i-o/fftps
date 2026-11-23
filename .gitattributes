@@ -2,5 +2,6 @@
 # 强制 LF，避免 core.autocrlf 把脚本/Inno 脚本检出为 CRLF。
 *.sh text eol=lf
 *.iss text eol=lf
+*.isl text eol=lf
 # Windows 批处理必须是 CRLF
 *.bat text eol=crlf
