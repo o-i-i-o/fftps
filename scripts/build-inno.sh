@@ -25,6 +25,10 @@
 
 set -euo pipefail
 
+# MSYS/Git Bash 会把 /xxx 形式的 flag 当成 POSIX 路径转换成 Windows 路径，
+# 导致 ISCC 收到的不是 /Qp 而是 C:\msys64\Qp。CI 必须设这个变量。
+export MSYS2_ARG_CONV_EXCL='*'
+
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'

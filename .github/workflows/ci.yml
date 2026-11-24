@@ -211,7 +211,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: binaries-aarch64-pc-windows-msvc
-          path: dist/aarch64-pc-windows-msvc/
+          path: dist/
           if-no-files-found: error
 
   # ---------------------------------------------------------------------------
