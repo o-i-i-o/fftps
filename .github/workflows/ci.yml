@@ -385,7 +385,9 @@ jobs:
             "${env:LOCALAPPDATA}\Programs"
           ) | Where-Object { Test-Path $_ }
           $iscc = Get-ChildItem -Path $searchRoots -Filter ISCC.exe -Recurse -ErrorAction SilentlyContinue `
-            | Sort-Object { $_.FullName -match 'Setup 7' } -Descending, LastWriteTime -Descending `
+            | Sort-Object `
+                @{ Expression = { if ($_.FullName -match 'Setup 7') { 0 } else { 1 } }; Descending = $false }, `
+                @{ Expression = 'LastWriteTime'; Descending = $true } `
             | Select-Object -First 1 -ExpandProperty FullName
           if (-not $iscc) { throw 'Inno Setup 安装失败：未找到 ISCC.exe' }
           Write-Host "找到 ISCC.exe: $iscc"
