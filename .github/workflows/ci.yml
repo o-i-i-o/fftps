@@ -72,9 +72,18 @@ jobs:
 
   # ---------------------------------------------------------------------------
   # 阶段一：交叉编译（只产出裸二进制，不做任何打包）
+  #
+  # 分两类 runner：
+  #   - ubuntu-latest  → Linux 目标（zig）+ x64 Windows MSVC（cargo-xwin + clang）
+  #   - windows-latest → arm64 Windows MSVC（原生 MSVC 工具链，最稳妥）
+  #
+  # arm64 MSVC 放在 windows-latest 是因为：
+  #   cargo-xwin 在 ubuntu 上需要额外的 arm64 MSVC CRT 下载，而 windows-latest
+  # 自带完整的 MSVC Build Tools（含 arm64 交叉编译组件），原生编译零额外依赖。
   # ---------------------------------------------------------------------------
-  build:
-    name: 交叉编译（${{ matrix.target }}）
+
+  build-linux:
+    name: 交叉编译 Linux（${{ matrix.target }}）
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -82,8 +91,6 @@ jobs:
         target:
           - x86_64-unknown-linux-gnu
           - aarch64-unknown-linux-gnu
-          - x86_64-pc-windows-msvc
-          - aarch64-pc-windows-msvc
     steps:
       - name: 检出代码
         uses: actions/checkout@v5
@@ -94,31 +101,20 @@ jobs:
       - name: 安装 Rust 目标
         run: rustup target add ${{ matrix.target }}
 
-      # Linux 目标：统一走 cargo-zigbuild（zig 0.13 覆盖 musl/gnu）
       - name: 安装 zig（cargo-zigbuild 依赖）
-        if: contains(matrix.target, 'linux')
         uses: mlugg/setup-zig@v2
         with:
           version: 0.13.0
 
       - name: 安装 cargo-zigbuild
-        if: contains(matrix.target, 'linux')
         run: cargo install cargo-zigbuild --locked
-
-      # Windows MSVC 目标：统一走 cargo-xwin（zig 无 MSVC CRT，不可用于 MSVC）
-      - name: 安装 cargo-xwin（Windows MSVC 交叉编译）
-        if: contains(matrix.target, 'windows-msvc')
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y clang llvm
-          cargo install cargo-xwin --locked
 
       - name: 缓存 Cargo 构建产物
         uses: Swatinem/rust-cache@v2
         with:
           key: ${{ matrix.target }}
 
-      - name: 交叉编译（scripts/build.sh）
+      - name: 交叉编译（zigbuild）
         run: ./scripts/build.sh ${{ matrix.target }}
 
       - name: 上传二进制
@@ -128,12 +124,102 @@ jobs:
           path: dist/
           if-no-files-found: error
 
+  # x64 Windows MSVC：ubuntu-latest + cargo-xwin + clang
+  build-win-x64:
+    name: 交叉编译 Windows x64 (MSVC)
+    runs-on: ubuntu-latest
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v5
+
+      - name: 安装 Rust 工具链
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: 安装 Rust 目标
+        run: rustup target add x86_64-pc-windows-msvc
+
+      - name: 安装 cargo-xwin + clang
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang llvm
+          cargo install cargo-xwin --locked
+
+      - name: 缓存 Cargo 构建产物
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: x86_64-pc-windows-msvc
+
+      - name: 交叉编译（cargo-xwin + clang）
+        run: ./scripts/build.sh x86_64-pc-windows-msvc
+
+      - name: 上传二进制
+        uses: actions/upload-artifact@v4
+        with:
+          name: binaries-x86_64-pc-windows-msvc
+          path: dist/
+          if-no-files-found: error
+
+  # arm64 Windows MSVC：windows-latest 原生编译（自带完整 MSVC arm64 CRT）
+  build-win-arm64:
+    name: 编译 Windows arm64 (MSVC)
+    runs-on: windows-latest
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v5
+
+      - name: 安装 Rust 工具链
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: 安装 Rust 目标
+        run: rustup target add aarch64-pc-windows-msvc
+
+      - name: 确认 MSVC arm64 工具链可用
+        shell: pwsh
+        run: |
+          $arm64lib = Get-ChildItem "C:\Program Files\Microsoft Visual Studio\*\*\VC\Tools\MSVC\*\lib\arm64" `
+            -Directory -EA SilentlyContinue | Select-Object -First 1
+          if ($arm64lib) {
+            Write-Host "arm64 MSVC CRT 可用: $($arm64lib.FullName)"
+          } else {
+            Write-Host "arm64 MSVC CRT 未安装，尝试安装..."
+            # 在 windows-latest 上 arm64 组件通常已经存在；如果不在，手动装
+            & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vs_installer.exe" `
+              modify --installPath "${env:ProgramFiles}\Microsoft Visual Studio\2022\BuildTools" `
+              --add "Microsoft.VisualStudio.Component.VC.Tools.ARM64" --passive --norestart 2>&1 | Out-Host
+          }
+          rustc -vV | Select-String "host"
+
+      - name: 缓存 Cargo 构建产物
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: aarch64-pc-windows-msvc
+
+      - name: 原生编译 arm64 MSVC
+        run: cargo build --release --target aarch64-pc-windows-msvc -p fftpd -p fftp-http
+
+      - name: 收集产物
+        shell: pwsh
+        run: |
+          $out = "dist\aarch64-pc-windows-msvc"
+          New-Item -ItemType Directory -Force $out | Out-Null
+          Copy-Item "target\aarch64-pc-windows-msvc\release\fftpd.exe" $out
+          Copy-Item "target\aarch64-pc-windows-msvc\release\fftp-http.exe" $out
+          Copy-Item "target\aarch64-pc-windows-msvc\release\fftp-http-launcher.exe" $out
+          Get-ChildItem $out | Select-Object Name, Length | Format-Table -AutoSize
+
+      - name: 上传二进制
+        uses: actions/upload-artifact@v4
+        with:
+          name: binaries-aarch64-pc-windows-msvc
+          path: dist/aarch64-pc-windows-msvc/
+          if-no-files-found: error
+
   # ---------------------------------------------------------------------------
   # 阶段二：打包（只消费 binaries-*，不再编译）
   # ---------------------------------------------------------------------------
   package-deb:
     name: 打包 deb（${{ matrix.arch }}）
-    needs: build
+    needs: build-linux
     runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
@@ -172,7 +258,7 @@ jobs:
 
   package-rpm:
     name: 打包 rpm（${{ matrix.arch }}）
-    needs: build
+    needs: build-linux
     runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
@@ -211,7 +297,7 @@ jobs:
 
   package-windows-zip:
     name: 打包 Windows zip（${{ matrix.arch }}）
-    needs: build
+    needs: [build-win-x64, build-win-arm64]
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -253,7 +339,7 @@ jobs:
   # C:\Program Files\Inno Setup 7\ISCC.exe
   package-windows-inno:
     name: 打包 Windows 安装向导（${{ matrix.arch }}）
-    needs: build
+    needs: [build-win-x64, build-win-arm64]
     runs-on: windows-latest
     strategy:
       fail-fast: false
@@ -276,19 +362,42 @@ jobs:
       - name: 安装 Inno Setup 7.1.1
         shell: pwsh
         run: |
-          $installer = Join-Path $env:RUNNER_TEMP 'innosetup-7.1.1-x64.exe'
-          Invoke-WebRequest -Uri 'https://github.com/jrsoftware/issrc/releases/download/is-7_1_1/innosetup-7.1.1-x64.exe' -OutFile $installer
-          Start-Process -FilePath $installer -ArgumentList '/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART','/SP-' -Wait
-          $candidates = @(
-            'C:\Program Files\Inno Setup 7\ISCC.exe',
-            'C:\Program Files (x86)\Inno Setup 7\ISCC.exe',
-            'C:\Program Files\Inno Setup 6\ISCC.exe',
-            'C:\Program Files (x86)\Inno Setup 6\ISCC.exe'
-          )
-          $iscc = $candidates | Where-Object { Test-Path $_ } | Select-Object -First 1
-          if (-not $iscc) { throw 'Inno Setup 7.1.1 安装失败：未找到 ISCC.exe' }
+          # 优先用 winget（windows-latest 自带），失败则手动下载 fallback
+          $installed = $false
+          try {
+            winget install --id JRSoftware.InnoSetup.7 -e --accept-package-agreements `
+              --accept-source-agreements --silent 2>&1 | Out-Host
+            $installed = $LASTEXITCODE -eq 0
+          } catch {
+            Write-Host "winget 不可用或失败，切换手动下载: $_"
+          }
+          if (-not $installed) {
+            $installer = Join-Path $env:RUNNER_TEMP 'innosetup-7.1.1-x64.exe'
+            Invoke-WebRequest -Uri 'https://github.com/jrsoftware/issrc/releases/download/is-7_1_1/innosetup-7.1.1-x64.exe' `
+              -OutFile $installer -MaximumRedirection 5
+            Start-Process -FilePath $installer -ArgumentList '/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART' -Wait
+          }
+          # 全局搜 ISCC.exe（Inno 7 默认 64 位 → C:\Program Files\，
+          # 32 位 → C:\Program Files (x86)\；不同版本路径不同）
+          $searchRoots = @(
+            'C:\Program Files',
+            'C:\Program Files (x86)',
+            "${env:LOCALAPPDATA}\Programs"
+          ) | Where-Object { Test-Path $_ }
+          $iscc = Get-ChildItem -Path $searchRoots -Filter ISCC.exe -Recurse -ErrorAction SilentlyContinue `
+            | Sort-Object { $_.FullName -match 'Setup 7' } -Descending, LastWriteTime -Descending `
+            | Select-Object -First 1 -ExpandProperty FullName
+          if (-not $iscc) { throw 'Inno Setup 安装失败：未找到 ISCC.exe' }
+          Write-Host "找到 ISCC.exe: $iscc"
           Split-Path $iscc -Parent | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
-          Write-Host "ISCC.exe 位于: $iscc"
+
+      - name: 确认 artifacts 路径
+        shell: pwsh
+        run: |
+          Write-Host "=== dist 目录结构 ==="
+          Get-ChildItem -Path dist -Recurse | Select-Object FullName, Length | Format-Table -AutoSize
+          Write-Host "=== ISCC.exe 位置 ==="
+          where.exe ISCC.exe 2>&1
 
       - name: 打包 Inno 安装包
         shell: bash
@@ -305,7 +414,7 @@ jobs:
   # arm64 在原生 arm runner 上打包（flatpak 沙箱命令需与宿主架构一致）。
   package-flatpak:
     name: 打包 flatpak（${{ matrix.arch }}）
-    needs: build
+    needs: build-linux
     runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
@@ -356,7 +465,9 @@ jobs:
     needs:
       - lint
       - test
-      - build
+      - build-linux
+      - build-win-x64
+      - build-win-arm64
       - package-deb
       - package-rpm
       - package-windows-zip
