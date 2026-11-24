@@ -15,7 +15,7 @@
 #   deploy/common/    配置模板
 #
 # 示例:
-#   ./scripts/build-zip.sh                    # x86_64（dist/x86_64-pc-windows-gnu）
+#   ./scripts/build-zip.sh                    # x86_64（dist/x86_64-pc-windows-msvc）
 #   ./scripts/build-zip.sh -a arm64           # arm64（dist/aarch64-pc-windows-msvc）
 
 set -euo pipefail
@@ -65,7 +65,7 @@ while [ $# -gt 0 ]; do
 done
 
 case "$ARCH" in
-    x86_64|amd64|x64) ARCH=x86_64; ZIP_ARCH=x64; TARGET=x86_64-pc-windows-gnu ;;
+    x86_64|amd64|x64) ARCH=x86_64; ZIP_ARCH=x64; TARGET=x86_64-pc-windows-msvc ;;
     arm64|aarch64) ARCH=arm64; ZIP_ARCH=arm64; TARGET=aarch64-pc-windows-msvc ;;
     *) log_error "不支持的架构: $ARCH（仅支持 x86_64 / arm64）"; exit 1 ;;
 esac

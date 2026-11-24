@@ -1,4 +1,4 @@
-; FFTPS Windows 安装向导（Inno Setup 6.7）
+; FFTPS Windows 安装向导（Inno Setup 7.1.1）
 ;
 ; 由 scripts/build-inno.sh 编译：构建脚本会把本文件、二进制、配置模板与
 ; LICENSE 复制到临时暂存目录，生成 defines.iss（Version / ArchLabel /

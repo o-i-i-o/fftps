@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# FFTPS Windows 安装向导构建脚本（Inno Setup 6.7，x64 / arm64 各一包）
+# FFTPS Windows 安装向导构建脚本（Inno Setup 7，x64 / arm64 各一包）
 #
 # 产出统一放到 dist/：
 #   dist/fftps-<version>-windows-x64-setup.exe
@@ -16,11 +16,11 @@
 #
 # 依赖：
 #   - 先执行 scripts/build.sh <target> 生成三个 exe
-#   - Inno Setup 6.7.4（简体中文语言文件已 vendored 在 deploy/windows/languages/，
+#   - Inno Setup 7.1.1（简体中文语言文件已 vendored 在 deploy/windows/languages/，
 #     不依赖本地 Inno 安装是否带中文语言包）
 #
 # 示例:
-#   ./scripts/build-inno.sh -a x64   -b dist/x86_64-pc-windows-gnu
+#   ./scripts/build-inno.sh -a x64   -b dist/x86_64-pc-windows-msvc
 #   ./scripts/build-inno.sh -a arm64 -b dist/aarch64-pc-windows-msvc
 
 set -euo pipefail
@@ -73,7 +73,7 @@ while [ $# -gt 0 ]; do
 done
 
 case "$ARCH" in
-    x86_64|amd64|x64) ARCH=x64; TARGET=x86_64-pc-windows-gnu ;;
+    x86_64|amd64|x64) ARCH=x64; TARGET=x86_64-pc-windows-msvc ;;
     arm64|aarch64) ARCH=arm64; TARGET=aarch64-pc-windows-msvc ;;
     *) log_error "不支持的架构: $ARCH（仅支持 x64/amd64、arm64）"; exit 1 ;;
 esac
@@ -133,11 +133,16 @@ find_iscc() {
         fi
     done
     local p
+    # Inno Setup 7 路径优先（64 位安装器，推荐版本）
     for p in \
-        "$HOME/.wine/drive_c/Program Files (x86)/Inno Setup 6/ISCC.exe" \
+        "$HOME/.wine/drive_c/Program Files/Inno Setup 7/ISCC.exe" \
+        "$HOME/.wine/drive_c/Program Files (x86)/Inno Setup 7/ISCC.exe" \
         "$HOME/.wine/drive_c/Program Files/Inno Setup 6/ISCC.exe" \
-        "/c/Program Files (x86)/Inno Setup 6/ISCC.exe" \
-        "/c/Program Files/Inno Setup 6/ISCC.exe"; do
+        "$HOME/.wine/drive_c/Program Files (x86)/Inno Setup 6/ISCC.exe" \
+        "/c/Program Files/Inno Setup 7/ISCC.exe" \
+        "/c/Program Files (x86)/Inno Setup 7/ISCC.exe" \
+        "/c/Program Files/Inno Setup 6/ISCC.exe" \
+        "/c/Program Files (x86)/Inno Setup 6/ISCC.exe"; do
         if [ -f "$p" ]; then
             printf '%s\n' "$p"
             return 0
@@ -148,8 +153,8 @@ find_iscc() {
 
 ISCC_BIN=$(find_iscc) || {
     log_error "未找到 Inno Setup 编译器 ISCC.exe"
-    log_info "Windows: 安装 Inno Setup 6.7.4 并把安装目录加入 PATH，或设置 ISCC 环境变量"
-    log_info "  https://github.com/jrsoftware/issrc/releases/download/is-6_7_4/innosetup-6.7.4.exe"
+    log_info "Windows: 安装 Inno Setup 7.1.1 并把安装目录加入 PATH，或设置 ISCC 环境变量"
+    log_info "  https://github.com/jrsoftware/issrc/releases/download/is-7_1_1/innosetup-7.1.1-x64.exe"
     log_info "Linux: 安装 wine 后同样安装 Inno Setup，或设置 ISCC 指向 ISCC.exe"
     exit 1
 }

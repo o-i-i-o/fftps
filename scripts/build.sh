@@ -3,20 +3,20 @@
 #
 # 用法:
 #   ./scripts/build.sh [target]        # 编译单个目标（默认 x86_64-unknown-linux-gnu）
-#   ./scripts/build.sh all             # 全矩阵：linux-gnu x86_64/aarch64、musl、windows-gnu
+#   ./scripts/build.sh all             # 全矩阵
 #
 # 目标矩阵:
 #   x86_64-unknown-linux-gnu     fftpd / fftp-http
 #   aarch64-unknown-linux-gnu    fftpd / fftp-http
 #   x86_64-unknown-linux-musl    fftpd / fftp-http
-#   x86_64-pc-windows-gnu        fftpd.exe / fftp-http.exe / fftp-http-launcher.exe
+#   x86_64-pc-windows-msvc       fftpd.exe / fftp-http.exe / fftp-http-launcher.exe
 #   aarch64-pc-windows-msvc      fftpd.exe / fftp-http.exe / fftp-http-launcher.exe
 #
-# 工具策略: linux 目标与 windows-gnu 均用 cargo-zigbuild；
-# 若 cargo-zigbuild 对 windows-gnu 不可用（缺 zig / 构建失败），回退
-# cargo + mingw-w64 原生链接器（x86_64-w64-mingw32-gcc）。
-# ARM64 Windows 用 aarch64-pc-windows-msvc（Tier 2 官方 ABI）+ cargo-xwin
-# （clang + windows-msvc-sysroot；zig 无 MSVC CRT 头，不可用于该目标）。
+# 工具策略:
+#   - Linux 目标: cargo-zigbuild + zig（zig 0.13 覆盖 musl/gnu）
+#   - Windows MSVC 目标: cargo-xwin + clang（zig 无 MSVC CRT，不可用于 MSVC）
+#     XWIN_CROSS_COMPILER=clang 强制用 clang 后端（ring 的 build.rs 会把 clang-cl
+#     替换成 clang，而 clang-cl 的 /imsvc CFLAGS 普通 clang 不认识）
 # 产物统一落 dist/<target>/，release profile。
 
 set -euo pipefail
@@ -41,7 +41,7 @@ TARGETS=(
     "x86_64-unknown-linux-gnu"
     "aarch64-unknown-linux-gnu"
     "x86_64-unknown-linux-musl"
-    "x86_64-pc-windows-gnu"
+    "x86_64-pc-windows-msvc"
     "aarch64-pc-windows-msvc"
 )
 
@@ -53,17 +53,16 @@ show_help() {
     x86_64-unknown-linux-gnu      x86_64 Linux (glibc)
     aarch64-unknown-linux-gnu     ARM64 Linux (glibc)
     x86_64-unknown-linux-musl     x86_64 Linux (静态 musl)
-    x86_64-pc-windows-gnu         x86_64 Windows (fftpd.exe / fftp-http.exe / fftp-http-launcher.exe)
-    aarch64-pc-windows-msvc       ARM64 Windows (fftpd.exe / fftp-http.exe / fftp-http-launcher.exe)
+    x86_64-pc-windows-msvc       x86_64 Windows (MSVC ABI)
+    aarch64-pc-windows-msvc       ARM64 Windows (MSVC ABI)
     all                           全矩阵顺序构建
 
 产物: dist/<target>/{fftpd,fftp-http}[.exe]（release profile）
       Windows 另附 fftp-http-launcher.exe（安装向导快捷方式目标）
 
 依赖:
-    cargo、rustup 目标、cargo-zigbuild、zig（可用 pip install ziglang 安装，
-    仅当 zig 在 PATH 中缺失时脚本才回退到 python3 -m ziglang）
-    windows-gnu 回退需要 mingw-w64
+    Linux: cargo-zigbuild + zig（可用 pip install ziglang）
+    Windows MSVC: cargo-xwin + clang/clang++（sudo apt-get install -y clang llvm）
 EOF
 }
 
@@ -82,7 +81,6 @@ check_base_tools() {
     fi
 }
 
-# 检查 rustup 目标是否已安装，缺失时给出 rustup target add 提示
 check_rust_target() {
     local target="$1"
     if ! rustup target list --installed | grep -qx "$target"; then
@@ -92,8 +90,7 @@ check_rust_target() {
     fi
 }
 
-# 定位 zig：PATH、CARGO_ZIGBUILD_ZIG_PATH、npm 本地安装、~/.local/bin、
-# pip ziglang 模块。找到返回 0；必要时导出 CARGO_ZIGBUILD_ZIG_PATH。
+# 定位 zig：PATH、CARGO_ZIGBUILD_ZIG_PATH、python ziglang 模块
 resolve_zig() {
     if [ -n "${CARGO_ZIGBUILD_ZIG_PATH:-}" ] && [ -x "${CARGO_ZIGBUILD_ZIG_PATH}" ]; then
         return 0
@@ -101,7 +98,6 @@ resolve_zig() {
     if command -v zig &> /dev/null; then
         return 0
     fi
-
     local candidate
     for candidate in \
         "${SCRIPT_DIR}/node_modules/.bin/zig" \
@@ -114,56 +110,43 @@ resolve_zig() {
             return 0
         fi
     done
-
-    # cargo-zigbuild 支持通过 Python ziglang 包（pip install ziglang）调用 zig
     if command -v python3 &> /dev/null && python3 -m ziglang version &> /dev/null; then
         log_info "使用 Python ziglang 模块中的 zig $(python3 -m ziglang version)"
         return 0
     fi
-
     return 1
 }
 
-# 检查 cargo-zigbuild 与 zig；缺失返回 1（调用方决定回退或报错）
 check_zigbuild() {
-    local ok=0
     if ! command -v cargo-zigbuild &> /dev/null; then
-        log_warning "未找到 cargo-zigbuild（cargo install cargo-zigbuild 可安装）"
-        ok=1
+        log_error "未找到 cargo-zigbuild（cargo install cargo-zigbuild）"
+        exit 1
     fi
     if ! resolve_zig; then
-        log_warning "未找到 zig（https://ziglang.org/download 或 pip install ziglang 安装）"
-        ok=1
-    fi
-    return "$ok"
-}
-
-check_mingw() {
-    local gcc="x86_64-w64-mingw32-gcc"
-    if ! command -v "$gcc" &> /dev/null; then
-        log_error "回退 mingw 需要 ${gcc}"
-        log_info "请执行: sudo apt-get install -y mingw-w64"
+        log_error "未找到 zig（https://ziglang.org/download 或 pip install ziglang）"
         exit 1
     fi
-    echo "$gcc"
 }
 
-# ARM64 Windows（msvc）依赖：cargo-xwin + clang-cl
 check_xwin() {
     if ! command -v cargo-xwin &> /dev/null; then
-        log_error "未找到 cargo-xwin（cargo install cargo-xwin 可安装）"
+        log_error "未找到 cargo-xwin（cargo install cargo-xwin）"
         exit 1
     fi
-    if ! command -v clang-cl &> /dev/null; then
-        log_error "cargo-xwin 需要 clang-cl（sudo apt-get install -y clang llvm）"
+    if ! command -v clang &> /dev/null; then
+        log_error "cargo-xwin 需要 clang（sudo apt-get install -y clang llvm）"
+        exit 1
+    fi
+    if ! command -v clang++ &> /dev/null; then
+        log_error "cargo-xwin 需要 clang++（sudo apt-get install -y clang llvm）"
         exit 1
     fi
 }
+
 # ---------------------------------------------------------------------------
 # 构建
 # ---------------------------------------------------------------------------
 
-# 把 target/<triple>/release 下的产物拷贝到 dist/<triple>/
 collect_artifacts() {
     local target="$1"
     local src="${PROJECT_DIR}/target/${target}/release"
@@ -190,61 +173,26 @@ collect_artifacts() {
 
 build_target() {
     local target="$1"
-
     echo "========================================"
     log_info "构建目标: ${target}"
     echo "========================================"
 
     check_rust_target "$target"
-
     cd "${PROJECT_DIR}"
 
-    if [[ "$target" == *windows* ]]; then
-        build_windows "$target"
+    if [[ "$target" == *windows-msvc ]]; then
+        check_xwin
+        log_info "使用 cargo-xwin + clang 编译: ${target}"
+        # clang 后端避免 clang-cl 的 /imsvc CFLAGS 与 ring 冲突
+        XWIN_CROSS_COMPILER=clang \
+            cargo xwin build --release --target "$target" -p fftpd -p fftp-http
     else
-        if check_zigbuild; then
-            log_info "使用 cargo-zigbuild 编译: ${target}"
-            cargo zigbuild --release --target "$target" -p fftpd -p fftp-http
-        else
-            log_error "linux 目标需要 cargo-zigbuild + zig"
-            log_info "安装: cargo install cargo-zigbuild ；zig 可用 pip install ziglang 安装后重试"
-            exit 1
-        fi
+        check_zigbuild
+        log_info "使用 cargo-zigbuild 编译: ${target}"
+        cargo zigbuild --release --target "$target" -p fftpd -p fftp-http
     fi
 
     collect_artifacts "$target"
-}
-
-# windows-gnu：优先 cargo-zigbuild，失败或缺工具时回退 mingw 原生 target；
-# arm64 msvc：走 cargo-xwin clang 后端（clang + windows-msvc-sysroot，
-# 环节见 build_windows 内注释）
-build_windows() {
-    local target="$1"
-    if [[ "$target" == aarch64-pc-windows-msvc ]]; then
-        check_xwin
-        log_info "使用 cargo-xwin 编译: ${target}"
-        # clang-cl 后端会被 ring 的 build.rs 强制替换为普通 clang，
-        # 而 clang-cl 的 CFLAGS（/imsvc）普通 clang 不认识，导致编译失败；
-        # clang 后端使用 -I 参数，与 ring 兼容
-        XWIN_CROSS_COMPILER=clang \
-            cargo xwin build --release --target "$target" -p fftpd -p fftp-http
-        return 0
-    fi
-    if check_zigbuild; then
-        log_info "使用 cargo-zigbuild 编译: ${target}"
-        if cargo zigbuild --release --target "$target" -p fftpd -p fftp-http; then
-            return 0
-        fi
-        log_warning "cargo-zigbuild 对 ${target} 不可用，回退 mingw 原生编译"
-    else
-        log_warning "cargo-zigbuild 不可用，使用 mingw 原生编译"
-    fi
-
-    local mingw_gcc
-    mingw_gcc=$(check_mingw)
-    log_info "使用 mingw 链接器编译: ${target}"
-    CARGO_TARGET_X86_64_PC_WINDOWS_GNU_LINKER="$mingw_gcc" \
-        cargo build --release --target "$target" -p fftpd -p fftp-http
 }
 
 # ---------------------------------------------------------------------------
@@ -267,7 +215,7 @@ if [ "$TARGET" = "all" ]; then
     log_success "全矩阵构建完成，产物位于 dist/"
 else
     case "$TARGET" in
-        x86_64-unknown-linux-gnu|aarch64-unknown-linux-gnu|x86_64-unknown-linux-musl|x86_64-pc-windows-gnu|aarch64-pc-windows-msvc)
+        x86_64-unknown-linux-gnu|aarch64-unknown-linux-gnu|x86_64-unknown-linux-musl|x86_64-pc-windows-msvc|aarch64-pc-windows-msvc)
             build_target "$TARGET"
             ;;
         *)
