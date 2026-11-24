@@ -210,7 +210,9 @@ fn run_action(action: Action) -> Result<String, String> {
 #[cfg(windows)]
 fn no_admin_error(action: Action) -> String {
     let hint = match action {
-        Action::Install => "在安装向导中点击“安装服务”按钮，或右键开始菜单 FFTPS → 更多 → 以管理员身份运行",
+        Action::Install => {
+            "在安装向导中点击“安装服务”按钮，或右键开始菜单 FFTPS → 更多 → 以管理员身份运行"
+        }
         Action::Uninstall => "请右键开始菜单 FFTPS → 更多 → 以管理员身份运行后再执行卸载",
         _ => "请右键开始菜单 FFTPS → 更多 → 以管理员身份运行后重试",
     };
@@ -306,7 +308,11 @@ fn run_command(program: &str, args: &[&str]) -> Result<String, String> {
         } else {
             stderr.trim().to_owned()
         };
-        Err(interpret_command_failure(program, &detail, output.status.code()))
+        Err(interpret_command_failure(
+            program,
+            &detail,
+            output.status.code(),
+        ))
     }
 }
 

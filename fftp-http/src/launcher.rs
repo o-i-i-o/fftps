@@ -167,7 +167,9 @@ fn is_elevated() -> bool {
         if OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token) == 0 {
             return false;
         }
-        let mut elevation = TokenElevationData { token_is_elevated: 0 };
+        let mut elevation = TokenElevationData {
+            token_is_elevated: 0,
+        };
         let mut return_len = 0u32;
         let ok = GetTokenInformation(
             token,

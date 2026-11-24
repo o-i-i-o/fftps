@@ -70,7 +70,13 @@ async fn run_daemon(service_stop: Option<watch::Receiver<bool>>) -> Result<()> {
 
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
     let (events, _) = broadcast::channel(1024);
-    let state = AppState::new(config, users, Arc::clone(&logging), shutdown_tx, Some(events.clone()));
+    let state = AppState::new(
+        config,
+        users,
+        Arc::clone(&logging),
+        shutdown_tx,
+        Some(events.clone()),
+    );
 
     // 4. 日志实时推送：环形缓冲新条目 → IPC 事件广播（SubscribeLogs 订阅者）
     let log_forward = logs::spawn_log_forwarder(logging, events.clone());
