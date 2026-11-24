@@ -261,9 +261,15 @@
 
   <!-- 程序日志 -->
   <section id="tab-proglog" class="hidden">
-    <div class="grid-2">
-      <div class="card">
-        <h3>实时日志</h3>
+    <div class="card log-card">
+      <div class="log-viewbar">
+        <div class="segmented" role="tablist" aria-label="程序日志视图">
+          <button type="button" class="active" data-logview="live" role="tab" aria-selected="true">实时日志</button>
+          <button type="button" data-logview="history" role="tab" aria-selected="false">历史日志</button>
+        </div>
+        <span class="hint">切换视图不影响实时推送，返回时可继续查看最新日志。</span>
+      </div>
+      <div class="log-panel" data-logpanel="live" role="tabpanel">
         <div class="toolbar">
           <button id="log-pause" class="btn">暂停</button>
           <button id="log-clear" class="btn ghost">清屏</button>
@@ -273,8 +279,7 @@
         </div>
         <div id="log-view" class="table-wrap small">连接中…</div>
       </div>
-      <div class="card">
-        <h3>历史日志文件</h3>
+      <div class="log-panel hidden" data-logpanel="history" role="tabpanel">
         <div class="toolbar">
           <select id="logfile-select" class="file-select"><option value="">加载中…</option></select>
           <label>末尾条数
@@ -292,9 +297,15 @@
 
   <!-- 文件日志 -->
   <section id="tab-filelog" class="hidden">
-    <div class="grid-2">
-      <div class="card">
-        <h3>实时文件操作</h3>
+    <div class="card log-card">
+      <div class="log-viewbar">
+        <div class="segmented" role="tablist" aria-label="文件日志视图">
+          <button type="button" class="active" data-logview="live" role="tab" aria-selected="true">实时文件操作</button>
+          <button type="button" data-logview="history" role="tab" aria-selected="false">历史操作记录</button>
+        </div>
+        <span class="hint">切换视图不影响实时推送，返回时可继续查看最新操作。</span>
+      </div>
+      <div class="log-panel" data-logpanel="live" role="tabpanel">
         <div class="toolbar">
           <button id="fop-pause" class="btn">暂停</button>
           <button id="fop-clear" class="btn ghost">清屏</button>
@@ -304,8 +315,7 @@
         </div>
         <div id="fop-live" class="table-wrap small">连接中…</div>
       </div>
-      <div class="card">
-        <h3>历史操作记录</h3>
+      <div class="log-panel hidden" data-logpanel="history" role="tabpanel">
         <div class="toolbar">
           <select id="fileop-select" class="file-select"><option value="">加载中…</option></select>
           <label>末尾条数

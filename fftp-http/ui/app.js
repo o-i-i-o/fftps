@@ -184,6 +184,8 @@ function switchTab(name) {
   document.querySelectorAll("#tabs button").forEach((b) => {
     b.classList.toggle("active", b.dataset.tab === name);
   });
+  // 日志页使用单栏布局，放宽页面宽度以最大化可视区域
+  $("main").classList.toggle("wide", name === "proglog" || name === "filelog");
   if (name === "service") { refreshStatus(); loadIdleStatus(); loadSystemService(); }
   if (name === "config") loadConfigPage();
   if (name === "users") loadUsers();
@@ -197,6 +199,35 @@ function switchTab(name) {
 document.querySelectorAll("#tabs button").forEach((b) => {
   b.addEventListener("click", () => switchTab(b.dataset.tab));
 });
+
+// 日志页内「实时 / 历史」按钮切换（同一时间只显示一个视图）
+function setupLogViews(tabId) {
+  const root = $("tab-" + tabId);
+  if (!root) return;
+  const buttons = Array.from(root.querySelectorAll("[data-logview]"));
+  const panels = Array.from(root.querySelectorAll("[data-logpanel]"));
+  buttons.forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const view = btn.dataset.logview;
+      for (const b of buttons) {
+        const on = b === btn;
+        b.classList.toggle("active", on);
+        b.setAttribute("aria-selected", on ? "true" : "false");
+      }
+      for (const p of panels) {
+        const on = p.dataset.logpanel === view;
+        p.classList.toggle("hidden", !on);
+        // 切换到的视图滚到底部，直接看到最新记录
+        if (on) {
+          const wrap = p.querySelector(".table-wrap");
+          if (wrap) wrap.scrollTop = wrap.scrollHeight;
+        }
+      }
+    });
+  });
+}
+setupLogViews("proglog");
+setupLogViews("filelog");
 
 // ---------- 连接状态轮询（顶栏圆点） ----------
 

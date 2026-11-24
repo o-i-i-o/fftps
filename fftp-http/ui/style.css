@@ -266,6 +266,27 @@ code {
 
 .table-wrap { max-height: 460px; overflow: auto; }
 .table-wrap.small { height: 420px; }
+
+/* 日志页：实时/历史通过按钮切换，单栏铺满以扩大可视区域 */
+main.wide { max-width: none; }
+.log-viewbar { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 10px; }
+.log-viewbar .hint { margin: 0; }
+.segmented {
+  display: inline-flex; gap: 2px; padding: 3px;
+  background: var(--surface-muted); border: 1px solid var(--border); border-radius: 8px;
+}
+.segmented button {
+  border: 0; border-radius: 6px; padding: 5px 16px;
+  background: transparent; color: var(--text-muted);
+  font-size: 13px; cursor: pointer;
+}
+.segmented button:hover { color: var(--text); }
+.segmented button.active { background: var(--primary); color: var(--primary-text); font-weight: 600; }
+.log-panel .table-wrap.small {
+  height: calc(100vh - 250px);
+  min-height: 320px;
+  max-height: none;
+}
 table.optable { width: 100%; border-collapse: collapse; font-size: 12px; }
 table.optable th, table.optable td {
   border-bottom: 1px solid var(--border); padding: 5px 8px; text-align: left; white-space: nowrap;
