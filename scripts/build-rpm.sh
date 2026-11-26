@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# FFTPS RPM 打包脚本（fftp suite：fftpd + fftp-http）
+# fftps RPM 打包脚本（fftps 套件：fftpd + fftp-http）
 # 使用预编译的 fftpd / fftp-http 生成 x86_64 / aarch64 的 RPM 包（包名 fftps）。
 set -euo pipefail
 

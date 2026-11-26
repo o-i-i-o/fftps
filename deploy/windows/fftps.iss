@@ -1,4 +1,4 @@
-; FFTPS Windows 安装向导（Inno Setup 7.1.1）
+; fftps Windows 安装向导（Inno Setup 7.1.1）
 ;
 ; 由 scripts/build-inno.sh 编译：构建脚本会把本文件、二进制、配置模板与
 ; LICENSE 复制到临时暂存目录，生成 defines.iss（Version / ArchLabel /
@@ -16,8 +16,8 @@
 
 [Setup]
 AppId={{7C4E9A2B-1D5F-4B83-9E6A-3C8F2D5B7A41}
-AppName=FFTPS
-AppVerName=FFTPS {#Version}
+AppName=fftps
+AppVerName=fftps {#Version}
 AppVersion={#Version}
 AppPublisher=fftps developers
 AppPublisherURL=https://github.com/fftps/fftps
@@ -25,7 +25,7 @@ AppSupportURL=https://github.com/fftps/fftps
 AppUpdatesURL=https://github.com/fftps/fftps
 AppCopyright=GPL-3.0
 DefaultDirName={autopf}\fftps
-DefaultGroupName=FFTPS
+DefaultGroupName=fftps
 DisableProgramGroupPage=yes
 DisableWelcomePage=no
 PrivilegesRequired=admin
@@ -39,10 +39,10 @@ WizardStyle=modern
 SetupLogging=yes
 CloseApplications=no
 RestartApplications=no
-UninstallDisplayName=FFTPS
+UninstallDisplayName=fftps
 UninstallDisplayIcon={app}\fftp-http-launcher.exe
 VersionInfoVersion={#VersionInfo}
-VersionInfoDescription=FFTPS Setup
+VersionInfoDescription=fftps Setup
 VersionInfoCompany=fftps developers
 VersionInfoCopyright=GPL-3.0
 LicenseFile=LICENSE.txt
@@ -82,12 +82,12 @@ Name: "{commonappdata}\fftpd"; Permissions: users-modify; Flags: uninsneverunins
 Name: "{commonappdata}\fftpd\logs"; Permissions: users-modify; Flags: uninsneveruninstall
 
 [Icons]
-Name: "{autoprograms}\FFTPS\FFTPS"; Filename: "{app}\fftp-http-launcher.exe"; WorkingDir: "{app}"
-Name: "{autoprograms}\FFTPS\{cm:UninstallProgram,FFTPS}"; Filename: "{uninstallexe}"
-Name: "{autodesktop}\FFTPS"; Filename: "{app}\fftp-http-launcher.exe"; WorkingDir: "{app}"; Tasks: desktopicon
+Name: "{autoprograms}\fftps\fftps"; Filename: "{app}\fftp-http-launcher.exe"; WorkingDir: "{app}"
+Name: "{autoprograms}\fftps\{cm:UninstallProgram,fftps}"; Filename: "{uninstallexe}"
+Name: "{autodesktop}\fftps"; Filename: "{app}\fftp-http-launcher.exe"; WorkingDir: "{app}"; Tasks: desktopicon
 
 [Run]
-Filename: "{app}\fftp-http-launcher.exe"; Description: "{cm:LaunchProgram,FFTPS}"; WorkingDir: "{app}"; Flags: nowait postinstall skipifsilent runasoriginaluser
+Filename: "{app}\fftp-http-launcher.exe"; Description: "{cm:LaunchProgram,fftps}"; WorkingDir: "{app}"; Flags: nowait postinstall skipifsilent runasoriginaluser
 
 [InstallDelete]
 ; 清理旧 zip 安装器（install.ps1）留在程序目录的脚本
@@ -98,7 +98,7 @@ Type: files; Name: "{app}\uninstall.ps1"
 
 [Registry]
 ; 旧 zip 安装器写入的 ARP 入口（Inno 使用自己的 {GUID}_is1 卸载键）
-Root: HKLM; Subkey: "SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\FFTPS"; Flags: deletekey
+Root: HKLM; Subkey: "SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\fftps"; Flags: deletekey
 
 [UninstallDelete]
 Type: filesandordirs; Name: "{app}"
@@ -151,7 +151,7 @@ begin
   ExePath := ExpandConstant('{app}\fftpd.exe');
   { 等价于 install.bat 的 sc create；binPath 整体加引号并转义内层引号 }
   Params := 'create ' + ServiceName + ' binPath= ' + #34 + '\' + #34 + ExePath + '\' + #34 +
-            ' --service' + #34 + ' DisplayName= ' + #34 + 'FFTPS FTP/SFTP Server' + #34 +
+            ' --service' + #34 + ' DisplayName= ' + #34 + 'fftps FTP/SFTP Server' + #34 +
             ' start= auto';
 
   Result := False;
@@ -160,7 +160,7 @@ begin
     if RunHidden(ExpandConstant('{sys}\sc.exe'), Params, ResultCode) and (ResultCode = 0) then
     begin
       RunHidden(ExpandConstant('{sys}\sc.exe'),
-        'description ' + ServiceName + ' ' + #34 + 'FFTPS FTP/SFTP Server (auto start)' + #34,
+        'description ' + ServiceName + ' ' + #34 + 'fftps FTP/SFTP Server (auto start)' + #34,
         ResultCode);
       { 1062 = 已在运行，忽略 }
       RunHidden(ExpandConstant('{sys}\sc.exe'), 'start ' + ServiceName, ResultCode);

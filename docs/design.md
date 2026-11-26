@@ -126,7 +126,7 @@ pub trait Transport { type Stream; async fn accept(); async fn connect(); }
 enabled = true
 bind_ip = "0.0.0.0"                     # IPv4/IPv6 字面量（IPv6 自动加方括号）
 port = 21
-welcome_message = "Welcome to fftpd"
+welcome_message = "Welcome to fftps"
 allow_anonymous = false
 anonymous_home = ""                     # 启用匿名时必须配置，且不能同时设置 ftp_root
 passive_ports = [50000, 51000]          # FTP 固定仅被动模式

@@ -60,16 +60,16 @@ if host_machine.system() != 'windows'
       install_mode: 'rwxr-xr-x',
     )
     install_data(
-      'deploy/flatpak/org.fftps.FftpHttp.desktop',
+      'deploy/flatpak/org.fftps.Fftps.desktop',
       install_dir: get_option('datadir') / 'applications',
     )
     install_data(
-      'deploy/flatpak/org.fftps.FftpHttp.metainfo.xml',
+      'deploy/flatpak/org.fftps.Fftps.metainfo.xml',
       install_dir: get_option('datadir') / 'metainfo',
     )
     configure_file(
-      input: 'deploy/common/fftp-http.svg',
-      output: 'org.fftps.FftpHttp.svg',
+      input: 'deploy/common/fftps.svg',
+      output: 'org.fftps.Fftps.svg',
       copy: true,
       install: true,
       install_dir: get_option('datadir') / 'icons/hicolor/scalable/apps',
@@ -81,16 +81,16 @@ if host_machine.system() != 'windows'
       install_dir: 'lib/systemd/user',
     )
     install_data(
-      'deploy/common/fftp-http.desktop',
+      'deploy/common/fftps.desktop',
       install_dir: get_option('datadir') / 'applications',
     )
     install_data(
-      'deploy/common/fftp-http.svg',
+      'deploy/common/fftps.svg',
       install_dir: get_option('datadir') / 'icons/hicolor/scalable/apps',
     )
   endif
   install_data(
-    'deploy/common/fftp-http.svg',
+    'deploy/common/fftps.svg',
     install_dir: get_option('datadir') / 'pixmaps',
   )
   install_data(

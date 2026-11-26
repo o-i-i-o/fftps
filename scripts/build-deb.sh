@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# FFTPS DEB 打包入口（debhelper + meson 构建链）
+# fftps DEB 打包入口（debhelper + meson 构建链）
 #
 # 构建链：本脚本 → dpkg-buildpackage → debian/rules (dh) → meson（触发 cargo）
 # 产出统一放到 dist/：
@@ -235,6 +235,6 @@ echo "安装方法:"
 echo "  sudo apt install ${OUTPUT_DIR}/fftps_${VERSION}_$( [ "$TARGET_ARCH" = "all" ] && echo amd64 || echo "$TARGET_ARCH" ).deb"
 echo "  （双架构请分别安装对应架构的包）"
 echo "安装时会为活跃桌面用户自动启用并启动 fftpd（无需 root）。"
-echo "启动 Web 管理界面: 从应用菜单打开「FFTPS」，或执行 fftp-http launch"
+echo "启动 Web 管理界面: 从应用菜单打开「fftps」，或执行 fftp-http launch"
 echo "卸载方法: sudo apt remove fftps"
 echo "========================================"

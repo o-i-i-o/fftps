@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# FFTPS Windows MSI 安装包构建脚本（WiX 5，x86_64 / arm64 双架构）
+# fftps Windows MSI 安装包构建脚本（WiX 5，x86_64 / arm64 双架构）
 #
 # 产出统一放到 dist/：
 #   dist/fftps_<version>_windows-x64.msi

@@ -1,15 +1,15 @@
 @echo off
-rem FFTPS installer entry: batch header + embedded PowerShell (single file).
+rem fftps installer entry: batch header + embedded PowerShell (single file).
 rem The batch part only launches PowerShell; the script body follows #:PSBEGIN.
 powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "$f='%~f0'; $l=[IO.File]::ReadAllLines($f,[Text.Encoding]::UTF8); $i=[Array]::IndexOf($l,'#:PSBEGIN'); if($i -lt 0){throw 'PS marker not found'}; & ([scriptblock]::Create(($l[($i+1)..($l.Length-1)] -join [Environment]::NewLine))) -SourceDir '%~dp0' %*"
 set "rc=%ERRORLEVEL%"
-if not "%rc%"=="0" echo [FFTPS] Exit code: %rc%
+if not "%rc%"=="0" echo [fftps] Exit code: %rc%
 pause
 exit /b %rc%
 #:PSBEGIN
 param([string]$SourceDir)
 
-# FFTPS Web 管理版 Windows 安装脚本（zip 交付物，内嵌于 install.bat）
+# fftps Web 管理版 Windows 安装脚本（zip 交付物，内嵌于 install.bat）
 #
 # 用法：双击 install.bat，或管理员 PowerShell 执行 ./install.bat
 # 语义：
@@ -35,8 +35,8 @@ if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administra
 $InstallDir = Join-Path $env:ProgramFiles 'fftps'
 $DataDir = Join-Path $env:ProgramData 'fftpd'
 $ServiceName = 'fftpd'
-$AppName = 'FFTPS'
-$UninstKey = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\FFTPS'
+$AppName = 'fftps'
+$UninstKey = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\fftps'
 $Version = '0.1.1'   # build-zip.sh 打包时替换
 
 Write-Host "=== $AppName $Version 安装 ==="
@@ -73,7 +73,7 @@ if ($existing) {
     Start-Sleep -Seconds 2
 }
 # binPath 引号嵌套确保带空格路径正确写入 SCM
-& sc.exe create $ServiceName binPath= "`"$InstallDir\fftpd.exe`" --service" DisplayName= 'FFTPS FTP/SFTP Server' start= auto | Out-Null
+& sc.exe create $ServiceName binPath= "`"$InstallDir\fftpd.exe`" --service" DisplayName= 'fftps FTP/SFTP Server' start= auto | Out-Null
 & sc.exe start $ServiceName | Out-Null
 Write-Host '  fftpd 服务已注册并启动（开机自启）'
 
@@ -87,13 +87,13 @@ $lnk.TargetPath = Join-Path $InstallDir 'fftp-http-launcher.exe'
 $lnk.IconLocation = Join-Path $InstallDir 'fftp-http.exe,0'
 $lnk.Save()
 $smRoot = Join-Path $env:ProgramData ([System.IO.Path]::Combine('Microsoft', 'Windows', 'Start Menu', 'Programs'))
-$smDir = Join-Path $smRoot 'FFTPS'
+$smDir = Join-Path $smRoot 'fftps'
 New-Item -ItemType Directory -Force -Path $smDir | Out-Null
 $lnk2 = $shell.CreateShortcut((Join-Path $smDir "$AppName.lnk"))
 $lnk2.TargetPath = Join-Path $InstallDir 'fftp-http-launcher.exe'
 $lnk2.IconLocation = Join-Path $InstallDir 'fftp-http.exe,0'
 $lnk2.Save()
-$lnk3 = $shell.CreateShortcut((Join-Path $smDir '卸载 FFTPS.lnk'))
+$lnk3 = $shell.CreateShortcut((Join-Path $smDir '卸载 fftps.lnk'))
 $lnk3.TargetPath = Join-Path $InstallDir 'uninstall.bat'
 $lnk3.Save()
 Write-Host '  桌面/开始菜单快捷方式已创建'

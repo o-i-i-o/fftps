@@ -6,6 +6,6 @@
     </linearGradient>
   </defs>
   <rect x="20" y="20" width="216" height="216" rx="24" ry="24" fill="url(#grad)"/>
-  <text x="128" y="112" font-family="Arial, sans-serif" font-size="48" font-weight="bold" fill="white" text-anchor="middle">FFTPS</text>
+  <text x="128" y="112" font-family="Arial, sans-serif" font-size="48" font-weight="bold" fill="white" text-anchor="middle">fftps</text>
   <text x="128" y="162" font-family="Arial, sans-serif" font-size="30" fill="white" text-anchor="middle">Web</text>
 </svg>

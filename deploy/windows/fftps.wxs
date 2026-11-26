@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- FFTPS Web 管理版 Windows MSI 安装包（WiX 5）
+<!-- fftps Web 管理版 Windows MSI 安装包（WiX 5）
 
      双架构由 scripts/build-msi.sh 以 arch 参数（x64 / arm64）分别构建，
      安装的二进制为 -D BinDir 指定的对应架构原生 exe。
@@ -15,7 +15,7 @@
 <Wix xmlns="http://wixtoolset.org/schemas/v4/wxs"
      xmlns:util="http://wixtoolset.org/schemas/v4/wxs/util">
 
-  <?define ProductName = "FFTPS" ?>
+  <?define ProductName = "fftps" ?>
   <?define ServiceName = "fftpd" ?>
 
   <Package Name="$(ProductName)"
@@ -55,8 +55,8 @@
           <!-- fftpd 自启服务：等价于 sc create fftpd（binPath 引号包裹 exe 并追加 service 参数） -->
           <ServiceInstall Id="SvcInstall_fftpd"
                           Name="$(ServiceName)"
-                          DisplayName="FFTPS FTP/SFTP Server"
-                          Description="FFTPS FTP/SFTP 服务端（开机自启）"
+                          DisplayName="fftps FTP/SFTP Server"
+                          Description="fftps FTP/SFTP 服务端（开机自启）"
                           Type="ownProcess"
                           Start="auto"
                           ErrorControl="normal"
@@ -110,7 +110,7 @@
 
     <!-- ============ 快捷方式容器目录 ============ -->
     <StandardDirectory Id="ProgramMenuFolder">
-      <Directory Id="SMFOLDER" Name="FFTPS" />
+      <Directory Id="SMFOLDER" Name="fftps" />
     </StandardDirectory>
     <StandardDirectory Id="DesktopFolder" />
 

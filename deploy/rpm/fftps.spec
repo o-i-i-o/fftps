@@ -1,4 +1,4 @@
-# FFTPS RPM 规格（fftp suite：fftpd + fftp-http）
+# fftps RPM 规格（fftps 套件：fftpd + fftp-http）
 #
 # 由 scripts/build-rpm.sh 调用，使用预编译的 fftpd / fftp-http：
 #   rpmbuild -bb --target aarch64 \
@@ -45,13 +45,13 @@ install -m 0644 %{_fftp_project_dir}/deploy/common/fftpd.service %{buildroot}/us
 install -m 0644 %{_fftp_project_dir}/deploy/common/fftp-http.service %{buildroot}/usr/lib/systemd/user/fftp-http.service
 
 install -d %{buildroot}/usr/share/applications
-install -m 0644 %{_fftp_project_dir}/deploy/common/fftp-http.desktop %{buildroot}/usr/share/applications/fftp-http.desktop
+install -m 0644 %{_fftp_project_dir}/deploy/common/fftps.desktop %{buildroot}/usr/share/applications/fftps.desktop
 
 install -d %{buildroot}/usr/share/icons/hicolor/scalable/apps
-install -m 0644 %{_fftp_project_dir}/deploy/common/fftp-http.svg \
-    %{buildroot}/usr/share/icons/hicolor/scalable/apps/fftp-http.svg
+install -m 0644 %{_fftp_project_dir}/deploy/common/fftps.svg \
+    %{buildroot}/usr/share/icons/hicolor/scalable/apps/fftps.svg
 install -d %{buildroot}/usr/share/pixmaps
-install -m 0644 %{_fftp_project_dir}/deploy/common/fftp-http.svg %{buildroot}/usr/share/pixmaps/fftp-http.svg
+install -m 0644 %{_fftp_project_dir}/deploy/common/fftps.svg %{buildroot}/usr/share/pixmaps/fftps.svg
 
 install -d %{buildroot}/usr/share/fftpd
 install -m 0644 %{_fftp_project_dir}/deploy/common/config.toml %{buildroot}/usr/share/fftpd/config.toml
@@ -143,8 +143,8 @@ exit 0
 /usr/bin/fftp-http
 /usr/lib/systemd/user/fftpd.service
 /usr/lib/systemd/user/fftp-http.service
-/usr/share/applications/fftp-http.desktop
-/usr/share/icons/hicolor/scalable/apps/fftp-http.svg
-/usr/share/pixmaps/fftp-http.svg
+/usr/share/applications/fftps.desktop
+/usr/share/icons/hicolor/scalable/apps/fftps.svg
+/usr/share/pixmaps/fftps.svg
 /usr/share/fftpd/config.toml
 /usr/share/fftpd/fftp-http.toml

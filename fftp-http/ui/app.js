@@ -389,7 +389,7 @@ $("idle-save").addEventListener("click", async () => {
 });
 
 $("web-shutdown").addEventListener("click", async () => {
-  if (!confirm("确认关闭 Web 管理服务（fftp-http）？\n\nfftpd 与 FTP/SFTP 传输不受影响；关闭后本页面将无法继续操作，需从桌面快捷方式重新启动。")) return;
+  if (!confirm("确认关闭 fftps Web 管理服务？\n\nfftpd 与 FTP/SFTP 传输不受影响；关闭后本页面将无法继续操作，需从桌面快捷方式重新启动。")) return;
   try {
     await api("/api/self-shutdown", { method: "POST" });
     showShutdownNotice();
@@ -1007,7 +1007,7 @@ function fillConfigForm(content) {
   $("cf-enabled").checked = bool(ftp.enabled, true);
   $("cf-bind-ip").value = txt(ftp.bind_ip, "0.0.0.0");
   $("cf-port").value = num(ftp.port, 2121);
-  $("cf-welcome").value = txt(ftp.welcome_message, "Welcome to fftpd");
+  $("cf-welcome").value = txt(ftp.welcome_message, "Welcome to fftps");
   $("cf-anonymous").checked = bool(ftp.allow_anonymous);
   $("cf-anon-home").value = txt(ftp.anonymous_home);
   $("cf-passive-lo").value = num(arr(ftp.passive_ports)[0], 50000);

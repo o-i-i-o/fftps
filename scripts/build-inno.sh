@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# FFTPS Windows 安装向导构建脚本（Inno Setup 7，x64 / arm64 各一包）
+# fftps Windows 安装向导构建脚本（Inno Setup 7，x64 / arm64 各一包）
 #
 # 产出统一放到 dist/：
 #   dist/fftps-<version>-windows-x64-setup.exe

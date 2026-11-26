@@ -26,8 +26,8 @@ set -eu
 
 cd "$(dirname "$0")/.."
 
-app_id=org.fftps.FftpHttp
-manifest=packaging/flatpak/org.fftps.FftpHttp.yml
+app_id=org.fftps.Fftps
+manifest=packaging/flatpak/org.fftps.Fftps.yml
 state_dir=.flatpak-builder-state
 repo_dir=dist/flatpak-repo
 build_dir=dist/flatpak-build
@@ -95,14 +95,14 @@ build_prebuilt() {
 
     cp "${bin_dir}/fftpd" "${bin_dir}/fftp-http" "$stage/"
     cp deploy/flatpak/fftp-http-launch.sh "$stage/"
-    cp deploy/flatpak/org.fftps.FftpHttp.desktop "$stage/"
-    cp deploy/flatpak/org.fftps.FftpHttp.metainfo.xml "$stage/"
-    cp deploy/common/fftp-http.svg "$stage/"
+    cp deploy/flatpak/org.fftps.Fftps.desktop "$stage/"
+    cp deploy/flatpak/org.fftps.Fftps.metainfo.xml "$stage/"
+    cp deploy/common/fftps.svg "$stage/"
     cp deploy/common/config.toml deploy/common/fftp-http.toml "$stage/"
 
     cat > "$stage/manifest.yml" << 'YAML'
 # 由 scripts/build-flatpak.sh -b 生成：只封装预编译二进制与静态物料
-id: org.fftps.FftpHttp
+id: org.fftps.Fftps
 runtime: org.freedesktop.Platform
 runtime-version: "26.08"
 sdk: org.freedesktop.Sdk
@@ -118,10 +118,10 @@ modules:
       - install -Dm755 fftpd /app/bin/fftpd
       - install -Dm755 fftp-http /app/bin/fftp-http
       - install -Dm755 fftp-http-launch.sh /app/bin/fftp-http-launch
-      - install -Dm644 org.fftps.FftpHttp.desktop /app/share/applications/org.fftps.FftpHttp.desktop
-      - install -Dm644 org.fftps.FftpHttp.metainfo.xml /app/share/metainfo/org.fftps.FftpHttp.metainfo.xml
-      - install -Dm644 fftp-http.svg /app/share/icons/hicolor/scalable/apps/org.fftps.FftpHttp.svg
-      - install -Dm644 fftp-http.svg /app/share/pixmaps/fftp-http.svg
+      - install -Dm644 org.fftps.Fftps.desktop /app/share/applications/org.fftps.Fftps.desktop
+      - install -Dm644 org.fftps.Fftps.metainfo.xml /app/share/metainfo/org.fftps.Fftps.metainfo.xml
+      - install -Dm644 fftps.svg /app/share/icons/hicolor/scalable/apps/org.fftps.Fftps.svg
+      - install -Dm644 fftps.svg /app/share/pixmaps/fftps.svg
       - install -Dm644 config.toml /app/share/fftpd/config.toml
       - install -Dm644 fftp-http.toml /app/share/fftpd/fftp-http.toml
     sources:

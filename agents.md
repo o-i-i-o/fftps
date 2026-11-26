@@ -1,5 +1,5 @@
 # 基础架构
-- 本项目是 fftps：基于 Rust 的 FTP/FTPS/SFTP 服务端套件（fftpd）+ Web 管理前端（fftp-http）。
+- 本项目是 fftps：基于 Rust 的 FTP/FTPS/SFTP 服务端套件（fftpd）+ Web 管理前端（fftp-http）。名称就是fftps，各桌面图标都是此名字，fftp-http管理的标题也是fftps。
 
 - UOS/麒麟一等公民，支持在 UOS/麒麟上直接运行；管理界面通过浏览器访问，无需桌面 GUI 框架。
 

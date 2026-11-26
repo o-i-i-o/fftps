@@ -2,7 +2,7 @@
 #
 # 与 deb 的运行模型差异：沙箱内没有 systemd --user（launch 里 systemctl
 # 静默失败），fftpd 由 fftp-http-launch 包装在沙箱内拉起；配置落在沙箱
-# XDG 目录（~/.var/app/org.fftps.FftpHttp/），宿主浏览器经 portal 打开。
+# XDG 目录（~/.var/app/org.fftps.Fftps/），宿主浏览器经 portal 打开。
 #
 # 本地构建（需先安装 runtime/SDK，见 scripts/build-flatpak.sh）：
 #   ./scripts/build-flatpak.sh            # 产出 dist/flatpak-repo 与 .flatpak bundle
@@ -13,7 +13,7 @@
 # cargo 依赖经 cargo-sources.json 完整 vendor（离线、可复现）。依赖变更后
 # 重新生成（依赖 aiohttp/tomlkit，apt 包 python3-aiohttp python3-tomlkit）：
 #   flatpak-cargo-generator.py Cargo.lock -o packaging/flatpak/cargo-sources.json
-id: org.fftps.FftpHttp
+id: org.fftps.Fftps
 runtime: org.freedesktop.Platform
 runtime-version: "26.08"
 sdk: org.freedesktop.Sdk

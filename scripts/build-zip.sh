@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# FFTPS Windows zip 交付物打包脚本（x86_64 / arm64）
+# fftps Windows zip 交付物打包脚本（x86_64 / arm64）
 #
 # 产出统一放到 dist/：
 #   dist/fftps_<version>_windows-x64.zip

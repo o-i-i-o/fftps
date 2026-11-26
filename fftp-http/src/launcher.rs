@@ -17,7 +17,7 @@
 //! 两层机制都生效时，第二次 ShellExecuteW 调用会被自动跳过（因为
 //! `is_elevated()` 已返回 true）。
 //!
-//! 若用户在 UAC 弹窗中**取消**，launcher 弹出 MessageBox 提示"FFTPS
+//! 若用户在 UAC 弹窗中**取消**，launcher 弹出 MessageBox 提示"fftps
 //! 需要管理员权限才能管理系统服务"后退出，不会继续往下走到 sc.exe。
 //!
 //! ## 为什么让 launcher 提权而不是 fftp-http.exe？
@@ -129,7 +129,7 @@ fn ensure_elevated() {
         if ret as isize <= 32 {
             let err = GetLastError();
             let msg = if err == 1223 {
-                "UAC 已取消。FFTPS 需要管理员权限才能管理系统服务。请右键以管理员身份运行 FFTPS 快捷方式。"
+                "UAC 已取消。fftps 需要管理员权限才能管理系统服务。请右键以管理员身份运行 fftps 快捷方式。"
                     .to_owned()
             } else {
                 format!("启动自提权失败（Win32 error {err}）")
@@ -197,7 +197,7 @@ const TOKEN_QUERY: u32 = 0x0008;
 fn show_error(message: &str) {
     use std::os::windows::ffi::OsStrExt;
     use windows_sys::Win32::UI::WindowsAndMessaging::{MB_ICONERROR, MB_OK, MessageBoxW};
-    let title: Vec<u16> = "FFTPS\0".encode_utf16().collect();
+    let title: Vec<u16> = "fftps\0".encode_utf16().collect();
     let text: Vec<u16> = std::ffi::OsStr::new(message)
         .encode_wide()
         .chain(std::iter::once(0))

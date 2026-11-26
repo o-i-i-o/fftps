@@ -73,7 +73,7 @@ impl Default for FtpConfig {
             enabled: true,
             bind_ip: "0.0.0.0".to_string(),
             port: default_ftp_port(),
-            welcome_message: "Welcome to fftpd".to_string(),
+            welcome_message: "Welcome to fftps".to_string(),
             allow_anonymous: false,
             anonymous_home: String::new(),
             passive_ports: (50000, 51000),
@@ -827,7 +827,7 @@ mod tests {
         assert!(config.ftp.enabled);
         assert_eq!(config.ftp.bind_ip, "0.0.0.0");
         assert_eq!(config.ftp.port, default_ftp_port());
-        assert_eq!(config.ftp.welcome_message, "Welcome to fftpd");
+        assert_eq!(config.ftp.welcome_message, "Welcome to fftps");
         assert!(!config.ftp.allow_anonymous);
         assert_eq!(config.ftp.passive_ports, (50000, 51000));
         assert_eq!(config.ftp.idle_timeout, 15);

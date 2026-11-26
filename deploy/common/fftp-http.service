@@ -1,5 +1,5 @@
 [Unit]
-Description=FFTP-HTTP Web Management Frontend (per-user service)
+Description=fftps Web Management Frontend (per-user service)
 Documentation=https://github.com/fftps/fftps
 After=network.target network-online.target fftpd.service
 Wants=network-online.target

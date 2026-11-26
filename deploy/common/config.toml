@@ -17,7 +17,7 @@ bind_ip = "0.0.0.0"
 # 用户单元内 CapabilityBoundingSet/AmbientCapabilities 不可用（管理器无能力可授，
 # 会导致 218/CAPABILITIES 启动失败）。
 # port = 21
-welcome_message = "Welcome to fftpd"
+welcome_message = "Welcome to fftps"
 allow_anonymous = false
 # 匿名用户主目录，空 = 未设置（启用匿名时必须配置，且不能同时设置 ftp_root）
 anonymous_home = ""

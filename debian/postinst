@@ -110,7 +110,7 @@ case "$1" in
             done
         done
 
-        echo "FFTPS 安装完成。"
+        echo "fftps 安装完成。"
         if [ -z "$OLD_VERSION" ]; then
             echo "已尝试为活跃桌面用户开启 linger 并启用启动 fftpd；若安装时没有活跃会话，"
             echo "请登录后执行：loginctl enable-linger $USER && systemctl --user enable --now fftpd"
@@ -119,7 +119,7 @@ case "$1" in
             echo "  systemctl --user enable --now fftpd"
         fi
         echo "启动 Web 管理界面："
-        echo "  从应用菜单打开「FFTPS」，或执行 fftp-http launch"
+        echo "  从应用菜单打开「fftps」，或执行 fftp-http launch"
         echo "  首次启动会自动进入本机 setup 引导页（默认 http://127.0.0.1:8080）"
         ;;
 esac

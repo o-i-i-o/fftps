@@ -55,11 +55,11 @@ override_dh_auto_install:
 	mkdir -p debian/fftps/usr/lib/systemd/user
 	install -m644 deploy/common/fftpd.service deploy/common/fftp-http.service debian/fftps/usr/lib/systemd/user/
 	mkdir -p debian/fftps/usr/share/applications
-	install -m644 deploy/common/fftp-http.desktop debian/fftps/usr/share/applications/
+	install -m644 deploy/common/fftps.desktop debian/fftps/usr/share/applications/
 	mkdir -p debian/fftps/usr/share/icons/hicolor/scalable/apps
-	install -m644 deploy/common/fftp-http.svg debian/fftps/usr/share/icons/hicolor/scalable/apps/
+	install -m644 deploy/common/fftps.svg debian/fftps/usr/share/icons/hicolor/scalable/apps/
 	mkdir -p debian/fftps/usr/share/pixmaps
-	install -m644 deploy/common/fftp-http.svg debian/fftps/usr/share/pixmaps/
+	install -m644 deploy/common/fftps.svg debian/fftps/usr/share/pixmaps/
 	mkdir -p debian/fftps/usr/share/fftpd
 	install -m644 deploy/common/config.toml deploy/common/fftp-http.toml debian/fftps/usr/share/fftpd/
 

@@ -211,10 +211,10 @@ fn run_action(action: Action) -> Result<String, String> {
 fn no_admin_error(action: Action) -> String {
     let hint = match action {
         Action::Install => {
-            "在安装向导中点击“安装服务”按钮，或右键开始菜单 FFTPS → 更多 → 以管理员身份运行"
+            "在安装向导中点击“安装服务”按钮，或右键开始菜单 fftps → 更多 → 以管理员身份运行"
         }
-        Action::Uninstall => "请右键开始菜单 FFTPS → 更多 → 以管理员身份运行后再执行卸载",
-        _ => "请右键开始菜单 FFTPS → 更多 → 以管理员身份运行后重试",
+        Action::Uninstall => "请右键开始菜单 fftps → 更多 → 以管理员身份运行后再执行卸载",
+        _ => "请右键开始菜单 fftps → 更多 → 以管理员身份运行后重试",
     };
     format!(
         "需要管理员权限：当前会话未提升，无法通过 SCM 执行 {}。{hint}。",

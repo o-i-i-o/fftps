@@ -452,10 +452,10 @@ pub fn show_error(message: &str) {
     #[cfg(unix)]
     {
         let _ = Command::new("notify-send")
-            .args(["FFTPS", message])
+            .args(["fftps", message])
             .status();
         let _ = Command::new("zenity")
-            .args(["--error", "--title", "FFTPS", "--text", message])
+            .args(["--error", "--title", "fftps", "--text", message])
             .status();
         eprintln!("{message}");
     }
@@ -463,7 +463,7 @@ pub fn show_error(message: &str) {
     {
         use std::os::windows::ffi::OsStrExt;
         use windows_sys::Win32::UI::WindowsAndMessaging::{MB_ICONERROR, MB_OK, MessageBoxW};
-        let title: Vec<u16> = "FFTPS\0".encode_utf16().collect();
+        let title: Vec<u16> = "fftps\0".encode_utf16().collect();
         let text: Vec<u16> = std::ffi::OsStr::new(message)
             .encode_wide()
             .chain(std::iter::once(0))

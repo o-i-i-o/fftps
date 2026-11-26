@@ -1,15 +1,15 @@
 @echo off
-rem FFTPS uninstaller entry: batch header + embedded PowerShell (single file).
+rem fftps uninstaller entry: batch header + embedded PowerShell (single file).
 rem The batch part only launches PowerShell; the script body follows #:PSBEGIN.
 powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "$f='%~f0'; $l=[IO.File]::ReadAllLines($f,[Text.Encoding]::UTF8); $i=[Array]::IndexOf($l,'#:PSBEGIN'); if($i -lt 0){throw 'PS marker not found'}; & ([scriptblock]::Create(($l[($i+1)..($l.Length-1)] -join [Environment]::NewLine))) -SourceDir '%~dp0' %*"
 set "rc=%ERRORLEVEL%"
-if not "%rc%"=="0" echo [FFTPS] Exit code: %rc%
+if not "%rc%"=="0" echo [fftps] Exit code: %rc%
 pause
 exit /b %rc%
 #:PSBEGIN
 param([string]$SourceDir)
 
-# FFTPS Web 管理版 Windows 卸载脚本（内嵌于 uninstall.bat）
+# fftps Web 管理版 Windows 卸载脚本（内嵌于 uninstall.bat）
 #
 # 用法：双击 uninstall.bat，或通过「设置 → 应用」卸载（由 ARP 注册指向本脚本）。
 # 语义：先停用户进程，再停删服务；询问是否保留配置数据。
@@ -31,8 +31,8 @@ if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administra
 $InstallDir = Join-Path $env:ProgramFiles 'fftps'
 $DataDir = Join-Path $env:ProgramData 'fftpd'
 $ServiceName = 'fftpd'
-$AppName = 'FFTPS'
-$UninstKey = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\FFTPS'
+$AppName = 'fftps'
+$UninstKey = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\fftps'
 
 Write-Host "=== $AppName 卸载 ==="
 
@@ -71,7 +71,7 @@ if (Test-Path $InstallDir) {
 }
 $lnkDesktop = Join-Path ([Environment]::GetFolderPath('Desktop')) "$AppName.lnk"
 if (Test-Path $lnkDesktop) { Remove-Item -Force $lnkDesktop }
-$smDir = Join-Path $env:ProgramData ([System.IO.Path]::Combine('Microsoft', 'Windows', 'Start Menu', 'Programs', 'FFTPS'))
+$smDir = Join-Path $env:ProgramData ([System.IO.Path]::Combine('Microsoft', 'Windows', 'Start Menu', 'Programs', 'fftps'))
 if (Test-Path $smDir) { Remove-Item -Recurse -Force $smDir }
 if (Test-Path $UninstKey) { Remove-Item -Path $UninstKey -Recurse -Force }
 
