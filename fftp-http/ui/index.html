@@ -18,7 +18,6 @@
     <button data-tab="users">用户</button>
     <button data-tab="proglog">程序日志</button>
     <button data-tab="filelog">文件日志</button>
-    <button data-tab="about">关于</button>
   </nav>
   <div class="userbox">
     <span id="conn-dot" class="dot"></span><span id="conn-text">连接中…</span>
@@ -51,11 +50,25 @@
         <h3>服务操作</h3>
         <p class="hint">仅启停 fftpd 内部的 FTP/SFTP 协议监听，不影响 fftpd 守护进程本身。</p>
         <table class="ops">
-          <thead><tr><th>FTP</th><th>SFTP</th><th>全部</th></tr></thead>
           <tbody>
-            <tr><td><button class="btn" data-svc="ftp" data-act="start">启动</button></td><td><button class="btn" data-svc="sftp" data-act="start">启动</button></td><td><button class="btn primary" data-svc="all" data-act="start">启动</button></td></tr>
-            <tr><td><button class="btn" data-svc="ftp" data-act="stop">停止</button></td><td><button class="btn" data-svc="sftp" data-act="stop">停止</button></td><td><button class="btn primary" data-svc="all" data-act="stop">停止</button></td></tr>
-            <tr><td><button class="btn" data-svc="ftp" data-act="restart">重启</button></td><td><button class="btn" data-svc="sftp" data-act="restart">重启</button></td><td><button class="btn primary" data-svc="all" data-act="restart">重启</button></td></tr>
+            <tr>
+              <td>FTP</td>
+              <td><button class="btn" type="button" data-svc-toggle="ftp" data-act="start">启动</button></td>
+              <td><button class="btn" type="button" data-svc="ftp" data-act="restart">重启</button></td>
+            </tr>
+            <tr>
+              <td>SFTP</td>
+              <td><button class="btn" type="button" data-svc-toggle="sftp" data-act="start">启动</button></td>
+              <td><button class="btn" type="button" data-svc="sftp" data-act="restart">重启</button></td>
+            </tr>
+            <tr>
+              <td>全部</td>
+              <td>
+                <button class="btn primary" type="button" data-svc="all" data-act="start">启动</button>
+                <button class="btn primary" type="button" data-svc="all" data-act="stop">停止</button>
+              </td>
+              <td><button class="btn primary" type="button" data-svc="all" data-act="restart">重启</button></td>
+            </tr>
           </tbody>
         </table>
       </div>
@@ -298,22 +311,6 @@
         </div>
         <div id="fileop-view" class="table-wrap small">选择历史文件查看</div>
       </div>
-    </div>
-  </section>
-
-  <!-- 关于 -->
-  <section id="tab-about" class="hidden">
-    <div class="card">
-      <h3>关于 fftps</h3>
-      <div class="meta-list">
-        <div><label>fftpd 版本</label><span id="about-version">—</span></div>
-        <div><label>fftp-http 配置</label><span id="about-httpconfig">—</span></div>
-        <div><label>fftpd 配置</label><span id="about-config" class="mono">—</span></div>
-        <div><label>用户库</label><span id="about-users" class="mono">—</span></div>
-        <div><label>IPC 端点</label><span id="about-endpoint" class="mono">—</span></div>
-      </div>
-      <p class="hint">fftps 的 Web 管理前端（fftp-http）经 fftp-ipc 与 fftpd 通信；
-      管理员账户、监听地址、TLS 与 IP 黑白名单均在 fftp-http 自身配置文件中独立管理。</p>
     </div>
   </section>
 

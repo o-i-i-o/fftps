@@ -124,10 +124,6 @@ function fillIdentity(st) {
   $("st-config").textContent = st.config_path;
   $("st-users").textContent = st.users_path;
   $("st-endpoint").textContent = st.endpoint;
-  $("about-version").textContent = st.version;
-  $("about-config").textContent = st.config_path;
-  $("about-users").textContent = st.users_path;
-  $("about-endpoint").textContent = st.endpoint;
 }
 
 $("login-form").addEventListener("submit", async (ev) => {
@@ -175,7 +171,7 @@ $("btn-logout").addEventListener("click", async () => {
 
 // ---------- Tab 切换 ----------
 
-const TABS = ["service", "config", "users", "proglog", "filelog", "about"];
+const TABS = ["service", "config", "users", "proglog", "filelog"];
 
 function switchTab(name) {
   for (const t of TABS) {
@@ -193,7 +189,6 @@ function switchTab(name) {
   else stopLogStream();
   if (name === "filelog") { startFopStream(); loadFileOpList(); }
   else stopFopStream();
-  if (name === "about") refreshStatus();
 }
 
 document.querySelectorAll("#tabs button").forEach((b) => {
@@ -561,6 +556,17 @@ function updateServiceBadges(ftpRunning, sftpRunning) {
   $("ftp-badge").className = "badge " + (ftpRunning ? "on" : "off");
   $("sftp-badge").textContent = sftpRunning ? "运行中" : "已停止";
   $("sftp-badge").className = "badge " + (sftpRunning ? "on" : "off");
+  updateServiceToggle("ftp", ftpRunning);
+  updateServiceToggle("sftp", sftpRunning);
+}
+
+// 启停按钮按当前运行状态显示：运行中 → 停止，已停止 → 启动
+function updateServiceToggle(svc, running) {
+  const btn = document.querySelector(`[data-svc-toggle="${svc}"]`);
+  if (!btn) return;
+  btn.dataset.act = running ? "stop" : "start";
+  btn.textContent = running ? "停止" : "启动";
+  btn.title = `${running ? "停止" : "启动"} ${svc.toUpperCase()} 服务`;
 }
 
 // ---------- 服务状态与操作 ----------
@@ -580,13 +586,33 @@ function startStatusPoll() {
   stopStatusPoll();
   statusPollTimer = setInterval(() => {
     const serviceVisible = !$("tab-service").classList.contains("hidden");
-    const aboutVisible = !$("tab-about").classList.contains("hidden");
-    if (serviceVisible || aboutVisible) refreshStatus();
+    if (serviceVisible) refreshStatus();
   }, 5000);
 }
 function stopStatusPoll() {
   if (statusPollTimer) { clearInterval(statusPollTimer); statusPollTimer = null; }
 }
+
+// FTP/SFTP 启停合并按钮：根据当前状态发送 start 或 stop
+document.querySelectorAll("[data-svc-toggle]").forEach((btn) => {
+  btn.addEventListener("click", async () => {
+    const svc = btn.dataset.svcToggle;
+    const act = btn.dataset.act === "stop" ? "stop" : "start";
+    const label = svc.toUpperCase();
+    if (act === "stop" && !confirm(`确认停止 ${label} 服务？`)) return;
+    btn.disabled = true;
+    try {
+      await api("/api/service/" + act, { method: "POST", body: { which: svc } });
+      toast(`${label} ${act === "stop" ? "停止" : "启动"}指令已发送`);
+      // 由 SSE 自动刷新状态，兜底 1.5s 后再轮一次保证按钮态同步
+      setTimeout(refreshStatus, 1500);
+    } catch (e) {
+      toast(errMsg(e), true);
+    } finally {
+      btn.disabled = false;
+    }
+  });
+});
 
 document.querySelectorAll("[data-svc]").forEach((btn) => {
   btn.addEventListener("click", async () => {
