@@ -36,7 +36,7 @@
   <section id="tab-service">
     <div class="grid-2">
       <div class="card">
-        <h3>FTP/SFTP 协议服务</h3>
+        <h3>FTP/SFTP 服务状态</h3>
         <p class="hint">由 fftpd 守护进程提供；这里的启停只影响 FTP/SFTP 协议监听，不会启动或停止 fftpd 进程本身。</p>
         <div class="svc-row"><span class="svc-name">FTP</span><span id="ftp-badge" class="badge off">已停止</span></div>
         <div class="svc-row"><span class="svc-name">SFTP</span><span id="sftp-badge" class="badge off">已停止</span></div>
@@ -48,18 +48,16 @@
         </div>
       </div>
       <div class="card">
-        <h3>协议服务操作</h3>
-        <p class="hint">仅操作 fftpd 内部的 FTP/SFTP 监听；要启停 fftpd 守护进程本身，请使用下方的「系统服务」。</p>
+        <h3>服务操作</h3>
+        <p class="hint">仅启停 fftpd 内部的 FTP/SFTP 协议监听，不影响 fftpd 守护进程本身。</p>
         <table class="ops">
-          <thead><tr><th></th><th>FTP</th><th>SFTP</th><th>全部</th></tr></thead>
+          <thead><tr><th>FTP</th><th>SFTP</th><th>全部</th></tr></thead>
           <tbody>
-            <tr><td>启动</td><td><button class="btn" data-svc="ftp" data-act="start">启动</button></td><td><button class="btn" data-svc="sftp" data-act="start">启动</button></td><td><button class="btn primary" data-svc="all" data-act="start">启动</button></td></tr>
-            <tr><td>停止</td><td><button class="btn" data-svc="ftp" data-act="stop">停止</button></td><td><button class="btn" data-svc="sftp" data-act="stop">停止</button></td><td><button class="btn primary" data-svc="all" data-act="stop">停止</button></td></tr>
-            <tr><td>重启</td><td><button class="btn" data-svc="ftp" data-act="restart">重启</button></td><td><button class="btn" data-svc="sftp" data-act="restart">重启</button></td><td><button class="btn primary" data-svc="all" data-act="restart">重启</button></td></tr>
+            <tr><td><button class="btn" data-svc="ftp" data-act="start">启动</button></td><td><button class="btn" data-svc="sftp" data-act="start">启动</button></td><td><button class="btn primary" data-svc="all" data-act="start">启动</button></td></tr>
+            <tr><td><button class="btn" data-svc="ftp" data-act="stop">停止</button></td><td><button class="btn" data-svc="sftp" data-act="stop">停止</button></td><td><button class="btn primary" data-svc="all" data-act="stop">停止</button></td></tr>
+            <tr><td><button class="btn" data-svc="ftp" data-act="restart">重启</button></td><td><button class="btn" data-svc="sftp" data-act="restart">重启</button></td><td><button class="btn primary" data-svc="all" data-act="restart">重启</button></td></tr>
           </tbody>
         </table>
-        <h3 class="danger-title">危险操作</h3>
-        <button id="btn-shutdown" class="btn danger">关停 fftpd 守护进程</button>
       </div>
     </div>
 
@@ -68,7 +66,7 @@
         <h3>fftpd 守护进程（系统服务）</h3>
         <span id="sys-svc-badge" class="badge off">检测中…</span>
       </div>
-      <p class="hint">由操作系统托管 <strong>fftpd 进程本身</strong>并负责开机自启，与上方 FTP/SFTP 协议服务相互独立。Linux 使用 <code>systemctl --user</code>，Windows 使用 <code>sc.exe</code>（需要管理员权限）。</p>
+      <p class="hint">由操作系统托管 <strong>fftpd 进程本身</strong>并负责开机自启，与上方的 FTP/SFTP 服务状态相互独立。Linux 使用 <code>systemctl --user</code>，Windows 使用 <code>sc.exe</code>（需要管理员权限）。</p>
       <div class="meta-list">
         <div><label>平台</label><span id="sys-svc-platform">—</span></div>
         <div><label>状态</label><span id="sys-svc-detail" class="mono">—</span></div>

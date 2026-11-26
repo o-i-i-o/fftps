@@ -601,15 +601,6 @@ document.querySelectorAll("[data-svc]").forEach((btn) => {
   });
 });
 
-$("btn-shutdown").addEventListener("click", async () => {
-  if (!confirm("确认关停 fftpd 守护进程？FTP/SFTP 服务与 IPC 控制面将全部停止。")) return;
-  try {
-    await api("/api/shutdown", { method: "POST" });
-    toast("fftpd 关停指令已发送");
-    setOffline(true, "fftpd 已关停，等待重新启动");
-  } catch (e) { toast(errMsg(e), true); }
-});
-
 // ---------- SSE 实时流（程序日志 / 文件操作共用骨架） ----------
 
 function createStream(cfg) {
