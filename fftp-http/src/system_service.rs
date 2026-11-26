@@ -140,8 +140,8 @@ fn run_action(action: Action) -> Result<String, String> {
 #[cfg(not(windows))]
 #[allow(clippy::unnecessary_wraps)] // 与 Windows 分支保持同一签名
 fn query_status() -> Result<ServiceStatus, String> {
-    let enabled = run_command_line("systemctl", &["--user", "is-enabled", "fftpd"]).ok();
-    let active = run_command_line("systemctl", &["--user", "is-active", "fftpd"]).ok();
+    let enabled = run_command_output("systemctl", &["--user", "is-enabled", "fftpd"]).ok();
+    let active = run_command_output("systemctl", &["--user", "is-active", "fftpd"]).ok();
     let installed = enabled
         .as_deref()
         .is_some_and(|s| s != "not-found" && !s.is_empty());
@@ -224,18 +224,76 @@ fn no_admin_error(action: Action) -> String {
 
 #[cfg(windows)]
 fn query_status() -> Result<ServiceStatus, String> {
-    let query = run_command_line("sc.exe", &["query", "fftpd"]).ok();
-    let config = run_command_line("sc.exe", &["qc", "fftpd"]).ok();
-    let installed = query
-        .as_deref()
-        .is_some_and(|s| s.contains("SERVICE_NAME: fftpd"));
+    // 必须保留完整输出：`sc.exe query` 的首行是 SERVICE_NAME，
+    // STATE（RUNNING/STOPPED）在其后若干行；只取首行会导致 running 永远为 false。
+    let query = run_command_output("sc.exe", &["query", "fftpd"]).ok();
+    let config = run_command_output("sc.exe", &["qc", "fftpd"]).ok();
     Ok(ServiceStatus {
-        installed,
-        running: query.as_deref().is_some_and(|s| s.contains("RUNNING")),
-        autostart: config.as_deref().is_some_and(|s| s.contains("AUTO_START")),
+        installed: query.as_deref().is_some_and(sc_query_installed),
+        running: query.as_deref().is_some_and(sc_query_running),
+        autostart: config.as_deref().is_some_and(sc_config_autostart),
         platform: "Windows SCM",
-        detail: query.unwrap_or_else(|| "未安装或查询失败".into()),
+        detail: query
+            .as_deref()
+            .and_then(sc_query_summary)
+            .unwrap_or_else(|| "未安装或查询失败".into()),
     })
+}
+
+/// `sc.exe query` 输出是否表示服务已注册
+///
+/// 成功输出形如：
+/// ```text
+/// SERVICE_NAME: fftpd
+///         TYPE               : 10  WIN32_OWN_PROCESS
+///         STATE              : 4  RUNNING
+/// ```
+/// 未注册时 stdout 为空，stderr 为 `[SC] ...OpenService FAILED 1060`，
+/// 不含 `SERVICE_NAME` 行。
+#[cfg(any(windows, test))]
+fn sc_query_installed(output: &str) -> bool {
+    output.lines().any(|line| {
+        line.trim()
+            .strip_prefix("SERVICE_NAME:")
+            .is_some_and(|name| name.trim() == "fftpd")
+    })
+}
+
+/// `sc.exe query` 输出中的服务是否处于 RUNNING 状态
+///
+/// 按整词匹配 `RUNNING`，避免误判 `STOPPED`/`START_PENDING` 等状态。
+#[cfg(any(windows, test))]
+fn sc_query_running(output: &str) -> bool {
+    output
+        .lines()
+        .flat_map(str::split_whitespace)
+        .any(|token| token == "RUNNING")
+}
+
+/// `sc.exe qc` 输出是否表示开机自启（`START_TYPE : 2 AUTO_START`）
+#[cfg(any(windows, test))]
+fn sc_config_autostart(output: &str) -> bool {
+    output
+        .lines()
+        .flat_map(str::split_whitespace)
+        .any(|token| token == "AUTO_START")
+}
+
+/// 提取 `sc.exe query` 的状态行作为单行摘要（页面展示用）
+#[cfg(any(windows, test))]
+fn sc_query_summary(output: &str) -> Option<String> {
+    output
+        .lines()
+        .map(str::trim)
+        .find(|line| line.starts_with("STATE"))
+        .map(|line| line.split_whitespace().collect::<Vec<_>>().join(" "))
+        .or_else(|| {
+            output
+                .lines()
+                .map(str::trim)
+                .find(|line| !line.is_empty())
+                .map(str::to_owned)
+        })
 }
 
 #[cfg(windows)]
@@ -417,19 +475,22 @@ fn interpret_command_failure(program: &str, detail: &str, code: Option<i32>) -> 
     }
 }
 
-/// 执行命令并返回首个非空输出行（状态查询不因非零退出码失败）
-fn run_command_line(program: &str, args: &[&str]) -> Result<String, String> {
+/// 执行命令并返回完整输出（状态查询不因非零退出码失败）
+///
+/// 与 [`run_command`] 不同：查询类命令（`sc.exe query`、`systemctl is-active`）
+/// 失败时也把 stderr 文本作为结果返回，由调用方解析。Windows 下输出会经
+/// [`decode_cmd_output`] 解码，避免中文系统的 GBK 文本乱码。
+fn run_command_output(program: &str, args: &[&str]) -> Result<String, String> {
     let output = command(program)
         .args(args)
         .output()
         .map_err(|e| format!("无法执行 {program}：{e}"))?;
     let text = if output.stdout.is_empty() {
-        String::from_utf8_lossy(&output.stderr).into_owned()
+        decode_cmd_output(&output.stderr)
     } else {
-        String::from_utf8_lossy(&output.stdout).into_owned()
+        decode_cmd_output(&output.stdout)
     };
-    let line = text.lines().map(str::trim).find(|s| !s.is_empty());
-    Ok(line.unwrap_or("").to_owned())
+    Ok(text.trim().to_owned())
 }
 
 /// 平台命令（Windows 下隐藏控制台窗口）
@@ -472,5 +533,54 @@ mod tests {
         assert!(Action::Stop.ok_text().contains("守护进程"));
         assert!(Action::Restart.ok_text().contains("守护进程"));
         assert!(Action::AutostartOn.ok_text().contains("自启"));
+    }
+
+    /// `sc.exe query fftpd` 的真实输出（已运行）
+    const SC_QUERY_RUNNING: &str = "\nSERVICE_NAME: fftpd \n        TYPE               : 10  WIN32_OWN_PROCESS  \n        STATE              : 4  RUNNING \n                                (STOPPABLE, NOT_PAUSABLE, ACCEPTS_SHUTDOWN)\n        WIN32_EXIT_CODE    : 0  (0x0)\n        SERVICE_EXIT_CODE  : 0  (0x0)\n        CHECKPOINT         : 0x0\n        WAIT_HINT          : 0x0\n";
+
+    /// `sc.exe query fftpd` 的真实输出（已安装但停止）
+    const SC_QUERY_STOPPED: &str = "\nSERVICE_NAME: fftpd \n        TYPE               : 10  WIN32_OWN_PROCESS  \n        STATE              : 1  STOPPED \n        WIN32_EXIT_CODE    : 1066  (0x42a)\n";
+
+    /// `sc.exe qc fftpd` 的真实输出（开机自启）
+    const SC_QC_AUTO: &str = "[SC] QueryServiceConfig SUCCESS\n\nSERVICE_NAME: fftpd\n        TYPE               : 10  WIN32_OWN_PROCESS \n        START_TYPE         : 2   AUTO_START\n        BINARY_PATH_NAME   : \"C:\\Program Files\\fftps\\fftpd.exe\" --service\n";
+
+    #[test]
+    fn sc_query_detects_running_beyond_first_line() {
+        // 回归：首行是 SERVICE_NAME，RUNNING 在第 4 行
+        assert!(sc_query_installed(SC_QUERY_RUNNING));
+        assert!(sc_query_running(SC_QUERY_RUNNING));
+        assert!(sc_query_installed(SC_QUERY_STOPPED));
+        assert!(!sc_query_running(SC_QUERY_STOPPED));
+    }
+
+    #[test]
+    fn sc_query_rejects_missing_service() {
+        let not_installed =
+            "[SC] EnumQueryServicesStatus:OpenService FAILED 1060:\n\n指定的服务未安装。";
+        assert!(!sc_query_installed(not_installed));
+        assert!(!sc_query_running(not_installed));
+    }
+
+    #[test]
+    fn sc_config_detects_autostart_not_demand() {
+        assert!(sc_config_autostart(SC_QC_AUTO));
+        let demand = SC_QC_AUTO.replace("AUTO_START", "DEMAND_START");
+        assert!(!sc_config_autostart(&demand));
+    }
+
+    #[test]
+    fn sc_query_summary_is_single_state_line() {
+        assert_eq!(
+            sc_query_summary(SC_QUERY_RUNNING).as_deref(),
+            Some("STATE : 4 RUNNING")
+        );
+        assert_eq!(
+            sc_query_summary(SC_QUERY_STOPPED).as_deref(),
+            Some("STATE : 1 STOPPED")
+        );
+        assert_eq!(
+            sc_query_summary("[SC] OpenService FAILED 1060").as_deref(),
+            Some("[SC] OpenService FAILED 1060")
+        );
     }
 }
