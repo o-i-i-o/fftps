@@ -57,7 +57,14 @@ body {
 #tabs button.active { background: var(--primary); color: var(--primary-text); }
 
 .userbox { display: flex; align-items: center; gap: 10px; font-size: 13px; }
-.whoami { opacity: 0.85; }
+.whoami {
+  display: inline-flex; align-items: center; gap: 4px;
+  padding: 4px 8px; border: 1px solid transparent; border-radius: 6px;
+  background: transparent; color: inherit; font: inherit;
+  opacity: 0.85; cursor: pointer;
+}
+.whoami:hover { opacity: 1; border-color: #454f5e; background: rgba(255, 255, 255, 0.08); }
+.whoami::after { content: "▾"; font-size: 10px; opacity: 0.7; }
 
 /* 用户名旁的设置图标按钮 */
 .icon-btn {
@@ -217,6 +224,9 @@ main { padding: 16px; max-width: 1200px; margin: 0 auto; }
 /* Web 管理员账户弹窗 */
 #admin-dialog .dialog-box { width: 480px; }
 #admin-dialog .form-actions .spacer { flex: 1; }
+#http-config-dialog .dialog-box { width: 560px; }
+#http-config-dialog .form-actions .spacer { flex: 1; }
+#http-config-dialog .card-head h3 { margin: 0; font-size: 16px; }
 #admin-table { max-height: 260px; }
 #admin-table td.uname { font-weight: 600; white-space: nowrap; }
 #admin-table td.uname .badge { margin-left: 6px; }

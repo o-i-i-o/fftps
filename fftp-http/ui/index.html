@@ -22,8 +22,8 @@
   </nav>
   <div class="userbox">
     <span id="conn-dot" class="dot"></span><span id="conn-text">连接中…</span>
-    <span id="whoami" class="whoami"></span>
-    <button id="btn-admin-settings" class="icon-btn" type="button" title="管理 Web 管理员账户" aria-label="管理 Web 管理员账户">
+    <button id="whoami" class="whoami" type="button" title="管理 fftp-http 用户" aria-label="管理 fftp-http 用户" aria-haspopup="dialog"></button>
+    <button id="btn-http-config" class="icon-btn" type="button" title="fftp-http 配置" aria-label="fftp-http 配置" aria-haspopup="dialog">
       <svg viewBox="0 0 24 24" width="15" height="15" fill="currentColor" aria-hidden="true"><path d="M19.14 12.94c.04-.3.06-.61.06-.94 0-.32-.02-.64-.07-.94l2.03-1.58a.49.49 0 0 0 .12-.61l-1.92-3.32a.49.49 0 0 0-.59-.22l-2.39.96c-.5-.38-1.03-.7-1.62-.94l-.36-2.54a.48.48 0 0 0-.48-.41h-3.84c-.24 0-.43.17-.47.41l-.36 2.54c-.59.24-1.13.57-1.62.94l-2.39-.96a.49.49 0 0 0-.59.22L2.74 8.87c-.12.21-.08.47.12.61l2.03 1.58c-.05.3-.09.63-.09.94s.02.64.07.94l-2.03 1.58a.49.49 0 0 0-.12.61l1.92 3.32c.12.22.37.29.59.22l2.39-.96c.5.38 1.03.7 1.62.94l.36 2.54c.05.24.24.41.48.41h3.84c.24 0 .44-.17.47-.41l.36-2.54c.59-.24 1.13-.56 1.62-.94l2.39.96c.22.08.47 0 .59-.22l1.92-3.32a.49.49 0 0 0-.12-.61l-2.01-1.58zM12 15.6A3.6 3.6 0 1 1 12 8.4a3.6 3.6 0 0 1 0 7.2z"/></svg>
     </button>
     <button id="btn-logout" class="btn ghost">登出</button>
@@ -63,53 +63,25 @@
       </div>
     </div>
 
-    <div class="grid-2">
-      <div class="card">
-        <div class="card-head">
-          <h3>fftpd 守护进程（系统服务）</h3>
-          <span id="sys-svc-badge" class="badge off">检测中…</span>
-        </div>
-        <p class="hint">由操作系统托管 <strong>fftpd 进程本身</strong>并负责开机自启，与上方 FTP/SFTP 协议服务相互独立。Linux 使用 <code>systemctl --user</code>，Windows 使用 <code>sc.exe</code>（需要管理员权限）。</p>
-        <div class="meta-list">
-          <div><label>平台</label><span id="sys-svc-platform">—</span></div>
-          <div><label>状态</label><span id="sys-svc-detail" class="mono">—</span></div>
-        </div>
-        <div class="form-actions left">
-          <button type="button" class="btn primary" data-sys-act="start">启动 fftpd</button>
-          <button type="button" class="btn" data-sys-act="stop">停止 fftpd</button>
-          <button type="button" class="btn" data-sys-act="restart">重启 fftpd</button>
-          <button type="button" class="btn" data-sys-act="install">安装/修复服务</button>
-          <button type="button" class="btn" data-sys-act="autostart-on">开启开机自启</button>
-          <button type="button" class="btn ghost" data-sys-act="autostart-off">关闭开机自启</button>
-          <button type="button" class="btn danger" data-sys-act="uninstall">卸载服务</button>
-          <button type="button" id="sys-refresh" class="btn ghost">刷新状态</button>
-        </div>
+    <div class="card">
+      <div class="card-head">
+        <h3>fftpd 守护进程（系统服务）</h3>
+        <span id="sys-svc-badge" class="badge off">检测中…</span>
       </div>
-
-      <div class="card">
-        <div class="card-head">
-          <h3>Web 管理服务（fftps）</h3>
-          <span id="idle-badge" class="badge off">未启用</span>
-        </div>
-        <p class="hint">无操作自动关闭只关闭当前 fftps Web 管理服务，<strong>不会关闭 fftpd</strong>，也不影响正在进行的传输。下次从桌面快捷方式启动即可恢复。</p>
-        <div class="form-grid">
-          <label class="check wide"><input id="idle-enabled" type="checkbox"> 启用无操作自动关闭</label>
-          <label>判定方式
-            <select id="idle-mode">
-              <option value="no_page">没有可见页面（关闭或隐藏浏览器后计时）</option>
-              <option value="no_activity">没有用户操作（只看不点也会计时）</option>
-            </select>
-          </label>
-          <label>空闲时长（秒） <input id="idle-timeout" type="number" min="30" step="1"></label>
-          <label>关闭前提示（秒） <input id="idle-warn" type="number" min="0" step="1" placeholder="0 = 不提示"></label>
-        </div>
-        <p id="idle-status" class="hint">—</p>
-        <div class="form-actions">
-          <button type="button" id="idle-reload" class="btn ghost">重新加载</button>
-          <button type="button" id="idle-save" class="btn primary">保存空闲设置</button>
-          <span class="spacer"></span>
-          <button type="button" id="web-shutdown" class="btn danger">立即关闭 Web 服务</button>
-        </div>
+      <p class="hint">由操作系统托管 <strong>fftpd 进程本身</strong>并负责开机自启，与上方 FTP/SFTP 协议服务相互独立。Linux 使用 <code>systemctl --user</code>，Windows 使用 <code>sc.exe</code>（需要管理员权限）。</p>
+      <div class="meta-list">
+        <div><label>平台</label><span id="sys-svc-platform">—</span></div>
+        <div><label>状态</label><span id="sys-svc-detail" class="mono">—</span></div>
+      </div>
+      <div class="form-actions left">
+        <button type="button" class="btn primary" data-sys-act="start">启动 fftpd</button>
+        <button type="button" class="btn" data-sys-act="stop">停止 fftpd</button>
+        <button type="button" class="btn" data-sys-act="restart">重启 fftpd</button>
+        <button type="button" class="btn" data-sys-act="install">安装/修复服务</button>
+        <button type="button" class="btn" data-sys-act="autostart-on">开启开机自启</button>
+        <button type="button" class="btn ghost" data-sys-act="autostart-off">关闭开机自启</button>
+        <button type="button" class="btn danger" data-sys-act="uninstall">卸载服务</button>
+        <button type="button" id="sys-refresh" class="btn ghost">刷新状态</button>
       </div>
     </div>
   </section>
@@ -384,8 +356,8 @@
 <!-- Web 管理员账户弹窗（fftp-http 自身登录账户，独立于 FTP/SFTP 用户库） -->
 <div id="admin-dialog" class="overlay hidden">
   <form id="admin-form" class="dialog-box">
-    <h3>Web 管理员账户</h3>
-    <p class="hint">管理 fftp-http 自身的登录账户（与 FTP/SFTP 用户库无关）。变更保存到 fftp-http.toml 并立即生效，无需重启。</p>
+    <h3>fftp-http 用户管理</h3>
+    <p class="hint">管理 fftp-http 自身的 Web 登录账户（与 FTP/SFTP 用户库无关）。变更保存到 fftp-http.toml 并立即生效，无需重启。</p>
     <div id="admin-table" class="table-wrap admin-table">加载中…</div>
     <div class="form-grid">
       <label>用户名 <input id="ad-name" type="text" autocomplete="off" maxlength="64"></label>
@@ -399,6 +371,40 @@
       <button type="button" id="ad-close" class="btn ghost">关闭</button>
     </div>
   </form>
+</div>
+
+<!-- fftp-http 自身配置弹窗（Web 管理服务） -->
+<div id="http-config-dialog" class="overlay hidden">
+  <div class="dialog-box http-config-box">
+    <div class="card-head">
+      <h3>fftp-http 配置</h3>
+      <span id="idle-badge" class="badge off">未启用</span>
+    </div>
+    <p class="hint">这里是 fftp-http 自身的运行配置。无操作自动关闭只关闭当前 fftps Web 管理服务，<strong>不会关闭 fftpd</strong>，也不影响正在进行的传输。下次从桌面快捷方式启动即可恢复。</p>
+    <p class="hint">监听地址、TLS、IP 黑白名单与 API 令牌请编辑 <code>fftp-http.toml</code>；Web 登录账户请点击右上角用户名管理。</p>
+    <div class="form-grid">
+      <label class="check wide"><input id="idle-enabled" type="checkbox"> 启用无操作自动关闭</label>
+      <label>判定方式
+        <select id="idle-mode">
+          <option value="no_page">没有可见页面（关闭或隐藏浏览器后计时）</option>
+          <option value="no_activity">没有用户操作（只看不点也会计时）</option>
+        </select>
+      </label>
+      <label>空闲时长（秒） <input id="idle-timeout" type="number" min="30" step="1"></label>
+      <label>关闭前提示（秒） <input id="idle-warn" type="number" min="0" step="1" placeholder="0 = 不提示"></label>
+    </div>
+    <p id="idle-status" class="hint">—</p>
+    <div class="form-actions">
+      <button type="button" id="idle-reload" class="btn ghost">重新加载</button>
+      <button type="button" id="idle-save" class="btn primary">保存空闲设置</button>
+      <span class="spacer"></span>
+      <button type="button" id="web-shutdown" class="btn danger">立即关闭 Web 服务</button>
+    </div>
+    <div class="form-actions">
+      <span class="spacer"></span>
+      <button type="button" id="http-config-close" class="btn ghost">关闭</button>
+    </div>
+  </div>
 </div>
 
 <!-- 登录遮罩 -->

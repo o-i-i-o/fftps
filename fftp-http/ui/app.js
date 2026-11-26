@@ -299,7 +299,7 @@ for (const ev of ["pointerdown", "keydown", "wheel", "touchstart"]) {
 document.addEventListener("visibilitychange", () => {
   if (!state.user || state.shuttingDown) return;
   sendHeartbeat(document.visibilityState === "visible");
-  if (document.visibilityState === "visible") loadIdleStatus();
+  if (document.visibilityState === "visible") loadIdleStatus(false);
 });
 
 window.addEventListener("pagehide", () => {
@@ -314,9 +314,9 @@ let idleWarned = false;
 function startIdlePoll() {
   stopIdlePoll();
   idleTimer = setInterval(() => {
-    if (!state.shuttingDown && !$("tab-service").classList.contains("hidden")) {
-      loadIdleStatus();
-    }
+    // 空闲自动关闭与当前标签页无关：始终轮询，以便在关闭前及时提醒。
+    // 轮询只刷新状态，不回填表单，避免覆盖弹窗中尚未保存的修改。
+    if (!state.shuttingDown) loadIdleStatus(false);
   }, 10000);
 }
 
@@ -353,15 +353,15 @@ function renderIdleStatus(s) {
   }
 }
 
-async function loadIdleStatus() {
+async function loadIdleStatus(fillForm = true) {
   try {
     const s = await api("/api/idle");
-    fillIdleForm(s);
+    if (fillForm) fillIdleForm(s);
     renderIdleStatus(s);
   } catch (_) { /* 离线/未登录已由统一处理 */ }
 }
 
-$("idle-reload").addEventListener("click", loadIdleStatus);
+$("idle-reload").addEventListener("click", () => loadIdleStatus());
 
 $("idle-save").addEventListener("click", async () => {
   const timeout = parseInt($("idle-timeout").value, 10);
@@ -396,6 +396,27 @@ $("web-shutdown").addEventListener("click", async () => {
   } catch (e) { toast(errMsg(e), true); }
 });
 
+// ---------- fftp-http 自身配置（齿轮按钮） ----------
+
+function openHttpConfigDialog() {
+  closeAdminDialog();
+  $("http-config-dialog").classList.remove("hidden");
+  loadIdleStatus();
+}
+
+function closeHttpConfigDialog() {
+  $("http-config-dialog").classList.add("hidden");
+}
+
+$("btn-http-config").addEventListener("click", openHttpConfigDialog);
+$("http-config-close").addEventListener("click", closeHttpConfigDialog);
+
+document.addEventListener("keydown", (ev) => {
+  if (ev.key !== "Escape") return;
+  if (!$("http-config-dialog").classList.contains("hidden")) closeHttpConfigDialog();
+  else if (!$("admin-dialog").classList.contains("hidden")) closeAdminDialog();
+});
+
 function showShutdownNotice() {
   state.shuttingDown = true;
   state.user = null;
@@ -410,6 +431,9 @@ function showShutdownNotice() {
   $("topbar").classList.add("hidden");
   $("offline").classList.add("hidden");
   $("login").classList.add("hidden");
+  $("http-config-dialog").classList.add("hidden");
+  $("admin-dialog").classList.add("hidden");
+  $("user-dialog").classList.add("hidden");
   $("shutdown-notice").classList.remove("hidden");
 }
 
@@ -1418,6 +1442,7 @@ function resetAdminForm() {
 
 async function openAdminDialog() {
   resetAdminForm();
+  closeHttpConfigDialog();
   $("admin-dialog").classList.remove("hidden");
   await loadAdmins();
 }
@@ -1491,7 +1516,7 @@ async function saveAdmins(list) {
   renderAdmins();
 }
 
-$("btn-admin-settings").addEventListener("click", openAdminDialog);
+$("whoami").addEventListener("click", openAdminDialog);
 $("ad-close").addEventListener("click", closeAdminDialog);
 $("ad-cancel-edit").addEventListener("click", resetAdminForm);
 
