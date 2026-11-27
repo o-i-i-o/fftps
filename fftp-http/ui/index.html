@@ -373,7 +373,6 @@
   <div class="dialog-box http-config-box">
     <div class="card-head">
       <h3>fftp-http 配置</h3>
-      <span id="idle-badge" class="badge off">未启用</span>
     </div>
     <p class="hint">这里是 fftp-http 自身的运行配置。无操作自动关闭只关闭当前 fftps Web 管理服务，<strong>不会关闭 fftpd</strong>，也不影响正在进行的传输。下次从桌面快捷方式启动即可恢复。</p>
     <p class="hint">监听地址、TLS、IP 黑白名单与 API 令牌请编辑 <code>fftp-http.toml</code>；Web 登录账户请点击右上角用户名管理。</p>
@@ -388,7 +387,6 @@
       <label>空闲时长（秒） <input id="idle-timeout" type="number" min="30" step="1"></label>
       <label>关闭前提示（秒） <input id="idle-warn" type="number" min="0" step="1" placeholder="0 = 不提示"></label>
     </div>
-    <p id="idle-status" class="hint">—</p>
     <div class="form-actions">
       <button type="button" id="idle-reload" class="btn ghost">重新加载</button>
       <button type="button" id="idle-save" class="btn primary">保存空闲设置</button>

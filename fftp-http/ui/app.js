@@ -326,15 +326,9 @@ function fillIdleForm(s) {
   $("idle-warn").value = s.warn_secs;
 }
 
-function renderIdleStatus(s) {
-  if (!s.enabled) {
-    $("idle-status").textContent = "未启用自动关闭。";
-    idleWarned = false;
-    return;
-  }
-  const mins = Math.max(0, Math.ceil(s.remaining_secs / 60));
-  $("idle-status").textContent =
-    `当前可见页面 ${s.visible_pages} 个，距自动关闭约 ${mins} 分钟（${s.remaining_secs} 秒）。`;
+function checkIdleWarn(s) {
+  // 仅保留关闭前 toast 提示逻辑，不再在页面上显示实时倒计时
+  if (!s.enabled) { idleWarned = false; return; }
   if (s.warn_secs > 0 && s.remaining_secs <= s.warn_secs) {
     if (!idleWarned) {
       idleWarned = true;
@@ -349,7 +343,7 @@ async function loadIdleStatus(fillForm = true) {
   try {
     const s = await api("/api/idle");
     if (fillForm) fillIdleForm(s);
-    renderIdleStatus(s);
+    checkIdleWarn(s);
   } catch (_) { /* 离线/未登录已由统一处理 */ }
 }
 
@@ -375,7 +369,7 @@ $("idle-save").addEventListener("click", async () => {
       },
     });
     fillIdleForm(s);
-    renderIdleStatus(s);
+    checkIdleWarn(s);
     toast("空闲设置已保存");
   } catch (e) { toast(errMsg(e), true); }
 });
