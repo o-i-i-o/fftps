@@ -327,9 +327,6 @@ function fillIdleForm(s) {
 }
 
 function renderIdleStatus(s) {
-  const badge = $("idle-badge");
-  badge.textContent = s.enabled ? "已启用" : "未启用";
-  badge.className = "badge " + (s.enabled ? "on" : "off");
   if (!s.enabled) {
     $("idle-status").textContent = "未启用自动关闭。";
     idleWarned = false;
